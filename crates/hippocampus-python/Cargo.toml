@@ -1,0 +1,30 @@
+# hippocampus-python
+# PyO3 原生 Python 绑定 - 将 Core 能力暴露为 Python 模块 hippocampus_python
+
+[package]
+name = "hippocampus-python"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Hippocampus Python 绑定 - PyO3 原生扩展，供 Python 直接调用"
+
+[lib]
+# Python 扩展模块必须是 cdylib
+# lib.name 决定 Python import 的模块名（hippocampus_python）
+name = "hippocampus_python"
+crate-type = ["cdylib"]
+
+[dependencies]
+hippocampus-core = { path = "../hippocampus-core", version = "0.1.0" }
+# PyO3 Python 绑定框架（extension-module feature 避免 Mac 上链接 libpython）
+pyo3.workspace = true
+# FFI 内部需要独立 tokio runtime 来 block_on 异步 Core 方法
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+serde_json.workspace = true
+serde = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3.0"

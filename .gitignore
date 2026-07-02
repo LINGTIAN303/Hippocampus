@@ -51,3 +51,13 @@ examples/python/__pycache__/
 
 # 基准测试产物（criterion 自动生成）
 target/criterion/
+
+# Python（v2.2 PyO3 绑定）
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+target/wheels/
+*.egg-info/

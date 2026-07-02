@@ -1,6 +1,6 @@
 # Hippocampus - Agent 记忆库
 # Cargo workspace 根配置
-# 工作区成员：核心库 + C ABI 动态库（MVP）
+# 工作区成员：核心库 + C ABI 动态库 + HTTP 服务 + Python 绑定
 
 [workspace]
 resolver = "2"
@@ -8,15 +8,16 @@ members = [
     "crates/hippocampus-core",
     "crates/hippocampus-ffi",
     "crates/hippocampus-server",
+    "crates/hippocampus-python",
 ]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.75"
+rust-version = "1.83"
 authors = ["lingtian303"]
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/lingtian303/Hippocampus"
+repository = "https://github.com/LINGTIAN303/Hippocampus"
 description = "Agent 记忆库依赖库 - 持久化高效完整记忆法"
 keywords = ["agent", "memory", "llm", "ai", "context"]
 categories = ["data-structures", "filesystem", "api-bindings"]
@@ -42,6 +43,8 @@ tokio = { version = "1.0", features = ["fs", "sync", "io-util"] }
 axum = "0.8"
 tower-http = { version = "0.7", features = ["trace", "cors", "compression-gzip"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Python 绑定（v2.2 PyO3）
+pyo3 = { version = "0.29", features = ["extension-module"] }
 
 [profile.release]
 opt-level = 3
