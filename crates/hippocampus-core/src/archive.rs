@@ -10,38 +10,83 @@
 //!
 //! ## 归档流程
 //!
-//! 1. 检测 token 数达到阈值
-//! 2. 若 `wait_for_turn_completion=true`，等待当前轮次完成
-//! 3. 截取该批次完整上下文（用户消息 + LLM 消息）
-//! 4. 生成 [`MemoryFile`]，打标签集合
-//! 5. 生成 [`IndexHook`] 指向该记忆文件
-//! 6. 将记忆文件写入存储后端
-//! 7. 从 LLM 上下文丢弃该批次（前端渲染可保留供查看）
+//! 1. 检测 token 数达到阈值（调用方检查 [`Archiver::should_archive`]）
+//! 2. 若 `wait_for_turn_completion=true`，由调用方判断轮次是否完成
+//! 3. 调用 [`Archiver::archive`] 执行归档：
+//!    a. 消费缓冲的轮次（`pending_turns`）
+//!    b. 生成 [`MemoryFile`]（自动计算标签并集 + total_tokens）
+//!    c. 写入 Storage 得到相对路径
+//!    d. 用路径生成 [`IndexHook`]
+//!    e. 追加钩子到索引文档（`Storage::append_hook`）
+//!    f. 重置 token 计数器，返回 `(MemoryFile, IndexHook)`
+//! 4. 调用方从 LLM 上下文丢弃该批次（前端渲染可保留供查看）
 
-use crate::model::{ArchiveConfig, IndexHook, MemoryFile, MessageTurn};
+use crate::model::{ArchiveConfig, ArchivePeriod, IndexHook, MemoryFile, MessageTurn};
+use crate::storage::Storage;
+use std::sync::Arc;
 
 /// 归档器
 ///
 /// 负责检测归档触发条件并执行归档操作。
+/// 持有 [`Storage`] 引用，`archive()` 内部完成全流程（写入 + 索引追加）。
+///
+/// ## 用法
+///
+/// ```rust,ignore
+/// let mut archiver = Archiver::new(config, storage, "session-001", None);
+///
+/// // 持续追加轮次
+/// archiver.push_turn(turn1);
+/// archiver.push_turn(turn2);
+///
+/// // 检查是否达到阈值
+/// if archiver.should_archive() {
+///     let (memory, hook) = archiver.archive().await?;
+///     // 从 LLM 上下文丢弃该批次
+/// }
+/// ```
 pub struct Archiver {
+    /// 归档配置
     config: ArchiveConfig,
     /// 当前累计 token 数
     current_tokens: usize,
     /// 当前缓冲的轮次（待归档）
     pending_turns: Vec<MessageTurn>,
+    /// 存储后端
+    storage: Arc<dyn Storage>,
+    /// 会话 ID
+    session_id: String,
+    /// 项目 ID（可选）
+    project_id: Option<String>,
 }
 
 impl Archiver {
     /// 创建新的归档器
-    pub fn new(config: ArchiveConfig) -> Self {
+    ///
+    /// - `config`：归档阈值配置
+    /// - `storage`：存储后端（Arc<dyn Storage>）
+    /// - `session_id`：当前会话 ID
+    /// - `project_id`：项目 ID（可选，影响存储路径）
+    pub fn new(
+        config: ArchiveConfig,
+        storage: Arc<dyn Storage>,
+        session_id: impl Into<String>,
+        project_id: Option<String>,
+    ) -> Self {
         Self {
             config,
             current_tokens: 0,
             pending_turns: Vec::new(),
+            storage,
+            session_id: session_id.into(),
+            project_id,
         }
     }
 
     /// 追加一轮消息，返回是否达到归档阈值
+    ///
+    /// 调用方应持续追加轮次，并检查 [`should_archive`](Self::should_archive)
+    /// 或返回值决定何时归档。
     pub fn push_turn(&mut self, turn: MessageTurn) -> bool {
         self.current_tokens += turn.token_count;
         self.pending_turns.push(turn);
@@ -53,25 +98,289 @@ impl Archiver {
         self.current_tokens
     }
 
+    /// 当前缓冲的轮次数量
+    pub fn pending_turns_count(&self) -> usize {
+        self.pending_turns.len()
+    }
+
     /// 是否达到归档阈值
+    ///
+    /// 调用方应在轮次完成后检查此方法，决定是否调用 [`archive`](Self::archive)。
     pub fn should_archive(&self) -> bool {
         self.current_tokens >= self.config.token_threshold
     }
 
     /// 是否超过强制截断上限
+    ///
+    /// 即使 `wait_for_turn_completion=true`，超过硬上限也必须立即截断。
     pub fn should_force_truncate(&self) -> bool {
         self.current_tokens >= self.config.force_truncate_limit
     }
 
-    /// 执行归档：消费待归档的轮次，生成记忆文件和索引钩子
+    /// 归档配置引用
+    pub fn config(&self) -> &ArchiveConfig {
+        &self.config
+    }
+
+    /// 执行归档
     ///
-    /// TODO: P2 阶段实现完整归档逻辑
-    pub fn archive(&mut self) -> crate::Result<(MemoryFile, IndexHook)> {
+    /// 完整流程：
+    /// 1. 消费 `pending_turns`
+    /// 2. 生成 [`MemoryFile`]（自动计算标签并集 + total_tokens）
+    /// 3. 若超过硬上限，标记 `truncated=true`
+    /// 4. 写入 Storage 得到相对路径
+    /// 5. 生成 [`IndexHook`] 指向该记忆文件
+    /// 6. 追加钩子到 daily 索引文档
+    /// 7. 重置 token 计数器
+    ///
+    /// **注意**：归档后 `pending_turns` 和 `current_tokens` 会被清零。
+    /// 调用方应从 LLM 上下文丢弃该批次（前端渲染可保留）。
+    pub async fn archive(&mut self) -> crate::Result<(MemoryFile, IndexHook)> {
+        if self.pending_turns.is_empty() {
+            return Err(crate::Error::Storage("归档失败: pending_turns 为空".into()));
+        }
+
+        // 1. 消费 pending_turns
         let turns = std::mem::take(&mut self.pending_turns);
+        let was_over_limit = self.current_tokens >= self.config.force_truncate_limit;
         let total_tokens = self.current_tokens;
         self.current_tokens = 0;
 
-        let _ = (turns, total_tokens); // 占位，P2 实现
-        Err(crate::Error::Storage("archive() 待 P2 实现".into()))
+        // 2. 生成 MemoryFile
+        let mut memory_file = MemoryFile::new(
+            self.session_id.clone(),
+            self.project_id.clone(),
+            turns,
+            ArchivePeriod::Daily,
+        );
+
+        // 3. 若超过硬上限，标记截断
+        if was_over_limit {
+            memory_file.mark_truncated();
+        }
+
+        // 校验 total_tokens 一致性
+        debug_assert_eq!(
+            memory_file.total_tokens, total_tokens,
+            "MemoryFile total_tokens 与 Archiver 计量不一致"
+        );
+
+        // 4. 写入 Storage
+        let memory_path = self.storage.write_memory(&memory_file).await?;
+
+        // 5. 生成 IndexHook
+        let hook = IndexHook::from_memory_file(&memory_file, memory_path);
+
+        // 6. 追加钩子到 daily 索引文档
+        self.storage
+            .append_hook(
+                &self.session_id,
+                self.project_id.as_deref(),
+                ArchivePeriod::Daily,
+                hook.clone(),
+            )
+            .await?;
+
+        // 记录日志（tracing）
+        tracing::info!(
+            memory_id = %memory_file.id,
+            tokens = memory_file.total_tokens,
+            truncated = memory_file.truncated,
+            "归档完成: 记忆文件已写入 Storage"
+        );
+
+        Ok((memory_file, hook))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{MessageContent, Tag};
+    use crate::storage::LocalStorage;
+    use chrono::Utc;
+    use tempfile::TempDir;
+    use uuid::Uuid;
+
+    /// 构造测试用 MessageTurn
+    fn make_turn(token_count: usize) -> MessageTurn {
+        MessageTurn {
+            id: Uuid::new_v4(),
+            user_message: MessageContent {
+                text: Some("测试用户消息".into()),
+                attachments: Vec::new(),
+                tool_calls: Vec::new(),
+                thinking: None,
+            },
+            llm_message: MessageContent {
+                text: Some("测试 LLM 回复".into()),
+                attachments: Vec::new(),
+                tool_calls: Vec::new(),
+                thinking: None,
+            },
+            tags: vec![Tag::Text],
+            timestamp: Utc::now(),
+            token_count,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_archiver_push_and_threshold() {
+        let tmp = TempDir::new().unwrap();
+        let storage: Arc<dyn Storage> =
+            Arc::new(LocalStorage::new(tmp.path()));
+        let config = ArchiveConfig {
+            token_threshold: 100,
+            force_truncate_limit: 150,
+            wait_for_turn_completion: true,
+        };
+        let mut archiver = Archiver::new(config, storage, "sess-001", None);
+
+        // 推入 2 个 turn（各 50 token），达到阈值
+        assert!(!archiver.push_turn(make_turn(50)));
+        assert_eq!(archiver.current_tokens(), 50);
+        assert!(archiver.push_turn(make_turn(50))); // 100 >= 100
+        assert!(archiver.should_archive());
+        assert!(!archiver.should_force_truncate());
+    }
+
+    #[tokio::test]
+    async fn test_archiver_force_truncate() {
+        let tmp = TempDir::new().unwrap();
+        let storage: Arc<dyn Storage> =
+            Arc::new(LocalStorage::new(tmp.path()));
+        let config = ArchiveConfig {
+            token_threshold: 100,
+            force_truncate_limit: 150,
+            wait_for_turn_completion: true,
+        };
+        let mut archiver = Archiver::new(config, storage, "sess-002", None);
+
+        // 推入超过硬上限的 turn
+        archiver.push_turn(make_turn(160));
+        assert!(archiver.should_force_truncate());
+    }
+
+    #[tokio::test]
+    async fn test_archiver_archive_full_flow() {
+        let tmp = TempDir::new().unwrap();
+        let storage: Arc<dyn Storage> =
+            Arc::new(LocalStorage::new(tmp.path()));
+        let config = ArchiveConfig {
+            token_threshold: 100,
+            force_truncate_limit: 150,
+            wait_for_turn_completion: true,
+        };
+        let mut archiver = Archiver::new(config, storage.clone(), "sess-003", None);
+
+        // 推入 2 个 turn
+        archiver.push_turn(make_turn(60));
+        archiver.push_turn(make_turn(50));
+        assert_eq!(archiver.pending_turns_count(), 2);
+
+        // 归档
+        let (memory, hook) = archiver.archive().await.unwrap();
+
+        // 验证 MemoryFile
+        assert_eq!(memory.session_id, "sess-003");
+        assert_eq!(memory.turns.len(), 2);
+        assert_eq!(memory.total_tokens, 110);
+        assert!(!memory.truncated);
+        assert_eq!(memory.period, ArchivePeriod::Daily);
+
+        // 验证 IndexHook
+        assert_eq!(hook.memory_file_id, memory.id);
+        assert!(!hook.memory_file_path.is_empty());
+        assert!(hook.memory_file_path.contains("sessions/sess-003/daily/"));
+
+        // 归档后状态清零
+        assert_eq!(archiver.current_tokens(), 0);
+        assert_eq!(archiver.pending_turns_count(), 0);
+
+        // 验证 Storage 中有记忆文件和索引文档
+        let memories = storage
+            .list_memories("sess-003", None, ArchivePeriod::Daily)
+            .await
+            .unwrap();
+        assert_eq!(memories.len(), 1);
+
+        let index = storage
+            .read_index("sess-003", None, ArchivePeriod::Daily)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(index.hooks.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_archiver_archive_truncated() {
+        let tmp = TempDir::new().unwrap();
+        let storage: Arc<dyn Storage> =
+            Arc::new(LocalStorage::new(tmp.path()));
+        let config = ArchiveConfig {
+            token_threshold: 100,
+            force_truncate_limit: 150,
+            wait_for_turn_completion: true,
+        };
+        let mut archiver = Archiver::new(config, storage, "sess-004", None);
+
+        // 推入超过硬上限的 turn
+        archiver.push_turn(make_turn(160));
+        assert!(archiver.should_force_truncate());
+
+        // 归档（应标记 truncated）
+        let (memory, _) = archiver.archive().await.unwrap();
+        assert!(memory.truncated);
+    }
+
+    #[tokio::test]
+    async fn test_archiver_multiple_archives() {
+        let tmp = TempDir::new().unwrap();
+        let storage: Arc<dyn Storage> =
+            Arc::new(LocalStorage::new(tmp.path()));
+        let config = ArchiveConfig {
+            token_threshold: 100,
+            force_truncate_limit: 150,
+            wait_for_turn_completion: true,
+        };
+        let mut archiver = Archiver::new(config, storage.clone(), "sess-005", None);
+
+        // 第一次归档
+        archiver.push_turn(make_turn(60));
+        archiver.push_turn(make_turn(50));
+        archiver.archive().await.unwrap();
+
+        // 第二次归档
+        archiver.push_turn(make_turn(70));
+        archiver.push_turn(make_turn(40));
+        archiver.archive().await.unwrap();
+
+        // Storage 中应有 2 个记忆文件
+        let memories = storage
+            .list_memories("sess-005", None, ArchivePeriod::Daily)
+            .await
+            .unwrap();
+        assert_eq!(memories.len(), 2);
+
+        // 索引文档应有 2 个钩子
+        let index = storage
+            .read_index("sess-005", None, ArchivePeriod::Daily)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(index.hooks.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_archiver_empty_archive_fails() {
+        let tmp = TempDir::new().unwrap();
+        let storage: Arc<dyn Storage> =
+            Arc::new(LocalStorage::new(tmp.path()));
+        let config = ArchiveConfig::default();
+        let mut archiver = Archiver::new(config, storage, "sess-empty", None);
+
+        // 空归档应失败
+        let result = archiver.archive().await;
+        assert!(result.is_err());
     }
 }

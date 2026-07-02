@@ -156,13 +156,18 @@ impl LocalStorage {
 
     /// 生成记忆文件名
     ///
-    /// - Daily: `{YYYY-MM-DD}_{HHMMSS}.json`（日期+时间戳，避免并发冲突）
+    /// - Daily: `{YYYY-MM-DD}_{HHMMSS}_{mmm}.json`（日期+秒级时间戳+毫秒，避免并发冲突）
     /// - Weekly: `{YYYY}-W{WW}.json`（ISO 周数）
     /// - Monthly: `{YYYY}-{MM}.json`
+    ///
+    /// # 毫秒精度的理由
+    ///
+    /// 秒级精度在快速连续归档场景（如单元测试、批量回填）下会冲突覆盖。
+    /// 毫秒精度足以区分正常归档节奏，且可在文件名中保留可读性。
     fn memory_filename(&self, file: &MemoryFile) -> String {
         let dt: NaiveDateTime = file.archived_at.naive_utc();
         match file.period {
-            ArchivePeriod::Daily => format!("{}.json", dt.format("%Y-%m-%d_%H%M%S")),
+            ArchivePeriod::Daily => format!("{}.json", dt.format("%Y-%m-%d_%H%M%S_%3f")),
             ArchivePeriod::Weekly => {
                 let iso = file.archived_at.iso_week();
                 format!("{:04}-W{:02}.json", iso.year(), iso.week())
@@ -650,7 +655,7 @@ mod tests {
             .with_timezone(&Utc);
 
         let name = storage.memory_filename(&file);
-        assert_eq!(name, "2026-07-02_143052.json");
+        assert_eq!(name, "2026-07-02_143052_000.json");
     }
 
     #[tokio::test]

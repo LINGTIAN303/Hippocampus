@@ -248,6 +248,31 @@ impl Default for ArchiveConfig {
 // 辅助方法
 // ============================================================================
 
+impl std::fmt::Display for Tag {
+    /// 中文输出，用于 system prompt 渲染
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Text => write!(f, "文本消息"),
+            Self::FileAttachment => write!(f, "文件附件"),
+            Self::Image => write!(f, "图片"),
+            Self::Video => write!(f, "视频"),
+            Self::ToolCall => write!(f, "工具调用"),
+            Self::Thinking => write!(f, "思考过程"),
+            Self::SessionId => write!(f, "会话ID"),
+            Self::ProjectId => write!(f, "项目ID"),
+            Self::Url => write!(f, "URL"),
+            Self::Citation => write!(f, "引用"),
+            Self::Status => write!(f, "状态"),
+            Self::Ui => write!(f, "UI"),
+            Self::CodeBlock => write!(f, "代码块"),
+            Self::Voice => write!(f, "语音"),
+            Self::Plan => write!(f, "计划"),
+            Self::AgentTool => write!(f, "Agent工具"),
+            Self::Other(s) => write!(f, "{}", s),
+        }
+    }
+}
+
 impl ArchivePeriod {
     /// 返回对应目录名（用于文件树路径生成）
     pub fn as_dir_name(&self) -> &'static str {
