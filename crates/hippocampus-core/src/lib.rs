@@ -6,12 +6,20 @@
 //!
 //! - [`model`]：核心数据模型（记忆文件、索引钩子、标签等）
 //! - [`archive`]：归档/冻结逻辑（达到阈值时将上下文冻结为记忆文件）
-//! - [`index`]：索引文档与钩子管理
 //! - [`retrieve`]：检索机制（摘要钩子注入 + tool 主动检索）
 //! - [`compact`]：周期任务（周去重合并 / 月评分淘汰）
 //! - [`score`]：评分 trait + 默认启发式实现
 //! - [`storage`]：存储后端 trait + 默认本地文件树实现
 //! - [`migrator`]：Schema 版本迁移
+//!
+//! ## 索引管理职责分配
+//!
+//! 「索引文档」与「索引钩子」的职责由多个模块共同承担，不设独立的 IndexManager：
+//! - **数据模型**：[`model::IndexDocument`] / [`model::IndexHook`]
+//! - **持久化**：[`storage::Storage`] trait 的 `append_hook` / `read_index` / `write_index`
+//! - **摘要渲染**：[`retrieve::Retriever`] 的 `render_to_system_prompt`
+//! - **钩子检索**：[`retrieve::Retriever`] 的 `retrieve_memory`
+//! - **周期合并**：[`compact::Compactor`] 的 `weekly_merge` / `monthly_evict`（钩子迁移）
 //!
 //! ## 核心概念
 //!
@@ -24,7 +32,6 @@
 
 pub mod archive;
 pub mod compact;
-pub mod index;
 pub mod migrator;
 pub mod model;
 pub mod retrieve;
