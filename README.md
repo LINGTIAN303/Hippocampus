@@ -13,25 +13,27 @@
   - 月级（Monthly）：4 维评分淘汰（时效性 / 访问频率 / 主题相关性 / 用户显式标记）
 - **混合检索机制**：摘要钩子注入 system prompt + 详细钩子 LLM 主动 tool 检索
 - **17 类细粒度标签**：索引钩子支持文本/附件/图片/视频/工具调用/思考过程等多维度标注
-- **跨语言引用**：Rust 核心 + C ABI 动态库，可被 Python/Node/Go/Java 等通过 FFI 调用
+- **跨语言引用**：Rust 核心 + C ABI 动态库 + HTTP REST API + Python 原生绑定（PyO3）
 - **可插拔架构**：`Storage` / `Scorer` / `Migrator` 等 trait 均可替换实现
 
 ## 架构分层
 
 ```
-Layer 3: Bindings       Python/Node/Go/Java FFI wrapper (v2)
-Layer 2: Interface      ① C ABI 动态库 (MVP)  ② HTTP/gRPC (v2)  ③ WASM (v2)
+Layer 3: Bindings       ① Python 原生绑定 (PyO3, v2.2 ✅)  ② Node/Go/Java (v2.3+)
+Layer 2: Interface      ① C ABI 动态库 (MVP ✅)  ② Axum HTTP REST (v2.1 ✅)  ③ WASM (v2.3)
 Layer 1: Core (Rust)    纯逻辑 crate，无 IO 依赖
 ```
 
 详细架构与数据流见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 
-## MVP 范围
+## Crate 矩阵
 
 | Crate | 说明 | 状态 |
 |-------|------|------|
-| `hippocampus-core` | 核心库（数据模型 / 归档 / 索引 / 检索 / 周期任务 / 评分） | ✅ 完成 |
-| `hippocampus-ffi`  | C ABI 动态库 + C 头文件 | ✅ 完成 |
+| `hippocampus-core` | 核心库（数据模型 / 归档 / 索引 / 检索 / 周期任务 / 评分） | ✅ MVP |
+| `hippocampus-ffi`  | C ABI 动态库 + C 头文件 | ✅ MVP |
+| `hippocampus-server` | Axum HTTP REST API 服务（无状态，水平扩展） | ✅ v2.1 |
+| `hippocampus-python` | Python 原生绑定（PyO3 + maturin） | ✅ v2.2 |
 
 ## 快速开始
 
@@ -120,21 +122,107 @@ result = lib.hippocampus_archive(handle, json.dumps(turns).encode())
 
 完整 Python 示例见 [examples/python/demo.py](examples/python/demo.py)。
 
-## C ABI 接口概览
+### 4. Python 原生绑定（推荐，v2.2）
 
-| 函数 | 作用 | 返回数据 |
-|------|------|----------|
-| `hippocampus_new` | 创建句柄（绑定 session_id） | `HippocampusHandle*` |
-| `hippocampus_free` | 释放句柄 | void |
-| `hippocampus_archive` | 归档一批轮次为记忆文件 | SummaryView JSON |
-| `hippocampus_retrieve` | 按钩子 ID 检索完整记忆文件 | MemoryFile JSON |
-| `hippocampus_get_summaries` | 获取所有周期摘要视图 | SummaryView 数组 JSON |
-| `hippocampus_render_prompt` | 渲染摘要为 system prompt 文本 | prompt 纯文本（非 JSON） |
-| `hippocampus_run_compaction` | 触发周期任务（周合并/月淘汰） | CompactionResult JSON |
+使用 PyO3 原生绑定，无需 ctypes 手动配置函数签名，支持上下文管理器自动释放：
 
-**线程安全**：`HippocampusHandle` 不保证线程安全，多线程访问同一 handle 需调用方自行加锁。建议每线程独立创建 handle。
+```bash
+# 安装 maturin（PyO3 团队开发的构建工具）
+pip install maturin
 
-完整接口定义见 [crates/hippocampus-ffi/include/hippocampus.h](crates/hippocampus-ffi/include/hippocampus.h)。
+# 构建并安装到当前 Python 环境
+cd crates/hippocampus-python
+maturin develop --release
+```
+
+```python
+from hippocampus_python import Hippocampus
+
+# 上下文管理器自动释放资源
+with Hippocampus("./mem_data", "session-001", project_id="proj-a") as hp:
+    # 1. 归档（turns 为 dict 列表，结构同 MessageTurn）
+    summary = hp.archive([
+        {
+            "user_message": {"text": "你好", "attachments": [], "tool_calls": [], "thinking": None},
+            "llm_message": {"text": "你好！有什么可以帮你？", "attachments": [], "tool_calls": [], "thinking": None},
+            "tags": [{"kind": "Text"}],
+            "token_count": 20,
+        }
+    ])
+    print(f"归档成功，hook_id={summary['hook_id']}")
+
+    # 2. 获取所有周期摘要（注入 system prompt 用）
+    summaries = hp.summaries()
+    print(f"共 {len(summaries)} 条记忆")
+
+    # 3. 渲染 system prompt 文本（直接拼接给 LLM）
+    prompt = hp.prompt()
+    if prompt:
+        print(prompt)  # # 可用记忆索引 ...
+
+    # 4. 按钩子 ID 检索完整记忆（LLM tool 调用入口）
+    memory = hp.retrieve(summary["hook_id"])
+    print(f"检索到 {len(memory['turns'])} 轮对话")
+
+    # 5. 周期任务
+    hp.compaction("weekly")   # 周级无损去重合并
+    hp.compaction("monthly")  # 月级评分淘汰
+```
+
+详细 API 见 [crates/hippocampus-python/src/lib.rs](crates/hippocampus-python/src/lib.rs)。
+Python 集成测试见 [crates/hippocampus-python/tests/test_hippocampus.py](crates/hippocampus-python/tests/test_hippocampus.py)（20 个 pytest 用例）。
+
+### 5. HTTP REST API（v2.1）
+
+启动 Axum 服务（适合远程访问 / 多语言客户端共用）：
+
+```bash
+# 启动服务（默认 127.0.0.1:8765）
+HIPPOCAMPUS_HOST=0.0.0.0 HIPPOCAMPUS_PORT=8765 HIPPOCAMPUS_ROOT=./data cargo run -p hippocampus-server
+```
+
+```bash
+# 归档
+curl -X POST http://localhost:8765/api/v1/sessions/sess-001/archive \
+  -H "Content-Type: application/json" \
+  -d '{"turns": [...], "project_id": "proj-a"}'
+
+# 获取摘要
+curl http://localhost:8765/api/v1/sessions/sess-001/summaries
+
+# 渲染 prompt
+curl http://localhost:8765/api/v1/sessions/sess-001/prompt
+
+# 检索记忆
+curl http://localhost:8765/api/v1/sessions/sess-001/memories/<hook_id>
+
+# 周期任务
+curl -X POST http://localhost:8765/api/v1/sessions/sess-001/compaction \
+  -H "Content-Type: application/json" -d '{"period": "weekly"}'
+```
+
+详细 HTTP API 见 [crates/hippocampus-server/src/handlers.rs](crates/hippocampus-server/src/handlers.rs)。
+
+## 接口概览
+
+三种接口形态对应同一组核心操作（archive / retrieve / summaries / prompt / compaction）：
+
+| 操作 | C ABI | HTTP REST | Python 原生 |
+|------|-------|-----------|-------------|
+| 创建句柄 | `hippocampus_new(root, sid, pid)` | （URL path 含 sid） | `Hippocampus(root, sid, project_id=...)` |
+| 归档 | `hippocampus_archive(h, turns_json)` | `POST /archive` | `hp.archive(turns)` |
+| 检索 | `hippocampus_retrieve(h, hook_id)` | `GET /memories/{hook_id}` | `hp.retrieve(hook_id)` |
+| 摘要 | `hippocampus_get_summaries(h)` | `GET /summaries` | `hp.summaries()` |
+| Prompt | `hippocampus_render_prompt(h)` | `GET /prompt` | `hp.prompt()` |
+| 周期任务 | `hippocampus_run_compaction(h, 0/1)` | `POST /compaction` | `hp.compaction("weekly"/"monthly")` |
+| 释放 | `hippocampus_free(h)` | （无状态） | `with` 上下文管理器 / `hp.close()` |
+
+**线程安全**：FFI 的 `HippocampusHandle` 不保证线程安全（建议每线程独立 handle）。HTTP 服务无状态，天然支持并发。Python 绑定受 GIL 约束，单实例串行调用。
+
+完整接口定义：
+- C ABI: [crates/hippocampus-ffi/include/hippocampus.h](crates/hippocampus-ffi/include/hippocampus.h)
+- HTTP: [crates/hippocampus-server/src/handlers.rs](crates/hippocampus-server/src/handlers.rs)
+- Python: [crates/hippocampus-python/src/lib.rs](crates/hippocampus-python/src/lib.rs)
 
 ## 核心概念
 
@@ -188,31 +276,40 @@ result = lib.hippocampus_archive(handle, json.dumps(turns).encode())
 
 ## 技术栈
 
-- Rust 1.75+（edition 2021）
+- Rust 1.83+（edition 2021，PyO3 0.29 要求）
 - 序列化：JSON（MVP 可调试优先，v2 支持 MessagePack）
 - 存储：可插拔 trait，默认本地文件树
-- 异步运行时：tokio（FFI 内部 `current_thread` runtime）
+- 异步运行时：tokio（FFI/Python 内部 `current_thread` runtime，HTTP 服务 `rt-multi-thread`）
+- HTTP 框架：Axum 0.8 + tower-http 0.7
+- Python 绑定：PyO3 0.29 + maturin（cdylib）
 
 ## 测试
 
 ```bash
-# 全部测试（单元 + 集成 + FFI）
+# Rust 全部测试（单元 + 集成 + FFI + HTTP）
 cargo test --workspace
 
 # Clippy 检查
 cargo clippy --workspace --all-targets -- -D warnings
 
-# 性能基准（需先添加 criterion，见 docs/BENCHMARKS.md）
+# 性能基准（见 docs/BENCHMARKS.md）
 cargo bench -p hippocampus-core
+
+# Python 集成测试（需先 maturin develop 安装）
+cd crates/hippocampus-python
+pip install maturin pytest
+maturin develop --release
+pytest tests/test_hippocampus.py -v
 ```
 
-当前测试覆盖：51 单元测试 + 6 集成测试 + 17 FFI 集成测试 = **74 测试全部通过**。
+当前测试覆盖：51 单元 + 6 集成 + 17 FFI + 14 HTTP + 1 server 单元 + 20 Python = **109 测试全部通过**，clippy 0 警告。
 
 ## 项目状态
 
-- ✅ **MVP（P0-P4）**：核心库 + C ABI 动态库
-- ✅ **P5**：用户文档 + 示例 + 跨语言测试 + 性能基准
-- 🚧 **v2 路线图**：HTTP/Axum 服务 + WASM 组件 + 多语言绑定（Python 优先）
+- ✅ **MVP（P0-P5）**：核心库 + C ABI 动态库 + 文档 + 示例 + 跨语言测试 + 性能基准
+- ✅ **v2.1**：HTTP/Axum REST API 服务（无状态，水平扩展）
+- ✅ **v2.2**：Python 原生绑定（PyO3 + maturin，OOP 风格 + 上下文管理器）
+- 🚧 **v2.3 路线图**：WASM 组件（待生态成熟）+ Node/Go/Java 绑定
 
 变更历史见 [CHANGELOG.md](CHANGELOG.md)。
 

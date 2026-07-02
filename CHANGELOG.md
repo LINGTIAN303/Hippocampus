@@ -5,7 +5,47 @@
 ## [Unreleased]
 
 ### 计划中
-- v2：HTTP/Axum 服务 + WASM 组件 + 多语言绑定（Python 优先）
+- v2.3：WASM 组件（待生态成熟）+ Node/Go/Java 绑定
+
+## [0.2.0] - 2026-07-03
+
+### v2 接口层扩展。在 MVP 基础上新增 HTTP REST API 服务 + Python 原生绑定。
+
+### 新增
+
+#### v2.1 - HTTP/Axum REST API 服务（commit 7f333b0）
+- 新增 `hippocampus-server` crate（Axum 0.8 + tower-http 0.7）
+- 5 个 REST 端点（路径前缀 `/api/v1/sessions/{sid}/...`）：
+  - `POST /archive`：归档一批轮次
+  - `GET /memories/{hook_id}`：按钩子 ID 检索
+  - `GET /summaries`：获取所有周期摘要
+  - `GET /prompt`：渲染 system prompt 文本
+  - `POST /compaction`：触发周期任务（period: "weekly"/"monthly"）
+- 无状态设计：每次请求创建 LocalStorage，天然支持水平扩展
+- 统一错误响应：`{error:{code,message}}`，code 为 `BAD_REQUEST`/`NOT_FOUND`/`INTERNAL_ERROR`
+- 环境变量配置：`HIPPOCAMPUS_HOST`（默认 127.0.0.1）/ `HIPPOCAMPUS_PORT`（默认 8765）/ `HIPPOCAMPUS_ROOT`（默认 ./data）
+- 14 个 HTTP 集成测试（reqwest 客户端 + 随机端口 TestServer）
+- CI 新增 `http-integration-test` job
+
+#### v2.2 - Python 原生绑定（commit a3ed611）
+- 新增 `hippocampus-python` crate（PyO3 0.29 + maturin build backend，cdylib）
+- `Hippocampus` pyclass：OOP 风格 + `__enter__`/`__exit__` 上下文管理器 + `__repr__`
+- 5 个方法（与 FFI/HTTP 一一对应）：`archive` / `retrieve` / `summaries` / `prompt` / `compaction`
+- 数据类型映射：dict 字典（JSON 中间转换，零样板代码，无需额外 PyClass）
+- 错误映射：Core Error → `PyValueError`
+- 模块级函数：`version()` / `operations()`
+- 内部 tokio Runtime（`current_thread`，block_on 执行 Core 异步方法）
+- 20 个 pytest 集成测试（模块级/生命周期/archive/summaries/retrieve/prompt/compaction/隔离性/完整工作流）
+- CI 新增 `python-integration-test` job（maturin build + pip install + pytest）
+
+### 变更
+- workspace `rust-version` 从 1.75 升至 1.83（PyO3 0.29 要求）
+- workspace 新增依赖：`pyo3 = { version = "0.29", features = ["extension-module"] }`
+- `.gitignore` 新增 Python 相关忽略项（`.venv/` / `__pycache__/` / `*.pyc` 等）
+
+### 测试
+- 总计 109 测试全部通过（51 单元 + 6 集成 + 17 FFI + 14 HTTP + 1 server 单元 + 20 Python）
+- clippy 0 警告
 
 ## [0.1.0] - 2026-07-02
 

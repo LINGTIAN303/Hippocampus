@@ -6,13 +6,14 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│ Layer 3: Bindings (v2)                                          │
-│   Python / Node / Go / Java FFI wrapper + HTTP client SDK      │
+│ Layer 3: Bindings                                               │
+│   ① Python 原生绑定 (v2.2 ✅, hippocampus-python, PyO3 0.29)   │
+│   ② Node/Go/Java (v2.3+, 待实现)                                │
 ├─────────────────────────────────────────────────────────────────┤
 │ Layer 2: Interface                                              │
-│   ① C ABI 动态库 (MVP, hippocampus-ffi)                        │
-│   ② Axum HTTP/gRPC (v2)                                        │
-│   ③ WASM 组件 (v2)                                              │
+│   ① C ABI 动态库 (MVP ✅, hippocampus-ffi)                     │
+│   ② Axum HTTP REST (v2.1 ✅, hippocampus-server)               │
+│   ③ WASM 组件 (v2.3, 待生态成熟)                               │
 ├─────────────────────────────────────────────────────────────────┤
 │ Layer 1: Core (hippocampus-core, 纯 Rust)                       │
 │   ┌──────────┬──────────┬──────────┬──────────┬──────────┐    │
@@ -26,8 +27,20 @@
 ### 分层原则
 
 - **Layer 1 纯逻辑**：不依赖 IO（文件系统/网络/时钟），所有副作用通过 trait 注入
-- **Layer 2 接口层**：将 Core 的异步 Rust API 转换为各语言可调用的形式
+- **Layer 2 接口层**：将 Core 的异步 Rust API 转换为各语言可调用的形式（C ABI / HTTP / WASM）
 - **Layer 3 绑定层**：提供各语言的原生 SDK（自动释放/类型安全/异常映射）
+
+### 接口层对比
+
+| 维度 | C ABI (FFI) | HTTP REST (server) | Python 原生 (python) |
+|------|-------------|--------------------|-----------------------|
+| crate | hippocampus-ffi | hippocampus-server | hippocampus-python |
+| 调用方式 | C 函数 + JSON 字符串 | HTTP 端点 + JSON body | Python 方法 + dict |
+| 状态 | 有状态（handle） | 无状态（每请求独立） | 有状态（实例） |
+| 并发 | 单线程，调用方加锁 | 天然并发（tokio） | GIL 约束，单实例串行 |
+| Runtime | current_thread | rt-multi-thread | current_thread |
+| 错误处理 | HippocampusResult | {error:{code,message}} | PyValueError |
+| 适合场景 | C/C++/嵌入式 | 远程访问 / 多语言 | Python 应用 / 数据科学 |
 
 ## 2. 模块职责
 
@@ -53,7 +66,7 @@
 | 钩子检索 | `Retriever::retrieve_memory` |
 | 周期合并 | `Compactor::weekly_merge` / `monthly_evict`（钩子迁移） |
 
-### Layer 2: hippocampus-ffi
+### Layer 2: hippocampus-ffi（C ABI）
 
 | 组件 | 职责 |
 |------|------|
@@ -61,6 +74,27 @@
 | `HippocampusResult` | 统一返回包装（is_ok + data + error_message） |
 | 5 个 C ABI 函数 | archive / retrieve / get_summaries / render_prompt / run_compaction |
 | `hippocampus.h` | C 头文件，定义所有 ABI 接口 |
+
+### Layer 2: hippocampus-server（HTTP REST）
+
+| 组件 | 职责 |
+|------|------|
+| `Config` | 环境变量配置（HIPPOCAMPUS_HOST/PORT/ROOT） |
+| `AppState` | 应用状态（存储根目录路径） |
+| `AppError` | 统一错误响应（BadRequest 400 / NotFound 404 / Internal 500） |
+| 5 个 handler | archive / retrieve / get_summaries / render_prompt / run_compaction |
+| `create_router` | 路由配置（Axum 0.8 `{param}` 语法，路径前缀 `/api/v1/sessions/{sid}/...`） |
+| `TraceLayer` | tower-http 请求日志中间件 |
+
+### Layer 3: hippocampus-python（PyO3 绑定）
+
+| 组件 | 职责 |
+|------|------|
+| `Hippocampus` pyclass | 持有 storage_root + tokio Runtime + session_id + project_id |
+| `__enter__`/`__exit__` | 上下文管理器（自动释放资源） |
+| 5 个方法 | archive / retrieve / summaries / prompt / compaction |
+| `version()` / `operations()` | 模块级工具函数 |
+| JSON 中间转换 | Python dict ↔ Rust struct（通过 json.dumps/loads + serde） |
 
 ## 3. 数据流
 
@@ -90,6 +124,10 @@ Agent 调用方                 hippocampus-ffi              hippocampus-core
      │  HippocampusResult*           │                            │
      │  (data = SummaryView JSON)   │                            │
 ```
+
+> HTTP 和 Python 接口的数据流一致，仅入口形式不同：
+> - HTTP：`POST /archive` body → handler → Core
+> - Python：`hp.archive(turns)` → JSON 中间转换 → Core
 
 ### 3.2 检索流程
 
@@ -160,12 +198,25 @@ LLM 通过 tool 调用 retrieve_memory(hook_id)
 - **原子写入**：temp 文件 + rename（防崩溃损坏）
 - **读-改-写**：索引更新采用 read → modify → write back 模式
 
-### Layer 2 (FFI)
+### Layer 2 - FFI (C ABI)
 
 - **单线程模型**：`HippocampusHandle` 不保证线程安全
 - **内部 tokio Runtime**：`current_thread`（轻量，适合 FFI 单线程模型）
 - **调用方串行化**：多线程访问同一 handle 需调用方自行加锁
 - **建议**：每线程独立创建 handle
+
+### Layer 2 - HTTP (server)
+
+- **无状态设计**：每次请求创建 LocalStorage，无内存会话池
+- **tokio Runtime**：`rt-multi-thread`（支持并发请求）
+- **天然水平扩展**：无状态 + 文件存储，可多实例部署
+
+### Layer 3 - Python (python)
+
+- **GIL 约束**：单实例串行调用（PyO3 同步 API）
+- **内部 tokio Runtime**：`current_thread`（与 FFI 一致）
+- **上下文管理器**：`with Hippocampus(...) as hp:` 自动释放资源
+- **建议**：多会话用多实例（每会话一个 Hippocampus 对象）
 
 ## 6. 数据格式
 
@@ -203,7 +254,7 @@ LLM 通过 tool 调用 retrieve_memory(hook_id)
 {
   "hook_id": "550e8400-e29b-41d4-a716-446655440002",
   "memory_file_id": "550e8400-e29b-41d4-a716-446655440000",
-  "summary_title": "用户消息",  // P1 启发式：首条消息前 80 字符
+  "summary_title": "用户消息",
   "tags": ["文本消息", "代码块"],
   "archived_at": "2026-07-02T14:30:52.123Z",
   "period": "daily",
@@ -260,7 +311,7 @@ pub enum Error {
 }
 ```
 
-### Layer 2 (FFI)
+### Layer 2 - FFI (C ABI)
 
 所有错误通过 `HippocampusResult` 包装：
 
@@ -269,3 +320,30 @@ pub enum Error {
 - `hippocampus_get_data(result)` → 获取成功数据（需 free）
 
 错误消息为 UTF-8 字符串，可直接展示给用户。
+
+### Layer 2 - HTTP (server)
+
+统一 JSON 错误响应：
+
+```json
+{ "error": { "code": "NOT_FOUND", "message": "未找到钩子 ID: xxx" } }
+```
+
+HTTP 状态码映射：
+
+| Core Error | HTTP Status | code |
+|------------|-------------|------|
+| `Error::Index`（含"未找到"） | 404 | `NOT_FOUND` |
+| `Error::Serialize` | 400 | `BAD_REQUEST` |
+| 其他 | 500 | `INTERNAL_ERROR` |
+
+### Layer 3 - Python (python)
+
+所有 Core Error 统一映射为 `PyValueError`，错误消息含上下文：
+
+```python
+try:
+    hp.retrieve("nonexistent-id")
+except ValueError as e:
+    print(e)  # 检索失败: 未找到钩子 ID: nonexistent-id
+```
