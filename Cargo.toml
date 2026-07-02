@@ -7,6 +7,7 @@ resolver = "2"
 members = [
     "crates/hippocampus-core",
     "crates/hippocampus-ffi",
+    "crates/hippocampus-server",
 ]
 
 [workspace.package]
@@ -37,6 +38,10 @@ tracing = "0.1"
 async-trait = "0.1"
 # 异步运行时（LocalStorage 文件 IO 用 tokio::fs）
 tokio = { version = "1.0", features = ["fs", "sync", "io-util"] }
+# HTTP 框架（v2 服务层）
+axum = "0.8"
+tower-http = { version = "0.7", features = ["trace", "cors", "compression-gzip"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [profile.release]
 opt-level = 3

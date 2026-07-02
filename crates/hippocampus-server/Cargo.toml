@@ -1,0 +1,31 @@
+# hippocampus-server
+# HTTP/Axum REST API 服务 - 将 Core 暴露为 HTTP 接口供跨语言调用
+
+[package]
+name = "hippocampus-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Hippocampus HTTP 服务 - Axum REST API，供所有语言通过 HTTP 调用"
+
+[dependencies]
+hippocampus-core = { path = "../hippocampus-core", version = "0.1.0" }
+axum.workspace = true
+tokio = { version = "1.0", features = ["full"] }
+tower-http.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile = "3.0"
+# HTTP 客户端用于集成测试
+reqwest = { version = "0.12", features = ["json"] }
+tokio = { version = "1.0", features = ["full"] }
+uuid = { workspace = true }
+chrono = { workspace = true }
+serde_json = { workspace = true }
