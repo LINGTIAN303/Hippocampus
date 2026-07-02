@@ -90,61 +90,70 @@ pub unsafe extern "C" fn hippocampus_free(handle: *mut HippocampusHandle) {
 // ============================================================================
 
 /// 检查结果是否成功
+///
+/// # Safety
+/// `result` 必须是之前由其他 Hippocampus 操作返回的有效指针，或 NULL
 #[no_mangle]
-pub extern "C" fn hippocampus_is_ok(result: *const HippocampusResult) -> bool {
+pub unsafe extern "C" fn hippocampus_is_ok(result: *const HippocampusResult) -> bool {
     if result.is_null() {
         return false;
     }
-    unsafe { (*result).is_ok }
+    (*result).is_ok
 }
 
 /// 获取结果中的数据字符串（调用方需用 [`hippocampus_free_string`] 释放）
+///
+/// # Safety
+/// `result` 必须是之前由其他 Hippocampus 操作返回的有效指针，或 NULL
 #[no_mangle]
-pub extern "C" fn hippocampus_get_data(result: *const HippocampusResult) -> *mut c_char {
+pub unsafe extern "C" fn hippocampus_get_data(result: *const HippocampusResult) -> *mut c_char {
     if result.is_null() {
         return std::ptr::null_mut();
     }
-    unsafe {
-        (*result)
-            .data
-            .as_ref()
-            .map(|s| CString::clone(s).into_raw())
-            .unwrap_or(std::ptr::null_mut())
-    }
+    (*result)
+        .data
+        .as_ref()
+        .map(|s| CString::clone(s).into_raw())
+        .unwrap_or(std::ptr::null_mut())
 }
 
 /// 获取结果中的错误消息
+///
+/// # Safety
+/// `result` 必须是之前由其他 Hippocampus 操作返回的有效指针，或 NULL
 #[no_mangle]
-pub extern "C" fn hippocampus_get_error(result: *const HippocampusResult) -> *mut c_char {
+pub unsafe extern "C" fn hippocampus_get_error(result: *const HippocampusResult) -> *mut c_char {
     if result.is_null() {
         return std::ptr::null_mut();
     }
-    unsafe {
-        (*result)
-            .error_message
-            .as_ref()
-            .map(|s| CString::clone(s).into_raw())
-            .unwrap_or(std::ptr::null_mut())
-    }
+    (*result)
+        .error_message
+        .as_ref()
+        .map(|s| CString::clone(s).into_raw())
+        .unwrap_or(std::ptr::null_mut())
 }
 
 /// 释放结果
+///
+/// # Safety
+/// `result` 必须是之前由其他 Hippocampus 操作返回的有效指针，或 NULL。
+/// 释放后不得再次使用该指针。
 #[no_mangle]
-pub extern "C" fn hippocampus_result_free(result: *mut HippocampusResult) {
+pub unsafe extern "C" fn hippocampus_result_free(result: *mut HippocampusResult) {
     if !result.is_null() {
-        unsafe {
-            drop(Box::from_raw(result));
-        }
+        drop(Box::from_raw(result));
     }
 }
 
 /// 释放字符串（由 [`hippocampus_get_data`] 或 [`hippocampus_get_error`] 返回）
+///
+/// # Safety
+/// `s` 必须是由 [`hippocampus_get_data`] 或 [`hippocampus_get_error`] 返回的字符串指针，或 NULL。
+/// 释放后不得再次使用该指针。
 #[no_mangle]
-pub extern "C" fn hippocampus_free_string(s: *mut c_char) {
+pub unsafe extern "C" fn hippocampus_free_string(s: *mut c_char) {
     if !s.is_null() {
-        unsafe {
-            drop(CString::from_raw(s));
-        }
+        drop(CString::from_raw(s));
     }
 }
 

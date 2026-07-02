@@ -243,3 +243,152 @@ impl Default for ArchiveConfig {
         }
     }
 }
+
+// ============================================================================
+// 辅助方法
+// ============================================================================
+
+impl ArchivePeriod {
+    /// 返回对应目录名（用于文件树路径生成）
+    pub fn as_dir_name(&self) -> &'static str {
+        match self {
+            Self::Daily => "daily",
+            Self::Weekly => "weekly",
+            Self::Monthly => "monthly",
+        }
+    }
+
+    /// 返回所有变体（用于遍历）
+    pub fn all() -> [Self; 3] {
+        [Self::Daily, Self::Weekly, Self::Monthly]
+    }
+}
+
+impl MemoryFile {
+    /// 创建新的记忆文件
+    ///
+    /// - 自动计算 `total_tokens`（所有轮次 token_count 之和）
+    /// - 自动计算 `tags`（所有轮次标签的并集，去重）
+    /// - `schema_version` 设为当前版本
+    /// - `truncated` 默认 false
+    pub fn new(
+        session_id: impl Into<String>,
+        project_id: Option<String>,
+        turns: Vec<MessageTurn>,
+        period: ArchivePeriod,
+    ) -> Self {
+        use std::collections::HashSet;
+
+        let total_tokens = turns.iter().map(|t| t.token_count).sum();
+        let tags: Vec<Tag> = {
+            let mut seen: HashSet<Tag> = turns.iter().flat_map(|t| t.tags.iter().cloned()).collect();
+            seen.drain().collect()
+        };
+
+        Self {
+            id: Uuid::new_v4(),
+            schema_version: SCHEMA_VERSION,
+            archived_at: Utc::now(),
+            session_id: session_id.into(),
+            project_id,
+            turns,
+            tags,
+            total_tokens,
+            truncated: false,
+            period,
+            access_count: 0,
+            importance: 0,
+        }
+    }
+
+    /// 标记为强制截断
+    pub fn mark_truncated(&mut self) {
+        self.truncated = true;
+    }
+
+    /// 增加访问计数（用于评分）
+    pub fn record_access(&mut self) {
+        self.access_count = self.access_count.saturating_add(1);
+    }
+
+    /// 设置用户显式重要性（0-100）
+    ///
+    /// 超过 100 会被截断为 100
+    pub fn set_importance(&mut self, importance: u8) {
+        self.importance = importance.min(100);
+    }
+}
+
+impl IndexHook {
+    /// 从记忆文件生成索引钩子
+    ///
+    /// `summary_title` 在 P1 阶段采用启发式：取首个轮次的用户文本前 80 字符
+    /// （P2 阶段接入 LLM 后可优化为语义摘要）
+    pub fn from_memory_file(file: &MemoryFile, memory_file_path: String) -> Self {
+        let summary_title = file
+            .turns
+            .first()
+            .and_then(|t| t.user_message.text.as_ref())
+            .map(|text| {
+                // 截取前 80 字符作为摘要标题（按字符边界，避免截断 UTF-8）
+                let chars: Vec<char> = text.chars().take(80).collect();
+                let mut s: String = chars.into_iter().collect();
+                s.push_str("...");
+                s
+            })
+            .unwrap_or_else(|| format!("记忆文件 {}", file.id));
+
+        Self {
+            id: Uuid::new_v4(),
+            memory_file_id: file.id,
+            memory_file_path,
+            summary_title,
+            tags: file.tags.clone(),
+            archived_at: file.archived_at,
+            period: file.period,
+            token_count: file.total_tokens,
+        }
+    }
+}
+
+impl IndexDocument {
+    /// 创建新的空索引文档
+    pub fn new(
+        session_id: impl Into<String>,
+        project_id: Option<String>,
+        period: ArchivePeriod,
+    ) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            schema_version: SCHEMA_VERSION,
+            session_id: session_id.into(),
+            project_id,
+            hooks: Vec::new(),
+            updated_at: Utc::now(),
+            period,
+        }
+    }
+
+    /// 追加一个钩子，并更新 `updated_at`
+    pub fn add_hook(&mut self, hook: IndexHook) {
+        self.hooks.push(hook);
+        self.updated_at = Utc::now();
+    }
+
+    /// 按 ID 移除钩子
+    pub fn remove_hook(&mut self, hook_id: Uuid) -> Option<IndexHook> {
+        if let Some(pos) = self.hooks.iter().position(|h| h.id == hook_id) {
+            self.updated_at = Utc::now();
+            Some(self.hooks.remove(pos))
+        } else {
+            None
+        }
+    }
+
+    /// 按记忆文件 ID 查找钩子
+    pub fn find_by_memory(&self, memory_file_id: Uuid) -> Option<&IndexHook> {
+        self.hooks
+            .iter()
+            .find(|h| h.memory_file_id == memory_file_id)
+    }
+}
