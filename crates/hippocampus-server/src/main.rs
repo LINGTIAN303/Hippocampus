@@ -16,7 +16,7 @@
 //!
 //! 未配置 `API_URL` 时，自动降级为 `KeywordOnlyRetriever`（仅 BM25 关键词检索）。
 //!
-//! ## 冲突检测配置（v2.10，v2.13 默认值更新）
+//! ## 冲突检测配置（v2.10，v2.13 默认值更新，v2.14 升级 HybridDetector）
 //!
 //! | 环境变量 | 说明 | 默认值 |
 //! |---------|------|--------|
@@ -26,7 +26,8 @@
 //! | `HIPPOCAMPUS_DETECTOR_TIMEOUT` | 超时秒数 | `30` |
 //! | `HIPPOCAMPUS_DETECTOR_MAX_TOKENS` | LLM 最大输出 token | `500` |
 //!
-//! 未配置 `API_URL` 时，使用 `HeuristicDetector`（启发式纯算法，无 LLM 依赖）。
+//! - 未配置 `API_URL`：使用 `HeuristicDetector`（启发式纯算法，三维度检测）
+//! - 配置完整：使用 `HybridDetector`（串联 Heuristic + LLM，合并两份报告，v2.14 语义去重默认阈值 0.7）
 
 use hippocampus_server::{create_router, AppState, Config};
 use std::sync::Arc;
@@ -65,11 +66,20 @@ fn build_session_search() -> Option<Arc<hippocampus_server::SessionSearchRouter>
     Some(Arc::new(SessionSearchRouter::new(Some(embedder), dim)))
 }
 
-/// 从环境变量构造冲突检测器（v2.10，v2.13 简化）
+/// 从环境变量构造冲突检测器（v2.10，v2.13 简化，v2.14 升级 HybridDetector）
 ///
-/// - 配置了 `HIPPOCAMPUS_DETECTOR_API_URL` + `API_KEY`：返回 `HttpLlmDetector`（LLM 语义级检测）
+/// - 配置了 `HIPPOCAMPUS_DETECTOR_API_URL` + `API_KEY`：
+///   返回 `HybridDetector`（串联 Heuristic + LLM，合并两份报告，v2.14 语义去重默认阈值 0.7）
 /// - 未配置：返回 `HeuristicDetector`（启发式纯算法，无 LLM 依赖）
+///
+/// ## v2.14 升级说明
+///
+/// v2.11 引入 `HybridDetector` 时 mcp 已升级，server 遗漏。v2.14 修正：
+/// server 与 mcp 对齐，统一使用 `HybridDetector`，享受启发式 + LLM 互补 +
+/// v2.12 精确去重 + v2.14 语义去重（字符 Jaccard 相似度 >= 0.7 视为重复）。
 fn build_conflict_detector() -> std::sync::Arc<dyn hippocampus_core::conflict::ConflictDetector> {
+    use hippocampus_core::conflict::{ConflictDetector, HybridDetector};
+    use hippocampus_core::heuristic::HeuristicDetector;
     use hippocampus_server::{HttpLlmDetector, LlmDetectorConfig};
 
     // v2.13：使用 LlmDetectorConfig::from_env() 统一环境变量读取
@@ -79,17 +89,27 @@ fn build_conflict_detector() -> std::sync::Arc<dyn hippocampus_core::conflict::C
             tracing::info!(
                 "冲突检测器：未配置 LLM API，使用 HeuristicDetector（启发式纯算法，三维度检测）"
             );
-            return std::sync::Arc::new(hippocampus_core::heuristic::HeuristicDetector::new());
+            return std::sync::Arc::new(HeuristicDetector::new());
         }
     };
+
+    // v2.14：串联 Heuristic + LLM，合并两份报告（与 mcp/main.rs 对齐）
+    // - HybridDetector::new() 默认 dedup_threshold = 0.7（中文短句经验值）
+    // - 启发式全部保留，LLM 报告中语义重复的不重复加入
+    // - LLM 失败时返回空报告，启发式结果仍保留（降级策略）
+    let heuristic: std::sync::Arc<dyn ConflictDetector> = std::sync::Arc::new(HeuristicDetector::new());
+    let llm: std::sync::Arc<dyn ConflictDetector> = std::sync::Arc::new(HttpLlmDetector::new(config.clone()));
+    let hybrid = HybridDetector::new(heuristic, llm);
 
     tracing::info!(
         api_url = %config.api_url,
         model = %config.model,
         max_tokens = config.max_tokens,
-        "冲突检测器：LLM API 已配置，使用 HttpLlmDetector（语义级冲突检测，失败时降级为空报告）"
+        dedup_threshold = hybrid.dedup_threshold(),
+        "冲突检测器：LLM API 已配置，使用 HybridDetector（串联 Heuristic + LLM，失败时降级保留启发式结果）"
     );
-    std::sync::Arc::new(HttpLlmDetector::new(config))
+
+    std::sync::Arc::new(hybrid)
 }
 
 #[tokio::main]

@@ -192,7 +192,7 @@ impl ConflictDetector for NoopDetector {
 // HybridDetector（v2.11 串联检测器）
 // ============================================================================
 
-/// 混合冲突检测器（v2.11，v2.12 去重优化）
+/// 混合冲突检测器（v2.11，v2.12 精确去重，v2.14 语义去重）
 ///
 /// 串联两个检测器：先跑启发式（快速、无网络依赖），
 /// 再跑 LLM（语义级补充），合并两份报告。
@@ -201,10 +201,18 @@ impl ConflictDetector for NoopDetector {
 ///
 /// - **降级策略**：LLM 失败时返回空报告（与 `HttpLlmDetector` 行为一致），
 ///   启发式结果仍然保留
-/// - **去重（v2.12）**：基于 `(kind, new_fact)` 元组去重。启发式报告全部保留，
+/// - **去重（v2.12）**：基于 `(kind, new_fact)` 元组精确去重。启发式报告全部保留，
 ///   LLM 报告中与启发式 `(kind, new_fact)` 完全相同的冲突不重复加入
-///   （避免同一冲突被两个检测器同时报告，但保留 LLM 发现的语义级新冲突）
+/// - **语义去重（v2.14 新增）**：在精确去重基础上，增加字符 Jaccard 相似度比较。
+///   当两个冲突的 `kind` 相同且 `new_fact` 相似度 >= `dedup_threshold` 时，视为重复。
+///   默认阈值 0.7（中文短句经验值），可通过 [`with_dedup_threshold`] 配置
 /// - **使用场景**：同时配置了启发式 + LLM 检测器时使用
+///
+/// ## 语义去重示例
+///
+/// - heuristic: `DirectContradict(new_fact="用户不喜欢咖啡")`
+/// - LLM: `DirectContradict(new_fact="用户不再喜欢咖啡了")`
+/// - 相似度 ≈ 0.78 > 0.7 → 视为重复，只保留 heuristic 的 1 条
 ///
 /// ## 示例
 ///
@@ -215,7 +223,10 @@ impl ConflictDetector for NoopDetector {
 ///
 /// let heuristic = std::sync::Arc::new(HeuristicDetector::new());
 /// let llm = std::sync::Arc::new(HttpLlmDetector::new(config));
+/// // 默认阈值 0.7
 /// let hybrid = HybridDetector::new(heuristic, llm);
+/// // 自定义阈值
+/// let hybrid = HybridDetector::with_dedup_threshold(heuristic, llm, 0.8);
 /// let report = hybrid.detect(&update, &memory).await;
 /// ```
 #[derive(Clone)]
@@ -224,10 +235,17 @@ pub struct HybridDetector {
     heuristic: Arc<dyn ConflictDetector>,
     /// LLM 检测器（通常为 `HttpLlmDetector`）
     llm: Arc<dyn ConflictDetector>,
+    /// 语义去重阈值（v2.14 新增）
+    ///
+    /// 当两个冲突的 `kind` 相同且 `new_fact` 相似度 >= 此阈值时，视为重复。
+    /// - `0.0`：禁用语义去重（仅精确匹配，退化为 v2.12 行为）
+    /// - `1.0`：严格要求完全相同（等价于精确匹配）
+    /// - 默认 `0.7`：中文短句近义词替换场景经验值
+    dedup_threshold: f64,
 }
 
 impl HybridDetector {
-    /// 创建混合检测器
+    /// 创建混合检测器（默认语义去重阈值 0.7）
     ///
     /// ## 参数
     ///
@@ -237,7 +255,29 @@ impl HybridDetector {
         heuristic: Arc<dyn ConflictDetector>,
         llm: Arc<dyn ConflictDetector>,
     ) -> Self {
-        Self { heuristic, llm }
+        Self::with_dedup_threshold(heuristic, llm, 0.7)
+    }
+
+    /// 创建混合检测器（自定义语义去重阈值，v2.14 新增）
+    ///
+    /// ## 参数
+    ///
+    /// - `heuristic`：启发式检测器
+    /// - `llm`：LLM 检测器
+    /// - `dedup_threshold`：语义去重阈值，自动 clamp 到 `[0.0, 1.0]`
+    ///   - `0.0`：禁用语义去重（仅精确匹配）
+    ///   - `1.0`：严格精确匹配
+    ///   - 推荐 `0.6 ~ 0.8`：平衡去重效果与误判风险
+    pub fn with_dedup_threshold(
+        heuristic: Arc<dyn ConflictDetector>,
+        llm: Arc<dyn ConflictDetector>,
+        dedup_threshold: f64,
+    ) -> Self {
+        Self {
+            heuristic,
+            llm,
+            dedup_threshold: dedup_threshold.clamp(0.0, 1.0),
+        }
     }
 
     /// 启发式检测器引用（用于测试与诊断）
@@ -249,6 +289,73 @@ impl HybridDetector {
     pub fn llm(&self) -> &Arc<dyn ConflictDetector> {
         &self.llm
     }
+
+    /// 语义去重阈值（v2.14 新增）
+    pub fn dedup_threshold(&self) -> f64 {
+        self.dedup_threshold
+    }
+
+    /// 判断 `conflict` 是否与 `existing` 列表中的某条冲突语义重复（v2.14 新增）
+    ///
+    /// 判定规则：
+    /// 1. `kind` 必须相同（不同 kind 不去重）
+    /// 2. `new_fact` 精确匹配（v2.12 兼容，快速路径）
+    /// 3. `new_fact` 相似度 >= `dedup_threshold`（v2.14 语义去重，仅在阈值 > 0 时启用）
+    fn is_semantically_duplicate(
+        &self,
+        conflict: &ConflictRecord,
+        existing: &[ConflictRecord],
+    ) -> bool {
+        for existing_conflict in existing {
+            // 1. kind 必须相同
+            if conflict.kind != existing_conflict.kind {
+                continue;
+            }
+            // 2. 精确匹配（快速路径，兼容 v2.12）
+            if conflict.new_fact == existing_conflict.new_fact {
+                return true;
+            }
+            // 3. 语义相似度比较（v2.14，仅在阈值 > 0 时启用）
+            if self.dedup_threshold > 0.0 {
+                let sim = similarity(&conflict.new_fact, &existing_conflict.new_fact);
+                if sim >= self.dedup_threshold {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+}
+
+/// 计算两个字符串的字符 Jaccard 相似度（v2.14 新增）
+///
+/// 基于字符集合的 Jaccard 系数：`|A ∩ B| / |A ∪ B|`，范围 `[0.0, 1.0]`。
+///
+/// - `1.0`：完全相同（字符集合相同）
+/// - `0.0`：完全不同（无共同字符）
+///
+/// ## 特点
+///
+/// - 纯 std 实现，无外部依赖
+/// - 对中文短句效果可接受（字符级覆盖度高时判定为相似）
+/// - 局限：只看字符集合，不看顺序（"不喜欢" vs "欢不喜" 相似度 = 1.0）
+///   但冲突去重场景下，顺序不同但字符相同的情况极少，影响可忽略
+fn similarity(a: &str, b: &str) -> f64 {
+    // 空字符串无相似度（避免 0/0 未定义，且语义上空内容无可比较性）
+    if a.is_empty() || b.is_empty() {
+        return 0.0;
+    }
+    if a == b {
+        return 1.0;
+    }
+    let set_a: std::collections::HashSet<char> = a.chars().collect();
+    let set_b: std::collections::HashSet<char> = b.chars().collect();
+    let intersection = set_a.intersection(&set_b).count();
+    let union = set_a.union(&set_b).count();
+    if union == 0 {
+        return 0.0;
+    }
+    intersection as f64 / union as f64
 }
 
 #[async_trait]
@@ -264,19 +371,12 @@ impl ConflictDetector for HybridDetector {
         // 2. 再跑 LLM（语义级补充，失败时返回空报告不阻塞）
         let llm_report = self.llm.detect(update, existing_memory).await;
 
-        // 3. 合并报告：基于 (kind, new_fact) 元组去重（v2.12 优化）
+        // 3. 合并报告：语义去重（v2.12 精确匹配 + v2.14 相似度比较）
         //    - 启发式报告全部保留
-        //    - LLM 报告中与启发式 (kind, new_fact) 完全相同的冲突不重复加入
+        //    - LLM 报告中与启发式冲突（kind 相同 + new_fact 精确匹配或相似度 >= 阈值）不重复加入
         //    - LLM 报告为空时（降级或无冲突）不影响启发式结果
-        let existing_keys: std::collections::HashSet<(ConflictKind, String)> = report
-            .conflicts
-            .iter()
-            .map(|c| (c.kind.clone(), c.new_fact.clone()))
-            .collect();
-
         for conflict in llm_report.conflicts {
-            let key = (conflict.kind.clone(), conflict.new_fact.clone());
-            if !existing_keys.contains(&key) {
+            if !self.is_semantically_duplicate(&conflict, &report.conflicts) {
                 report.push(conflict);
             }
         }
@@ -734,5 +834,258 @@ mod tests {
             report.count()
         );
         assert!(report.has_critical());
+    }
+
+    // ========================================================================
+    // v2.14 新增：语义去重测试
+    // ========================================================================
+
+    #[test]
+    fn test_similarity_identical() {
+        // 完全相同 → 1.0
+        assert_eq!(similarity("用户不喜欢咖啡", "用户不喜欢咖啡"), 1.0);
+    }
+
+    #[test]
+    fn test_similarity_completely_different() {
+        // 完全不同（无共同字符）→ 0.0
+        assert_eq!(similarity("abc", "xyz"), 0.0);
+    }
+
+    #[test]
+    fn test_similarity_partial_overlap() {
+        // 部分重叠："用户不喜欢咖啡" vs "用户不再喜欢咖啡了"
+        // set_a = {用,户,不,喜,欢,咖,啡} = 7
+        // set_b = {用,户,不,再,喜,欢,了,咖,啡} = 9
+        // intersection = {用,户,不,喜,欢,咖,啡} = 7
+        // union = 9
+        // jaccard = 7/9 ≈ 0.778
+        let sim = similarity("用户不喜欢咖啡", "用户不再喜欢咖啡了");
+        assert!(
+            sim > 0.77 && sim < 0.78,
+            "相似度应在 0.778 附近，实际: {}",
+            sim
+        );
+    }
+
+    #[test]
+    fn test_similarity_empty_strings() {
+        assert_eq!(similarity("", ""), 0.0);
+        assert_eq!(similarity("", "abc"), 0.0);
+    }
+
+    #[test]
+    fn test_hybrid_detector_dedup_threshold_default() {
+        // v2.14：默认阈值 0.7
+        let heuristic: Arc<dyn ConflictDetector> = Arc::new(NoopDetector::new());
+        let llm: Arc<dyn ConflictDetector> = Arc::new(NoopDetector::new());
+        let hybrid = HybridDetector::new(heuristic, llm);
+        assert_eq!(hybrid.dedup_threshold(), 0.7);
+    }
+
+    #[test]
+    fn test_hybrid_detector_dedup_threshold_clamp() {
+        // v2.14：阈值自动 clamp 到 [0.0, 1.0]
+        let heuristic: Arc<dyn ConflictDetector> = Arc::new(NoopDetector::new());
+        let llm: Arc<dyn ConflictDetector> = Arc::new(NoopDetector::new());
+
+        let hybrid_neg = HybridDetector::with_dedup_threshold(heuristic.clone(), llm.clone(), -0.5);
+        assert_eq!(hybrid_neg.dedup_threshold(), 0.0, "负值应 clamp 到 0.0");
+
+        let hybrid_over = HybridDetector::with_dedup_threshold(heuristic.clone(), llm.clone(), 1.5);
+        assert_eq!(hybrid_over.dedup_threshold(), 1.0, "超过 1.0 应 clamp 到 1.0");
+
+        let hybrid_normal = HybridDetector::with_dedup_threshold(heuristic, llm, 0.85);
+        assert_eq!(hybrid_normal.dedup_threshold(), 0.85);
+    }
+
+    #[tokio::test]
+    async fn test_hybrid_detector_semantic_dedup_similar_new_fact() {
+        // v2.14：语义去重 - 相似 new_fact 应被去重
+        // heuristic: DirectContradict("用户不喜欢咖啡")
+        // LLM: DirectContradict("用户不再喜欢咖啡了") → 相似度 ≈ 0.778 > 0.7 → 去重
+        let heuristic: Arc<dyn ConflictDetector> =
+            Arc::new(crate::heuristic::HeuristicDetector::new());
+
+        let mut llm_report = ConflictReport::empty();
+        llm_report.push(ConflictRecord {
+            kind: ConflictKind::DirectContradict,
+            severity: Severity::Critical,
+            description: "LLM 语义级重复检测".to_string(),
+            existing_fact: Some("用户喜欢咖啡".to_string()),
+            new_fact: "用户不再喜欢咖啡了".to_string(), // 与 heuristic 相似但非精确匹配
+        });
+        let llm: Arc<dyn ConflictDetector> = Arc::new(MockDetector::new(llm_report));
+
+        // 默认阈值 0.7
+        let hybrid = HybridDetector::new(heuristic, llm);
+
+        let (update, memory) = make_heuristic_contradiction_case();
+        let report = hybrid.detect(&update, &memory).await;
+
+        // heuristic 1 + LLM 去重 1 = 1 条
+        assert_eq!(
+            report.count(),
+            1,
+            "相似 new_fact（相似度 > 0.7）应被语义去重，实际: {}",
+            report.count()
+        );
+        assert!(report.has_critical());
+    }
+
+    #[tokio::test]
+    async fn test_hybrid_detector_semantic_dedup_threshold_zero_disables() {
+        // v2.14：阈值 0.0 禁用语义去重（仅精确匹配）
+        // 相同场景：heuristic "用户不喜欢咖啡" vs LLM "用户不再喜欢咖啡了"
+        // 阈值 0.0 时不做相似度比较，且非精确匹配 → 不去重，保留 2 条
+        let heuristic: Arc<dyn ConflictDetector> =
+            Arc::new(crate::heuristic::HeuristicDetector::new());
+
+        let mut llm_report = ConflictReport::empty();
+        llm_report.push(ConflictRecord {
+            kind: ConflictKind::DirectContradict,
+            severity: Severity::Critical,
+            description: "LLM 语义级检测".to_string(),
+            existing_fact: Some("用户喜欢咖啡".to_string()),
+            new_fact: "用户不再喜欢咖啡了".to_string(),
+        });
+        let llm: Arc<dyn ConflictDetector> = Arc::new(MockDetector::new(llm_report));
+
+        // 阈值 0.0 禁用语义去重
+        let hybrid = HybridDetector::with_dedup_threshold(heuristic, llm, 0.0);
+
+        let (update, memory) = make_heuristic_contradiction_case();
+        let report = hybrid.detect(&update, &memory).await;
+
+        // 阈值 0.0 + 非精确匹配 → 不去重，保留 2 条
+        assert_eq!(
+            report.count(),
+            2,
+            "阈值 0.0 禁用语义去重，非精确匹配应保留 2 条，实际: {}",
+            report.count()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_hybrid_detector_semantic_dedup_threshold_one_strict() {
+        // v2.14：阈值 1.0 退化为精确匹配
+        // 相同场景：相似度 0.778 < 1.0 → 不去重，保留 2 条
+        let heuristic: Arc<dyn ConflictDetector> =
+            Arc::new(crate::heuristic::HeuristicDetector::new());
+
+        let mut llm_report = ConflictReport::empty();
+        llm_report.push(ConflictRecord {
+            kind: ConflictKind::DirectContradict,
+            severity: Severity::Critical,
+            description: "LLM 语义级检测".to_string(),
+            existing_fact: Some("用户喜欢咖啡".to_string()),
+            new_fact: "用户不再喜欢咖啡了".to_string(),
+        });
+        let llm: Arc<dyn ConflictDetector> = Arc::new(MockDetector::new(llm_report));
+
+        // 阈值 1.0 严格精确匹配
+        let hybrid = HybridDetector::with_dedup_threshold(heuristic, llm, 1.0);
+
+        let (update, memory) = make_heuristic_contradiction_case();
+        let report = hybrid.detect(&update, &memory).await;
+
+        // 阈值 1.0 + 非精确匹配 → 不去重，保留 2 条
+        assert_eq!(
+            report.count(),
+            2,
+            "阈值 1.0 退化为精确匹配，非精确匹配应保留 2 条，实际: {}",
+            report.count()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_hybrid_detector_semantic_dedup_high_threshold_keeps_dissimilar() {
+        // v2.14：高阈值 0.9 时，相似度 0.778 < 0.9 → 不去重
+        let heuristic: Arc<dyn ConflictDetector> =
+            Arc::new(crate::heuristic::HeuristicDetector::new());
+
+        let mut llm_report = ConflictReport::empty();
+        llm_report.push(ConflictRecord {
+            kind: ConflictKind::DirectContradict,
+            severity: Severity::Critical,
+            description: "LLM 语义级检测".to_string(),
+            existing_fact: Some("用户喜欢咖啡".to_string()),
+            new_fact: "用户不再喜欢咖啡了".to_string(),
+        });
+        let llm: Arc<dyn ConflictDetector> = Arc::new(MockDetector::new(llm_report));
+
+        let hybrid = HybridDetector::with_dedup_threshold(heuristic, llm, 0.9);
+
+        let (update, memory) = make_heuristic_contradiction_case();
+        let report = hybrid.detect(&update, &memory).await;
+
+        assert_eq!(
+            report.count(),
+            2,
+            "阈值 0.9 时相似度 0.778 < 0.9，不应去重，实际: {}",
+            report.count()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_hybrid_detector_semantic_dedup_low_threshold_catches_more() {
+        // v2.14：低阈值 0.4 时，"用户不喜欢咖啡" vs "用户讨厌咖啡"（相似度 ≈ 0.444）应被去重
+        let heuristic: Arc<dyn ConflictDetector> =
+            Arc::new(crate::heuristic::HeuristicDetector::new());
+
+        let mut llm_report = ConflictReport::empty();
+        llm_report.push(ConflictRecord {
+            kind: ConflictKind::DirectContradict,
+            severity: Severity::Critical,
+            description: "LLM 另一种表述".to_string(),
+            existing_fact: Some("用户喜欢咖啡".to_string()),
+            new_fact: "用户讨厌咖啡".to_string(), // 相似度 ≈ 0.444
+        });
+        let llm: Arc<dyn ConflictDetector> = Arc::new(MockDetector::new(llm_report));
+
+        // 低阈值 0.4：0.444 > 0.4 → 去重
+        let hybrid = HybridDetector::with_dedup_threshold(heuristic, llm, 0.4);
+
+        let (update, memory) = make_heuristic_contradiction_case();
+        let report = hybrid.detect(&update, &memory).await;
+
+        assert_eq!(
+            report.count(),
+            1,
+            "阈值 0.4 时相似度 0.444 > 0.4，应去重，实际: {}",
+            report.count()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_hybrid_detector_semantic_dedup_preserves_different_kind() {
+        // v2.14：语义去重不影响不同 kind 的冲突
+        // heuristic: DirectContradict("用户不喜欢咖啡")
+        // LLM: StanceReversal("用户不再喜欢咖啡了") → kind 不同，即使相似度高也不去重
+        let heuristic: Arc<dyn ConflictDetector> =
+            Arc::new(crate::heuristic::HeuristicDetector::new());
+
+        let mut llm_report = ConflictReport::empty();
+        llm_report.push(ConflictRecord {
+            kind: ConflictKind::StanceReversal, // 不同 kind
+            severity: Severity::Warning,
+            description: "LLM 立场反转".to_string(),
+            existing_fact: Some("用户喜欢咖啡".to_string()),
+            new_fact: "用户不再喜欢咖啡了".to_string(), // 相似度高但 kind 不同
+        });
+        let llm: Arc<dyn ConflictDetector> = Arc::new(MockDetector::new(llm_report));
+
+        let hybrid = HybridDetector::new(heuristic, llm);
+
+        let (update, memory) = make_heuristic_contradiction_case();
+        let report = hybrid.detect(&update, &memory).await;
+
+        // kind 不同 → 不去重，保留 2 条
+        assert_eq!(
+            report.count(),
+            2,
+            "kind 不同时即使相似度高也不应去重，实际: {}",
+            report.count()
+        );
     }
 }

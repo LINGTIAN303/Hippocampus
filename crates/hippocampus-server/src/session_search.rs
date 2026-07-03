@@ -1,4 +1,4 @@
-//! # Session 级索引隔离路由器（v2.8）+ LRU/TTL 内存管理（v2.9）
+//! # Session 级索引隔离路由器（v2.8）+ LRU/TTL 内存管理（v2.9）+ 严格 LRU 模式（v2.14）
 //!
 //! 解决 v2.5 批次 7 遗留的全局单例问题：BM25 索引和向量索引原为全局共享，
 //! 任意 session 的 /search 会返回其他 session 的结果。
@@ -24,13 +24,23 @@
 //! - session 首次访问时懒加载创建索引器
 //! - 未配置 Embedder 时降级为 `KeywordOnlyRetriever`
 //!
-//! ## 内存管理（v2.9 新增）
+//! ## 内存管理
+//!
+//! ### TinyLFU 模式（默认，v2.9）
 //!
 //! - **LRU 淘汰**：session 数量超过 `max_sessions` 时，淘汰最久未访问的 session
 //! - **TTL 过期**：session 索引在 `session_ttl` 时间内未被访问则自动释放
 //! - 默认：`max_sessions = 1000`，`session_ttl = 1 小时`
 //! - 底层使用 `moka::dash::Cache`，无锁并发 + 异步清理
-//! - 通过 [`SessionSearchRouterConfig`] 自定义参数
+//! - TinyLFU 是频率敏感的准入策略，高频访问的更易保留（不是严格 LRU）
+//!
+//! ### StrictLRU 模式（v2.14 新增）
+//!
+//! - **严格 LRU 淘汰**：最久未访问的 session 优先淘汰
+//! - **不支持 TTL**：仅按访问顺序淘汰，不支持时间过期
+//! - 底层使用 `lru::LruCache` + `tokio::sync::Mutex`，简单确定性
+//! - 适用于需要确定性淘汰策略的场景（如测试、严格容量控制）
+//! - 通过 [`SessionSearchRouterConfig::eviction_policy`] 切换
 
 use hippocampus_core::bm25::Bm25Searcher;
 use hippocampus_core::hybrid::{HybridRetriever, KeywordOnlyRetriever};
@@ -40,8 +50,10 @@ use hippocampus_core::semantic::{
 };
 use hippocampus_core::vector::InMemoryVectorIndex;
 use moka::future::Cache;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Mutex;
 
 // ============================================================================
 // SessionIndices：单个 session 的索引器集合
@@ -66,26 +78,72 @@ struct SessionIndices {
 }
 
 // ============================================================================
+// EvictionPolicy：驱逐策略（v2.14 新增）
+// ============================================================================
+
+/// Session 索引缓存驱逐策略（v2.14 新增）
+///
+/// 控制 [`SessionSearchRouter`] 内部缓存的淘汰行为。
+///
+/// ## 策略对比
+///
+/// | 策略 | 底层实现 | LRU 淘汰 | TTL 过期 | 并发模型 | 适用场景 |
+/// |------|---------|---------|---------|---------|---------|
+/// | `TinyLFU`（默认） | moka | 近似（频率敏感） | 支持 | 无锁 | 高并发生产环境 |
+/// | `StrictLRU` | lru crate | 严格 LRU | 不支持 | Mutex | 确定性淘汰、测试 |
+///
+/// ## 选择建议
+///
+/// - **默认用 `TinyLFU`**：moka 无锁并发性能好，TinyLFU 在大多数场景下命中率优于严格 LRU
+/// - **测试或需要确定性淘汰时用 `StrictLRU`**：严格按访问顺序淘汰，行为可预测
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvictionPolicy {
+    /// TinyLFU（moka 默认）：频率敏感的准入策略，高频访问的更易保留
+    ///
+    /// - 支持 LRU 淘汰（`max_sessions`）+ TTL 过期（`session_ttl`）
+    /// - 无锁并发，高吞吐
+    /// - TinyLFU 不是严格 LRU，新插入的 session 可能被拒绝准入
+    TinyLFU,
+    /// 严格 LRU：最久未访问的优先淘汰
+    ///
+    /// - 仅支持 LRU 淘汰（`max_sessions`），不支持 TTL 过期
+    /// - `tokio::sync::Mutex` 保护，简单确定性
+    /// - 适用于需要确定性淘汰策略的场景（如测试、严格容量控制）
+    StrictLRU,
+}
+
+impl Default for EvictionPolicy {
+    fn default() -> Self {
+        Self::TinyLFU
+    }
+}
+
+// ============================================================================
 // SessionSearchRouterConfig：配置
 // ============================================================================
 
-/// Session 索引路由器配置（v2.9 新增）
+/// Session 索引路由器配置（v2.9 新增，v2.14 扩展）
 ///
-/// 控制 LRU 淘汰上限和 TTL 过期时长。
+/// 控制 LRU 淘汰上限、TTL 过期时长和驱逐策略。
 ///
 /// ## 默认值
 ///
 /// - `max_sessions = 1000`：最多缓存 1000 个 session 的索引
-/// - `session_ttl = 1 小时`：session 索引空闲 1 小时后自动释放
+/// - `session_ttl = 1 小时`：session 索引空闲 1 小时后自动释放（仅 TinyLFU 模式生效）
 /// - `dim = 0`：向量维度（与 embedder 配合）
+/// - `eviction_policy = TinyLFU`：驱逐策略（v2.14 新增）
 #[derive(Debug, Clone)]
 pub struct SessionSearchRouterConfig {
     /// 最大 session 数（LRU 上限，超过则淘汰最久未访问的）
     pub max_sessions: usize,
     /// 单个 session 的空闲 TTL（自最后一次访问起算）
+    ///
+    /// 仅 `EvictionPolicy::TinyLFU` 模式生效，`StrictLRU` 模式忽略此字段。
     pub session_ttl: Duration,
     /// 向量维度（embedder 存在时使用）
     pub dim: usize,
+    /// 驱逐策略（v2.14 新增，默认 `TinyLFU`）
+    pub eviction_policy: EvictionPolicy,
 }
 
 impl Default for SessionSearchRouterConfig {
@@ -94,8 +152,26 @@ impl Default for SessionSearchRouterConfig {
             max_sessions: 1000,
             session_ttl: Duration::from_secs(3600), // 1 小时
             dim: 0,
+            eviction_policy: EvictionPolicy::default(),
         }
     }
+}
+
+// ============================================================================
+// SessionCache：内部缓存实现（v2.14 新增，enum 包装两种策略）
+// ============================================================================
+
+/// Session 缓存实现（v2.14 新增）
+///
+/// 根据 [`EvictionPolicy`] 选择底层缓存：
+///
+/// - `TinyLFU`：`moka::future::Cache`，无锁并发 + LRU + TTL
+/// - `StrictLRU`：`lru::LruCache` + `tokio::sync::Mutex`，严格 LRU
+enum SessionCache {
+    /// TinyLFU 模式（moka）：支持 LRU + TTL，无锁并发
+    TinyLFU(Cache<String, SessionIndices>),
+    /// 严格 LRU 模式（lru crate）：仅 LRU 淘汰，Mutex 保护
+    StrictLRU(Mutex<lru::LruCache<String, SessionIndices>>),
 }
 
 // ============================================================================
@@ -107,27 +183,49 @@ impl Default for SessionSearchRouterConfig {
 /// 按 session_id 路由到独立的子索引器，实现 session 间完全隔离。
 /// 替代 v2.5 的全局单例 `SearchIndexer` + `SemanticRetriever`。
 ///
-/// ## 内存管理（v2.9）
+/// ## 内存管理
+///
+/// ### TinyLFU 模式（默认，v2.9）
 ///
 /// - **LRU 淘汰**：session 数量超过 `max_sessions` 时，自动淘汰最久未访问的 session
 /// - **TTL 过期**：session 索引在 `session_ttl` 时间内未被访问则自动释放
 /// - 底层使用 `moka::dash::Cache`，无锁并发 + 异步清理
+/// - TinyLFU 是频率敏感的准入策略，高频访问的更易保留（不是严格 LRU）
+///
+/// ### StrictLRU 模式（v2.14 新增）
+///
+/// - **严格 LRU 淘汰**：最久未访问的 session 优先淘汰
+/// - **不支持 TTL**：仅按访问顺序淘汰
+/// - 底层使用 `lru::LruCache` + `tokio::sync::Mutex`
+/// - 适用于需要确定性淘汰策略的场景
 ///
 /// ## 创建
 ///
 /// 通常由 `main.rs` 从环境变量构造，注入到 `AppState.session_search`：
 ///
 /// ```rust,ignore
-/// // 默认配置（max=1000, ttl=1h）
+/// // 默认配置（TinyLFU, max=1000, ttl=1h）
 /// let router = SessionSearchRouter::new(Some(embedder), dim);
 ///
-/// // 自定义配置
+/// // 自定义配置（TinyLFU）
 /// let router = SessionSearchRouter::with_config(
 ///     Some(embedder),
 ///     SessionSearchRouterConfig {
 ///         max_sessions: 500,
 ///         session_ttl: Duration::from_secs(1800),
 ///         dim,
+///         eviction_policy: EvictionPolicy::TinyLFU,
+///     },
+/// );
+///
+/// // 严格 LRU 模式（v2.14）
+/// let router = SessionSearchRouter::with_config(
+///     Some(embedder),
+///     SessionSearchRouterConfig {
+///         max_sessions: 500,
+///         session_ttl: Duration::from_secs(3600), // StrictLRU 忽略此字段
+///         dim,
+///         eviction_policy: EvictionPolicy::StrictLRU,
 ///     },
 /// );
 /// ```
@@ -136,20 +234,17 @@ pub struct SessionSearchRouter {
     embedder: Option<Arc<dyn Embedder>>,
     /// 向量维度（embedder 存在时使用）
     dim: usize,
-    /// session → 独立索引器集合（moka 提供 LRU + TTI）
-    ///
-    /// - `max_capacity`：LRU 上限
-    /// - `time_to_idle`：自上次访问起多久未访问则淘汰（即 TTI，等同于空闲 TTL）
-    sessions: Cache<String, SessionIndices>,
+    /// session → 独立索引器集合（根据 eviction_policy 选择底层实现）
+    sessions: SessionCache,
 }
 
 impl SessionSearchRouter {
-    /// 创建 Session 级索引路由器（默认配置）
+    /// 创建 Session 级索引路由器（默认配置：TinyLFU 模式）
     ///
     /// - `embedder`：文本向量化器（None 时降级为仅关键词检索）
     /// - `dim`：向量维度（embedder 存在时使用）
     ///
-    /// 默认：`max_sessions = 1000`，`session_ttl = 1 小时`
+    /// 默认：`max_sessions = 1000`，`session_ttl = 1 小时`，`eviction_policy = TinyLFU`
     pub fn new(embedder: Option<Arc<dyn Embedder>>, dim: usize) -> Self {
         Self::with_config(
             embedder,
@@ -163,14 +258,27 @@ impl SessionSearchRouter {
     /// 创建 Session 级索引路由器（自定义配置）
     ///
     /// v2.9 新增，支持自定义 LRU 上限和 TTL 时长。
+    /// v2.14 扩展，支持 `eviction_policy` 选择 TinyLFU 或 StrictLRU。
     pub fn with_config(
         embedder: Option<Arc<dyn Embedder>>,
         config: SessionSearchRouterConfig,
     ) -> Self {
-        let sessions = Cache::builder()
-            .max_capacity(config.max_sessions as u64)
-            .time_to_idle(config.session_ttl)
-            .build();
+        let sessions = match config.eviction_policy {
+            EvictionPolicy::TinyLFU => {
+                let cache = Cache::builder()
+                    .max_capacity(config.max_sessions as u64)
+                    .time_to_idle(config.session_ttl)
+                    .build();
+                SessionCache::TinyLFU(cache)
+            }
+            EvictionPolicy::StrictLRU => {
+                // max_sessions 至少为 1（NonZeroUsize 要求）
+                let cap = NonZeroUsize::new(config.max_sessions.max(1))
+                    .expect("max_sessions 至少为 1");
+                let cache = lru::LruCache::new(cap);
+                SessionCache::StrictLRU(Mutex::new(cache))
+            }
+        };
         Self {
             embedder,
             dim: config.dim,
@@ -183,19 +291,37 @@ impl SessionSearchRouter {
     /// 首次访问时懒加载创建独立的 keyword + vector + retriever。
     /// `KeywordSearcher` 和 `VectorIndex` 在 indexer（写入）与 retriever（查询）间共享 Arc。
     ///
-    /// v2.9：底层切换到 moka 的 `try_get_with`（async），原子性地避免重复创建。
-    /// 闭包返回 `Infallible`（永不失败），外层 `expect` 安全。
+    /// - TinyLFU 模式：moka 的 `try_get_with`（async），原子性避免重复创建
+    /// - StrictLRU 模式：Mutex 保护，`get` 更新访问顺序，`put` 自动淘汰 LRU 端
     async fn get_or_create(&self, sid: &str) -> SessionIndices {
-        // clone embedder/dim 以便 move 进异步闭包
-        let embedder = self.embedder.clone();
-        let dim = self.dim;
-        self.sessions
-            .try_get_with(sid.to_string(), async move {
-                Ok::<SessionIndices, std::convert::Infallible>(Self::create_indices(&embedder, dim))
-            })
-            .await
-            .expect("Infallible 不会失败")
-            .clone()
+        match &self.sessions {
+            SessionCache::TinyLFU(cache) => {
+                // clone embedder/dim 以便 move 进异步闭包
+                let embedder = self.embedder.clone();
+                let dim = self.dim;
+                cache
+                    .try_get_with(sid.to_string(), async move {
+                        Ok::<SessionIndices, std::convert::Infallible>(
+                            Self::create_indices(&embedder, dim),
+                        )
+                    })
+                    .await
+                    .expect("Infallible 不会失败")
+                    .clone()
+            }
+            SessionCache::StrictLRU(cache) => {
+                let mut guard = cache.lock().await;
+                // get 会更新访问顺序（移到 MRU 端）
+                if let Some(indices) = guard.get(sid) {
+                    return indices.clone();
+                }
+                // 首次访问：创建并插入
+                // put 在容量满时自动淘汰 LRU 端（最久未访问的）
+                let indices = Self::create_indices(&self.embedder, self.dim);
+                guard.put(sid.to_string(), indices.clone());
+                indices
+            }
+        }
     }
 
     /// 创建单个 session 的索引器集合（无 IO，纯内存构造）
@@ -289,29 +415,55 @@ impl SessionSearchRouter {
 
     /// 获取已注册的 session 数量（供监控/测试）
     ///
-    /// 注意：moka 的 `entry_count` 是近似值，可能略高于实际有效条目。
-    /// 精确数量需调用 `run_pending_tasks().await` 后再读取。
+    /// 注意：
+    /// - TinyLFU 模式：moka 的 `entry_count` 是近似值，可能略高于实际有效条目。
+    ///   精确数量需调用 `run_pending_tasks().await` 后再读取。
+    /// - StrictLRU 模式：`lru::LruCache::len` 是精确值。
     pub fn session_count(&self) -> usize {
-        self.sessions.entry_count() as usize
+        match &self.sessions {
+            SessionCache::TinyLFU(cache) => cache.entry_count() as usize,
+            SessionCache::StrictLRU(cache) => {
+                // try_lock 避免在同步上下文中阻塞
+                cache.try_lock().map(|g| g.len()).unwrap_or(0)
+            }
+        }
     }
 
     /// 移除指定 session 的索引（手动清理）
     ///
     /// 返回是否成功移除（true = 之前存在）。
     ///
-    /// v2.9：moka 的 `invalidate` 是 async，本方法相应改为 async。
+    /// - TinyLFU 模式：moka 的 `invalidate` 是 async
+    /// - StrictLRU 模式：`lru::LruCache::pop` 是同步操作
     pub async fn remove_session(&self, sid: &str) -> bool {
-        let existed = self.sessions.contains_key(sid);
-        self.sessions.invalidate(sid).await;
-        existed
+        match &self.sessions {
+            SessionCache::TinyLFU(cache) => {
+                let existed = cache.contains_key(sid);
+                cache.invalidate(sid).await;
+                existed
+            }
+            SessionCache::StrictLRU(cache) => {
+                let mut guard = cache.lock().await;
+                guard.pop(sid).is_some()
+            }
+        }
     }
 
     /// 强制执行待处理的清理任务（测试用）
     ///
-    /// moka 的 LRU/TTL 清理是异步的，测试中需要调用本方法确保清理已执行。
-    /// 生产环境无需调用，moka 内部会定期清理。
+    /// - TinyLFU 模式：moka 的 LRU/TTL 清理是异步的，测试中需要调用本方法确保清理已执行。
+    /// - StrictLRU 模式：lru 的淘汰是同步的，本方法为兼容性保留（no-op）。
+    ///
+    /// 生产环境无需调用。
     pub async fn run_pending_tasks(&self) {
-        self.sessions.run_pending_tasks().await;
+        match &self.sessions {
+            SessionCache::TinyLFU(cache) => {
+                cache.run_pending_tasks().await;
+            }
+            SessionCache::StrictLRU(_) => {
+                // lru 的淘汰是同步的，无需异步清理
+            }
+        }
     }
 }
 
@@ -554,12 +706,14 @@ mod tests {
     #[tokio::test]
     async fn test_router_lru_eviction() {
         // max_sessions = 2，插入 3 个 session 后应淘汰最久未访问的
+        // TinyLFU 模式（moka）：频率敏感的准入策略
         let router = SessionSearchRouter::with_config(
             None,
             SessionSearchRouterConfig {
                 max_sessions: 2,
                 session_ttl: Duration::from_secs(3600), // 长 TTL，只测 LRU
                 dim: 0,
+                eviction_policy: EvictionPolicy::TinyLFU,
             },
         );
 
@@ -601,12 +755,14 @@ mod tests {
     #[tokio::test]
     async fn test_router_ttl_expiry() {
         // session_ttl = 100ms，等待 200ms 后应被清理
+        // TinyLFU 模式（moka）支持 TTL 过期
         let router = SessionSearchRouter::with_config(
             None,
             SessionSearchRouterConfig {
                 max_sessions: 1000, // 足够大，只测 TTL
                 session_ttl: Duration::from_millis(100),
                 dim: 0,
+                eviction_policy: EvictionPolicy::TinyLFU,
             },
         );
 
@@ -653,6 +809,14 @@ mod tests {
         assert_eq!(config.max_sessions, 1000);
         assert_eq!(config.session_ttl, Duration::from_secs(3600));
         assert_eq!(config.dim, 0);
+        // v2.14：默认驱逐策略为 TinyLFU
+        assert_eq!(config.eviction_policy, EvictionPolicy::TinyLFU);
+    }
+
+    #[test]
+    fn test_eviction_policy_default() {
+        // v2.14：EvictionPolicy::default() == TinyLFU
+        assert_eq!(EvictionPolicy::default(), EvictionPolicy::TinyLFU);
     }
 
     #[tokio::test]
@@ -675,6 +839,7 @@ mod tests {
                 max_sessions: 2,
                 session_ttl: Duration::from_secs(3600),
                 dim: 0,
+                eviction_policy: EvictionPolicy::TinyLFU,
             },
         );
 
@@ -702,5 +867,197 @@ mod tests {
             !results1.is_empty(),
             "sess-1 多次访问过，应被 TinyLFU 保留"
         );
+    }
+
+    // ============================================================================
+    // v2.14 新增：StrictLRU 模式测试
+    // ============================================================================
+
+    #[tokio::test]
+    async fn test_router_strict_lru_eviction() {
+        // StrictLRU 模式：max_sessions=2，插入 3 个 session 后，
+        // 最久未访问的 sess-1 应被**严格**淘汰（与 TinyLFU 的频率敏感行为不同）
+        let router = SessionSearchRouter::with_config(
+            None,
+            SessionSearchRouterConfig {
+                max_sessions: 2,
+                session_ttl: Duration::from_secs(3600), // StrictLRU 忽略此字段
+                dim: 0,
+                eviction_policy: EvictionPolicy::StrictLRU,
+            },
+        );
+
+        router
+            .index_hook("sess-1", &make_hook("标题1", vec![]))
+            .await;
+        router
+            .index_hook("sess-2", &make_hook("标题2", vec![]))
+            .await;
+
+        // 访问 sess-1，使其成为最近访问（MRU 端）
+        // 这样 sess-2 成为 LRU 端
+        let _ = router.search("sess-1", "标题1", 5).await.unwrap();
+
+        // 插入 sess-3（触发容量压力）
+        // 严格 LRU 应淘汰 sess-2（最久未访问）
+        router
+            .index_hook("sess-3", &make_hook("标题3", vec![]))
+            .await;
+
+        // StrictLRU 淘汰是同步的，无需 run_pending_tasks
+        assert_eq!(
+            router.session_count(),
+            2,
+            "StrictLRU 应严格保持 max_sessions=2"
+        );
+
+        // sess-1 是最近访问过的，应保留
+        let results1 = router.search("sess-1", "标题1", 5).await.unwrap();
+        assert!(
+            !results1.is_empty(),
+            "sess-1 最近访问过，应被 StrictLRU 保留"
+        );
+
+        // sess-3 是最新插入的，应保留
+        let results3 = router.search("sess-3", "标题3", 5).await.unwrap();
+        assert!(
+            !results3.is_empty(),
+            "sess-3 最新插入，应被 StrictLRU 保留"
+        );
+
+        // sess-2 是最久未访问的，应被严格淘汰
+        // 淘汰后重新 search 会创建新的空索引，返回空结果
+        let results2 = router.search("sess-2", "标题2", 5).await.unwrap();
+        assert!(
+            results2.is_empty(),
+            "sess-2 应被 StrictLRU 严格淘汰（淘汰后重建为空索引）"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_router_strict_lru_no_ttl() {
+        // StrictLRU 模式不支持 TTL 过期
+        // 即使设置了短 TTL，session 在 max_sessions 范围内也不会因超时被清理
+        let router = SessionSearchRouter::with_config(
+            None,
+            SessionSearchRouterConfig {
+                max_sessions: 1000, // 足够大，不触发 LRU 淘汰
+                session_ttl: Duration::from_millis(100), // 短 TTL，但 StrictLRU 应忽略
+                dim: 0,
+                eviction_policy: EvictionPolicy::StrictLRU,
+            },
+        );
+
+        router
+            .index_hook("sess-1", &make_hook("标题", vec![]))
+            .await;
+        assert_eq!(router.session_count(), 1);
+
+        // 等待远超 TTL 的时长
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        // StrictLRU 不支持 TTL，session 应仍存在
+        assert_eq!(
+            router.session_count(),
+            1,
+            "StrictLRU 模式不支持 TTL，session 应仍存在"
+        );
+
+        // 且仍可搜索到内容（未被清理）
+        let results = router.search("sess-1", "标题", 5).await.unwrap();
+        assert!(
+            !results.is_empty(),
+            "StrictLRU 模式下 session 内容应保留（不受 TTL 影响）"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_router_strict_lru_remove_session() {
+        // StrictLRU 模式下移除 session
+        let router = SessionSearchRouter::with_config(
+            None,
+            SessionSearchRouterConfig {
+                max_sessions: 100,
+                session_ttl: Duration::from_secs(3600),
+                dim: 0,
+                eviction_policy: EvictionPolicy::StrictLRU,
+            },
+        );
+
+        router
+            .index_hook("sess-1", &make_hook("标题", vec![]))
+            .await;
+        assert_eq!(router.session_count(), 1);
+
+        // 移除存在的 session → 返回 true
+        assert!(
+            router.remove_session("sess-1").await,
+            "移除存在的 session 应返回 true"
+        );
+        assert_eq!(router.session_count(), 0);
+
+        // 移除不存在的 session → 返回 false
+        assert!(
+            !router.remove_session("sess-1").await,
+            "移除不存在的 session 应返回 false"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_router_strict_lru_session_isolation() {
+        // StrictLRU 模式下验证 session 隔离（与 TinyLFU 行为一致）
+        let router = SessionSearchRouter::with_config(
+            None,
+            SessionSearchRouterConfig {
+                max_sessions: 100,
+                session_ttl: Duration::from_secs(3600),
+                dim: 0,
+                eviction_policy: EvictionPolicy::StrictLRU,
+            },
+        );
+
+        let hook1 = make_hook("Rust 编程", vec![]);
+        let hook2 = make_hook("Python 编程", vec![]);
+
+        router.index_hook("sess-1", &hook1).await;
+        router.index_hook("sess-2", &hook2).await;
+
+        // 隔离验证：sess-1 搜索 Rust 应找到 hook1
+        let r1 = router.search("sess-1", "Rust", 5).await.unwrap();
+        assert!(!r1.is_empty(), "sess-1 应找到 Rust");
+        assert_eq!(r1[0].hook_id, hook1.id.to_string());
+
+        // 隔离验证：sess-1 搜索 Python 不应找到 hook2
+        let r1_py = router.search("sess-1", "Python", 5).await.unwrap();
+        assert!(
+            r1_py.is_empty()
+                || !r1_py.iter().any(|r| r.hook_id == hook2.id.to_string()),
+            "StrictLRU 模式下 sess-1 不应搜到 sess-2 的内容"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_router_strict_lru_with_embedder() {
+        // StrictLRU 模式 + Embedder 完整模式验证
+        let embedder: Arc<dyn Embedder> = Arc::new(MockEmbedder::new(8));
+        let router = SessionSearchRouter::with_config(
+            Some(embedder),
+            SessionSearchRouterConfig {
+                max_sessions: 100,
+                session_ttl: Duration::from_secs(3600),
+                dim: 8,
+                eviction_policy: EvictionPolicy::StrictLRU,
+            },
+        );
+
+        let hook = make_hook("Rust 安全编程", vec!["所有权".into()]);
+        router.index_hook("sess-1", &hook).await;
+
+        let results = router.search("sess-1", "Rust", 5).await.unwrap();
+        assert!(
+            !results.is_empty(),
+            "StrictLRU + Embedder 模式应可正常搜索"
+        );
+        assert_eq!(results[0].hook_id, hook.id.to_string());
     }
 }
