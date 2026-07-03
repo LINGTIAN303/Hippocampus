@@ -15,6 +15,18 @@
 //! | `HIPPOCAMPUS_EMBEDDER_TIMEOUT` | 超时秒数 | `30` |
 //!
 //! 未配置 `API_URL` 时，自动降级为 `KeywordOnlyRetriever`（仅 BM25 关键词检索）。
+//!
+//! ## 冲突检测配置（v2.10）
+//!
+//! | 环境变量 | 说明 | 默认值 |
+//! |---------|------|--------|
+//! | `HIPPOCAMPUS_DETECTOR_API_URL` | LLM API 地址（OpenAI 兼容 `/v1/chat/completions`） | 空（降级为 HeuristicDetector） |
+//! | `HIPPOCAMPUS_DETECTOR_API_KEY` | API Key | 空 |
+//! | `HIPPOCAMPUS_DETECTOR_MODEL` | 模型名 | `gpt-4o-mini` |
+//! | `HIPPOCAMPUS_DETECTOR_TIMEOUT` | 超时秒数 | `30` |
+//! | `HIPPOCAMPUS_DETECTOR_MAX_TOKENS` | LLM 最大输出 token | `500` |
+//!
+//! 未配置 `API_URL` 时，使用 `HeuristicDetector`（启发式纯算法，无 LLM 依赖）。
 
 use hippocampus_server::{create_router, AppState, Config};
 use std::sync::Arc;
@@ -69,6 +81,47 @@ fn build_session_search() -> Option<Arc<hippocampus_server::SessionSearchRouter>
     Some(Arc::new(SessionSearchRouter::new(Some(embedder), dim)))
 }
 
+/// 从环境变量构造冲突检测器（v2.10）
+///
+/// - 配置了 `HIPPOCAMPUS_DETECTOR_API_URL` + `API_KEY`：返回 `HttpLlmDetector`（LLM 语义级检测）
+/// - 未配置：返回 `HeuristicDetector`（启发式纯算法，无 LLM 依赖）
+fn build_conflict_detector() -> std::sync::Arc<dyn hippocampus_core::conflict::ConflictDetector> {
+    use hippocampus_server::{HttpLlmDetector, LlmDetectorConfig};
+
+    let api_url = std::env::var("HIPPOCAMPUS_DETECTOR_API_URL").unwrap_or_default();
+    let api_key = std::env::var("HIPPOCAMPUS_DETECTOR_API_KEY").unwrap_or_default();
+
+    if api_url.is_empty() || api_key.is_empty() {
+        tracing::info!(
+            "冲突检测器：未配置 LLM API，使用 HeuristicDetector（启发式纯算法，三维度检测）"
+        );
+        return std::sync::Arc::new(hippocampus_core::heuristic::HeuristicDetector::new());
+    }
+
+    let config = LlmDetectorConfig {
+        api_url,
+        api_key,
+        model: std::env::var("HIPPOCAMPUS_DETECTOR_MODEL")
+            .unwrap_or_else(|_| "gpt-4o-mini".to_string()),
+        timeout_secs: std::env::var("HIPPOCAMPUS_DETECTOR_TIMEOUT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(30),
+        max_tokens: std::env::var("HIPPOCAMPUS_DETECTOR_MAX_TOKENS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(500),
+    };
+
+    tracing::info!(
+        api_url = %config.api_url,
+        model = %config.model,
+        max_tokens = config.max_tokens,
+        "冲突检测器：LLM API 已配置，使用 HttpLlmDetector（语义级冲突检测，失败时降级为空报告）"
+    );
+    std::sync::Arc::new(HttpLlmDetector::new(config))
+}
+
 #[tokio::main]
 async fn main() {
     // 初始化日志
@@ -87,10 +140,8 @@ async fn main() {
     // v2.8：构造 Session 级索引隔离路由器（替代 v2.5 全局单例）
     let session_search = build_session_search();
 
-    // v2.6 批次 8：构造冲突检测器（默认 HeuristicDetector）
-    let conflict_detector: Option<std::sync::Arc<dyn hippocampus_core::conflict::ConflictDetector>> =
-        Some(std::sync::Arc::new(hippocampus_core::heuristic::HeuristicDetector::new()));
-    tracing::info!("冲突检测器已启用（HeuristicDetector，三维度检测）");
+    // v2.10：构造冲突检测器（环境变量驱动：LLM 优先，降级为 HeuristicDetector）
+    let conflict_detector = Some(build_conflict_detector());
 
     let state = AppState {
         storage_root: config.storage_root.clone(),
