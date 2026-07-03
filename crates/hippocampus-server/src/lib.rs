@@ -34,7 +34,7 @@ pub use embedding::{EmbedderConfig, HttpEmbedder};
 pub use error::AppError;
 pub use llm::HttpLlmScorer;
 pub use search::SearchIndexer;
-pub use session_search::SessionSearchRouter;
+pub use session_search::{SessionSearchRouter, SessionSearchRouterConfig};
 
 use std::path::PathBuf;
 
