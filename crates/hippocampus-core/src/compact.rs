@@ -28,7 +28,7 @@
 //! [`Compactor`] 持有 `Arc<dyn Storage>`，与 [`Archiver`] / [`Retriever`] 一致。
 //! 构造时绑定 session_id 和 project_id，全封装周期任务。
 
-use crate::model::{ArchivePeriod, IndexDocument, MemoryFile, MessageTurn, Tag};
+use crate::model::{ArchivePeriod, IndexDocument, MemoryFile, MessageTurn, Summary, Tag};
 use crate::score::Scorer;
 use crate::storage::Storage;
 use std::sync::Arc;
@@ -203,12 +203,53 @@ impl Compactor {
             IndexDocument::new(self.session_id.clone(), self.project_id.clone(), ArchivePeriod::Weekly);
 
         if let Some(daily_doc) = daily_index {
+            // v2.4: 为 weekly 钩子生成 richer Summary（启发式）
+            // 合并所有 daily 钩子的标题作为 abstract_text
+            // 提取所有 daily 钩子的标签作为 key_entities
+            let daily_titles: Vec<String> = daily_doc
+                .hooks
+                .iter()
+                .map(|h| h.summary.title.clone())
+                .collect();
+            let abstract_text = if daily_titles.is_empty() {
+                None
+            } else {
+                Some(format!("本周合并了 {} 个日级记忆：{}", daily_titles.len(), daily_titles.join("；")))
+            };
+
+            // key_entities：从标签中提取实体（去重）
+            let mut entities: Vec<String> = Vec::new();
+            for hook in &daily_doc.hooks {
+                for tag in &hook.tags {
+                    let tag_str = tag.to_string();
+                    if !entities.contains(&tag_str) {
+                        entities.push(tag_str);
+                    }
+                }
+            }
+
+            // key_facts：从 daily 钩子标题中提取（每个标题作为一条事实）
+            let key_facts: Vec<String> = daily_doc
+                .hooks
+                .iter()
+                .map(|h| h.summary.title.clone())
+                .collect();
+
             for hook in &daily_doc.hooks {
                 // 钩子重新生成，指向新的 weekly 记忆文件
                 let mut new_hook = hook.clone();
-                new_hook.memory_file_id = merged_memory.id;
-                new_hook.memory_file_path = memory_path.clone();
+                new_hook.memory_id = memory_path.clone();
                 new_hook.period = ArchivePeriod::Weekly;
+
+                // v2.4: 升级 Summary 为 richer 版本（启发式）
+                new_hook.summary = Summary {
+                    title: format!("周度合并（{} 个记忆）", daily_doc.hooks.len()),
+                    abstract_text: abstract_text.clone(),
+                    key_facts: key_facts.clone(),
+                    key_entities: entities.clone(),
+                    clue_anchors: Vec::new(), // 月级才有
+                };
+
                 weekly_index.add_hook(new_hook);
             }
         }
@@ -341,8 +382,7 @@ impl Compactor {
             for hook in &weekly_doc.hooks {
                 // 钩子重新生成，指向新的 monthly 记忆文件
                 let mut new_hook = hook.clone();
-                new_hook.memory_file_id = main_memory.id;
-                new_hook.memory_file_path = memory_path.clone();
+                new_hook.memory_id = memory_path.clone();
                 new_hook.period = ArchivePeriod::Monthly;
                 monthly_index.add_hook(new_hook);
             }

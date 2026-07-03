@@ -10,6 +10,8 @@
 //! - [`compact`]：周期任务（周去重合并 / 月评分淘汰）
 //! - [`score`]：评分 trait + 默认启发式实现
 //! - [`storage`]：存储后端 trait + 默认本地文件树实现
+//! - [`sqlite`]：SQLite 存储后端（rusqlite + r2d2 连接池 + WAL 模式）
+//! - [`serialization`]：序列化格式（JSON / MessagePack 双格式支持）
 //! - [`migrator`]：Schema 版本迁移
 //!
 //! ## 索引管理职责分配
@@ -32,10 +34,14 @@
 
 pub mod archive;
 pub mod compact;
+/// 序列化格式（JSON / MessagePack 双格式支持）
+pub mod serialization;
 pub mod migrator;
 pub mod model;
 pub mod retrieve;
 pub mod score;
+/// SQLite 存储后端（rusqlite + r2d2 连接池 + WAL 模式）
+pub mod sqlite;
 pub mod storage;
 
 /// Crate 级错误类型

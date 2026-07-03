@@ -1,0 +1,37 @@
+[package]
+name = "hippocampus-bench"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Hippocampus 基准测试与并发测试 - 独立 bench crate"
+publish = false  # 不发布到 crates.io
+
+[dependencies]
+hippocampus-core = { path = "../hippocampus-core" }
+hippocampus-server = { path = "../hippocampus-server" }
+tokio = { workspace = true, features = ["full"] }
+serde_json.workspace = true
+chrono.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+tempfile.workspace = true
+criterion.workspace = true
+async-trait.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+
+# criterion 基准测试入口
+# 运行方式：cargo bench -p hippocampus-bench
+[[bench]]
+name = "core_operations"
+harness = false  # criterion 自定义 main
+
+[[bench]]
+name = "backend_compare"
+harness = false
+
+[[bench]]
+name = "format_compare"
+harness = false

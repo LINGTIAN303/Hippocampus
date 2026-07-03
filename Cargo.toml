@@ -10,6 +10,7 @@ members = [
     "crates/hippocampus-server",
     "crates/hippocampus-python",
     "crates/hippocampus-mcp",
+    "crates/hippocampus-bench",
 ]
 
 [workspace.package]
@@ -38,8 +39,17 @@ thiserror = "1.0"
 tracing = "0.1"
 # 异步 trait
 async-trait = "0.1"
-# 异步运行时（LocalStorage 文件 IO 用 tokio::fs）
-tokio = { version = "1.0", features = ["fs", "sync", "io-util"] }
+# 异步运行时（LocalStorage 文件 IO 用 tokio::fs；SqliteStorage 用 spawn_blocking 需要 rt）
+tokio = { version = "1.0", features = ["fs", "sync", "io-util", "rt"] }
+# MessagePack 序列化（双格式支持）
+rmp-serde = "1.3"
+# SQLite 嵌入式数据库（bundled 静态编译，免系统依赖）
+rusqlite = { version = "0.32", features = ["bundled"] }
+# 连接池（SQLite WAL 并发读）
+r2d2 = "0.8"
+r2d2_sqlite = "0.25"
+# 细粒度并发锁（per session/project）
+dashmap = "6.1"
 # HTTP 框架（v2 服务层）
 axum = "0.8"
 tower-http = { version = "0.7", features = ["trace", "cors", "compression-gzip"] }
@@ -48,6 +58,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 pyo3 = { version = "0.29", features = ["extension-module"] }
 # MCP 协议（v2.3 rmcp）
 rmcp = { version = "1.7", features = ["schemars", "transport-io"] }
+# 基准测试（v2.4 批次 4）
+criterion = { version = "0.5", features = ["async_tokio"] }
+# 临时目录（测试/基准测试用）
+tempfile = "3.0"
 
 [profile.release]
 opt-level = 3
@@ -57,4 +71,9 @@ strip = true
 
 [profile.dev]
 opt-level = 0
+debug = true
+
+# criterion 基准测试专用 profile（继承 release，但保留调试符号便于分析）
+[profile.bench]
+inherits = "release"
 debug = true

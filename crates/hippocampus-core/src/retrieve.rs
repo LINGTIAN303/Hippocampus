@@ -27,15 +27,30 @@ use std::sync::Arc;
 
 /// 摘要视图（用于注入 system prompt）
 ///
-/// 仅包含轻量信息，避免占用过多上下文。
+/// v2.4 升级：暴露完整结构化摘要字段，支持分级渲染。
+/// - 日级：仅 title（启发式生成）
+/// - 周级：title + abstract_text + key_facts + key_entities（LLM 生成）
+/// - 月级：全字段含 clue_anchors（LLM 生成）
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SummaryView {
     /// 钩子 ID（UUID 字符串形式）
     pub hook_id: String,
-    /// 指向的记忆文件 ID
-    pub memory_file_id: String,
-    /// 摘要标题
+    /// 指向的记忆文件 ID（LocalStorage 为路径，SQLite 为 UUID）
+    pub memory_id: String,
+    /// 摘要标题（从 IndexHook.summary.title 提取，向后兼容）
     pub summary_title: String,
+    /// 抽象摘要（2-3 句话，提炼主题；日级为 None）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub abstract_text: Option<String>,
+    /// 关键事实（事实级别，可被直接引用；日级为空）
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub key_facts: Vec<String>,
+    /// 关键实体（人名/项目名/技术名词等；日级为空）
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub key_entities: Vec<String>,
+    /// 线索锚点（用于检索匹配的关键词；月级才有）
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub clue_anchors: Vec<String>,
     /// 标签集合（中文显示，通过 Tag Display 转换）
     pub tags: Vec<String>,
     /// 归档时间（RFC3339）
@@ -44,18 +59,26 @@ pub struct SummaryView {
     pub period: String,
     /// Token 数
     pub token_count: usize,
+    /// 是否为高级摘要（含 abstract 或 key_facts）
+    #[serde(skip)]
+    pub is_rich: bool,
 }
 
 impl From<&IndexHook> for SummaryView {
     fn from(hook: &IndexHook) -> Self {
         Self {
             hook_id: hook.id.to_string(),
-            memory_file_id: hook.memory_file_id.to_string(),
-            summary_title: hook.summary_title.clone(),
+            memory_id: hook.memory_id.clone(),
+            summary_title: hook.summary.title.clone(),
+            abstract_text: hook.summary.abstract_text.clone(),
+            key_facts: hook.summary.key_facts.clone(),
+            key_entities: hook.summary.key_entities.clone(),
+            clue_anchors: hook.summary.clue_anchors.clone(),
             tags: hook.tags.iter().map(|t| t.to_string()).collect(),
             archived_at: hook.archived_at.to_rfc3339(),
             period: hook.period.as_dir_name().to_string(),
             token_count: hook.token_count,
+            is_rich: hook.summary.is_rich(),
         }
     }
 }
@@ -94,11 +117,17 @@ impl Retriever {
         let mut all_summaries = Vec::new();
 
         for period in ArchivePeriod::all() {
-            if let Some(doc) = self
-                .storage
-                .read_index(&self.session_id, self.project_id.as_deref(), period)
-                .await?
-            {
+            // v2.4: 有 project_id 时走 project 级聚合索引（跨 session 共享）
+            // 无 project_id 时走 session 级索引（隔离）
+            let doc = if let Some(pid) = &self.project_id {
+                self.storage.read_project_index(pid, period).await?
+            } else {
+                self.storage
+                    .read_index(&self.session_id, None, period)
+                    .await?
+            };
+
+            if let Some(doc) = doc {
                 for hook in &doc.hooks {
                     all_summaries.push(SummaryView::from(hook));
                 }
@@ -111,9 +140,18 @@ impl Retriever {
         Ok(all_summaries)
     }
 
-    /// 渲染摘要视图为 system prompt 文本
+    /// 渲染摘要视图为 system prompt 文本（v2.4 分级渲染）
     ///
-    /// 格式：按周期分组，每个钩子一行（ID + 标题 + 标签 + 时间）。
+    /// **分级渲染策略**：
+    /// - 日级（daily）：仅标题 + 标签（轻量，避免上下文膨胀）
+    /// - 周级（weekly）：标题 + abstract + key_facts + key_entities（结构化摘要）
+    /// - 月级（monthly）：全字段含 clue_anchors（最详细）
+    ///
+    /// **高价值片段自动展开**：
+    /// - 含 ToolCall/Thinking/CodeBlock 等标签的 daily 钩子，自动展开 key_facts（若有）
+    /// - 高价值判定：tags 含 "工具调用"/"思考过程"/"代码块"/"文件附件"/"图片"/"视频"
+    ///
+    /// 格式：按周期分组，每个钩子按层级展示。
     /// 若无任何记忆，返回空字符串。
     pub async fn render_to_system_prompt(&self) -> crate::Result<String> {
         let summaries = self.get_summaries().await?;
@@ -124,6 +162,16 @@ impl Retriever {
 
         let mut out = String::from("# 可用记忆索引\n\n");
         out.push_str("以下是可用的历史记忆摘要，可直接基于此信息回答用户问题：\n\n");
+
+        // 高价值标签集合（自动展开判定）
+        const HIGH_VALUE_TAGS: &[&str] = &[
+            "工具调用",
+            "思考过程",
+            "代码块",
+            "文件附件",
+            "图片",
+            "视频",
+        ];
 
         // 按周期分组
         for period in ArchivePeriod::all() {
@@ -154,10 +202,36 @@ impl Retriever {
                     "- **{}**{}（{} tokens, at {}）\n",
                     s.summary_title, tags_str, s.token_count, s.archived_at
                 ));
-                out.push_str(&format!(
-                    "  - 记忆 ID: `{}`\n",
-                    s.hook_id
-                ));
+                out.push_str(&format!("  - 记忆 ID: `{}`\n", s.hook_id));
+
+                // 分级渲染：根据周期层级展示不同详细度
+                let should_expand = match period {
+                    ArchivePeriod::Daily => {
+                        // 日级：仅高价值片段展开 key_facts
+                        s.tags.iter().any(|t| HIGH_VALUE_TAGS.contains(&t.as_str()))
+                            && !s.key_facts.is_empty()
+                    }
+                    ArchivePeriod::Weekly => s.is_rich,
+                    ArchivePeriod::Monthly => true, // 月级全展开
+                };
+
+                if should_expand {
+                    if let Some(abs) = &s.abstract_text {
+                        out.push_str(&format!("  - 摘要：{}\n", abs));
+                    }
+                    if !s.key_facts.is_empty() {
+                        out.push_str("  - 关键事实：\n");
+                        for fact in &s.key_facts {
+                            out.push_str(&format!("    - {}\n", fact));
+                        }
+                    }
+                    if !s.key_entities.is_empty() {
+                        out.push_str(&format!("  - 关键实体：{}\n", s.key_entities.join(", ")));
+                    }
+                    if !s.clue_anchors.is_empty() {
+                        out.push_str(&format!("  - 线索锚点：{}\n", s.clue_anchors.join(", ")));
+                    }
+                }
             }
             out.push('\n');
         }
@@ -169,7 +243,7 @@ impl Retriever {
     ///
     /// 流程：
     /// 1. 从所有周期的索引文档中查找对应 hook_id
-    /// 2. 获取该钩子指向的 memory_file_path
+    /// 2. 获取该钩子指向的 memory_id
     /// 3. 从 Storage 读取完整 MemoryFile
     pub async fn retrieve_memory(&self, hook_id: &str) -> crate::Result<MemoryFile> {
         // 在所有周期中查找钩子
@@ -182,7 +256,7 @@ impl Retriever {
                 for hook in &doc.hooks {
                     if hook.id.to_string() == hook_id {
                         // 找到钩子，读取对应的记忆文件
-                        return self.storage.read_memory(&hook.memory_file_path).await;
+                        return self.storage.read_memory(&hook.memory_id).await;
                     }
                 }
             }
@@ -192,6 +266,29 @@ impl Retriever {
             "未找到钩子 ID: {}",
             hook_id
         )))
+    }
+
+    /// 按 hook_id 查找对应的 memory_id（v2.4 批次 3 新增）
+    ///
+    /// 用于 update_memory 场景：先通过 hook_id 定位到 memory_id，
+    /// 再调用 Storage::update_memory 执行更新。
+    ///
+    /// 返回 None 表示未找到对应钩子。
+    pub async fn find_memory_id_by_hook(&self, hook_id: &str) -> Option<String> {
+        for period in ArchivePeriod::all() {
+            if let Ok(Some(doc)) = self
+                .storage
+                .read_index(&self.session_id, self.project_id.as_deref(), period)
+                .await
+            {
+                for hook in &doc.hooks {
+                    if hook.id.to_string() == hook_id {
+                        return Some(hook.memory_id.clone());
+                    }
+                }
+            }
+        }
+        None
     }
 
     /// 按 session + period 获取索引文档（高级接口）
@@ -266,7 +363,7 @@ mod tests {
         let mut archiver = Archiver::new(config, storage.clone(), "sess-r1", None);
         archiver.push_turn(make_turn("第一次对话内容", 60));
         archiver.push_turn(make_turn("第二次对话内容", 50));
-        let (memory, hook) = archiver.archive().await.unwrap();
+        let (_memory, hook) = archiver.archive().await.unwrap();
 
         // 用 Retriever 检索
         let retriever = Retriever::new(storage.clone(), "sess-r1", None);
@@ -275,7 +372,9 @@ mod tests {
 
         let s = &summaries[0];
         assert_eq!(s.hook_id, hook.id.to_string());
-        assert_eq!(s.memory_file_id, memory.id.to_string());
+        // v2.4: memory_id 是相对路径（如 sessions/sess-r1/daily/xxx.json），不是 UUID
+        assert!(s.memory_id.starts_with("sessions/sess-r1/daily/"));
+        assert!(s.memory_id.ends_with(".json"));
         assert!(s.summary_title.contains("第一次对话内容"));
         assert!(s.tags.contains(&"文本消息".to_string()));
         assert!(s.tags.contains(&"代码块".to_string()));

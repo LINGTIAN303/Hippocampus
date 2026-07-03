@@ -21,8 +21,11 @@
 
 mod error;
 mod handlers;
+/// v2.4: LLM 评分器实现（HttpLlmScorer）
+pub mod llm;
 
 pub use error::AppError;
+pub use llm::HttpLlmScorer;
 
 use std::path::PathBuf;
 
@@ -71,7 +74,7 @@ pub fn create_router(state: AppState) -> axum::Router {
         )
         .route(
             "/api/v1/sessions/{sid}/memories/{hook_id}",
-            get(handlers::retrieve),
+            get(handlers::retrieve).patch(handlers::update_memory),
         )
         .route(
             "/api/v1/sessions/{sid}/summaries",

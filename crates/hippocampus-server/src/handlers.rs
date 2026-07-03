@@ -217,3 +217,94 @@ pub async fn run_compaction(
 
     Ok(Json(result))
 }
+
+// ============================================================================
+// v2.4 批次 3：记忆迭代更新端点
+// ============================================================================
+
+/// update_memory 请求体
+#[derive(Deserialize)]
+pub struct UpdateMemoryRequest {
+    /// 新增的事实列表
+    #[serde(default)]
+    pub added_facts: Vec<String>,
+    /// 修正的事实列表
+    #[serde(default)]
+    pub revised_facts: Vec<String>,
+    /// 废弃的事实列表
+    #[serde(default)]
+    pub deprecated_facts: Vec<String>,
+    /// 项目 ID（可选，影响索引查找范围）
+    pub project_id: Option<String>,
+}
+
+/// update_memory 响应体
+#[derive(Serialize)]
+pub struct UpdateMemoryResponse {
+    /// 是否更新成功
+    pub success: bool,
+    /// 更新的事实数量统计
+    pub added: usize,
+    pub revised: usize,
+    pub deprecated: usize,
+}
+
+/// PATCH /api/v1/sessions/{sid}/memories/{hook_id}
+///
+/// 按钩子 ID 更新记忆文件（added/revised/deprecated facts）。
+///
+/// 流程：
+/// 1. 通过 hook_id 从索引文档查找对应的 memory_id
+/// 2. 调用 Storage::update_memory 应用更新
+/// 3. 返回更新结果统计
+pub async fn update_memory(
+    State(state): State<AppState>,
+    Path((sid, hook_id)): Path<(String, String)>,
+    Json(req): Json<UpdateMemoryRequest>,
+) -> Result<Json<UpdateMemoryResponse>, AppError> {
+    // 空更新校验
+    if req.added_facts.is_empty() && req.revised_facts.is_empty() && req.deprecated_facts.is_empty()
+    {
+        return Err(AppError::BadRequest(
+            "更新内容不能为空：至少需要一项 added/revised/deprecated facts".into(),
+        ));
+    }
+
+    let storage = create_storage(&state);
+    let retriever = Retriever::new(storage.clone(), &sid, req.project_id.clone());
+
+    // 通过 hook_id 找到 memory_id
+    let memory_id = retriever.find_memory_id_by_hook(&hook_id).await.ok_or_else(|| {
+        AppError::NotFound(format!("未找到钩子 ID: {}", hook_id))
+    })?;
+
+    // 构造 MemoryUpdate
+    let updates = hippocampus_core::model::MemoryUpdate::new()
+        .add_fact(req.added_facts.join("\n"))
+        .revise_fact(req.revised_facts.join("\n"))
+        .deprecate_fact(req.deprecated_facts.join("\n"));
+
+    let added_count = req.added_facts.len();
+    let revised_count = req.revised_facts.len();
+    let deprecated_count = req.deprecated_facts.len();
+
+    // 执行更新
+    storage.update_memory(&memory_id, updates).await?;
+
+    tracing::info!(
+        session = %sid,
+        hook_id = %hook_id,
+        memory_id = %memory_id,
+        added = added_count,
+        revised = revised_count,
+        deprecated = deprecated_count,
+        "记忆迭代更新成功"
+    );
+
+    Ok(Json(UpdateMemoryResponse {
+        success: true,
+        added: added_count,
+        revised: revised_count,
+        deprecated: deprecated_count,
+    }))
+}

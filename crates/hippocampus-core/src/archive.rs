@@ -171,7 +171,7 @@ impl Archiver {
         // 5. 生成 IndexHook
         let hook = IndexHook::from_memory_file(&memory_file, memory_path);
 
-        // 6. 追加钩子到 daily 索引文档
+        // 6. 追加钩子到 daily 索引文档（session 级）
         self.storage
             .append_hook(
                 &self.session_id,
@@ -180,6 +180,13 @@ impl Archiver {
                 hook.clone(),
             )
             .await?;
+
+        // 7. v2.4: 双写 - 若有 project_id，同时追加到 project 级聚合索引
+        if let Some(pid) = &self.project_id {
+            self.storage
+                .append_project_hook(pid, ArchivePeriod::Daily, hook.clone())
+                .await?;
+        }
 
         // 记录日志（tracing）
         tracing::info!(
@@ -289,9 +296,9 @@ mod tests {
         assert_eq!(memory.period, ArchivePeriod::Daily);
 
         // 验证 IndexHook
-        assert_eq!(hook.memory_file_id, memory.id);
-        assert!(!hook.memory_file_path.is_empty());
-        assert!(hook.memory_file_path.contains("sessions/sess-003/daily/"));
+        // memory_id 在 LocalStorage 中为文件相对路径
+        assert!(!hook.memory_id.is_empty());
+        assert!(hook.memory_id.contains("sessions/sess-003/daily/"));
 
         // 归档后状态清零
         assert_eq!(archiver.current_tokens(), 0);

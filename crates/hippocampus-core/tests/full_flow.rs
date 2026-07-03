@@ -327,9 +327,9 @@ async fn test_full_flow_project_isolation() {
     archiver_b.push_turn(make_turn("项目 B 的对话", 110));
     let (memory_b, hook_b) = archiver_b.archive().await.unwrap();
 
-    // 验证记忆文件路径不同（走 projects/ 而非 sessions/）
-    assert!(hook_a.memory_file_path.starts_with("projects/project-A/"));
-    assert!(hook_b.memory_file_path.starts_with("projects/project-B/"));
+    // v2.4: 记忆文件始终存到 sessions/{session_id}/（session 隔离）
+    assert!(hook_a.memory_id.starts_with("sessions/session-a/daily/"));
+    assert!(hook_b.memory_id.starts_with("sessions/session-b/daily/"));
     assert_ne!(memory_a.id, memory_b.id);
 
     // 验证用项目 A 的 Retriever 只能看到项目 A 的记忆

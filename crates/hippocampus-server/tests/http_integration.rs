@@ -116,7 +116,7 @@ async fn test_archive_success() {
 
     let summary: Value = resp.json().await.expect("解析响应失败");
     assert!(!summary["hook_id"].as_str().unwrap().is_empty());
-    assert!(!summary["memory_file_id"].as_str().unwrap().is_empty());
+    assert!(!summary["memory_id"].as_str().unwrap().is_empty());
     assert_eq!(summary["period"].as_str().unwrap(), "daily");
     assert_eq!(summary["token_count"].as_u64().unwrap(), 303); // 100+101+102
 }
@@ -531,4 +531,158 @@ async fn test_full_agent_workflow() {
     let memory: Value = resp.json().await.expect("解析记忆失败");
     assert_eq!(memory["turns"].as_array().unwrap().len(), 5);
     assert_eq!(memory["session_id"].as_str().unwrap(), sid);
+}
+
+// ============================================================================
+// v2.4 批次 3：记忆迭代更新测试
+// ============================================================================
+
+#[tokio::test]
+async fn test_update_memory_success() {
+    let server = TestServer::start().await;
+    let client = reqwest::Client::new();
+
+    // 1. 先归档一次获取 hook_id
+    let body = json!({
+        "turns": make_turns_json(2, 100),
+        "project_id": null
+    });
+    let resp = client
+        .post(server.url("/api/v1/sessions/sess-upd/archive"))
+        .json(&body)
+        .send()
+        .await
+        .expect("归档失败");
+    let summary: Value = resp.json().await.expect("解析摘要失败");
+    let hook_id = summary["hook_id"].as_str().unwrap();
+
+    // 2. 调用 PATCH 更新记忆
+    let update_body = json!({
+        "added_facts": ["新事实：v2.4 批次 3 完成"],
+        "revised_facts": ["修正：原计划改为 v2.4"],
+        "deprecated_facts": ["废弃：旧逻辑已过时"],
+        "project_id": null
+    });
+    let resp = client
+        .patch(server.url(&format!(
+            "/api/v1/sessions/sess-upd/memories/{}",
+            hook_id
+        )))
+        .json(&update_body)
+        .send()
+        .await
+        .expect("更新失败");
+
+    assert_eq!(resp.status(), 200);
+    let result: Value = resp.json().await.expect("解析响应失败");
+    assert_eq!(result["success"], true);
+    assert_eq!(result["added"], 1);
+    assert_eq!(result["revised"], 1);
+    assert_eq!(result["deprecated"], 1);
+
+    // 3. 检索验证 updates 字段已更新（v2.4 风险点修复：独立存储）
+    let resp = client
+        .get(server.url(&format!(
+            "/api/v1/sessions/sess-upd/memories/{}",
+            hook_id
+        )))
+        .send()
+        .await
+        .expect("检索失败");
+    let memory: Value = resp.json().await.expect("解析记忆失败");
+
+    // 验证 updates 字段（独立存储，不污染 turns）
+    let updates = memory["updates"].as_array().expect("updates 应为数组");
+    assert_eq!(updates.len(), 1, "应有 1 条更新记录");
+    assert!(
+        updates[0]["updated_at"].as_str().is_some(),
+        "更新记录应含 updated_at"
+    );
+    assert_eq!(
+        updates[0]["added_facts"][0],
+        "新事实：v2.4 批次 3 完成"
+    );
+    assert_eq!(
+        updates[0]["revised_facts"][0],
+        "修正：原计划改为 v2.4"
+    );
+    assert_eq!(
+        updates[0]["deprecated_facts"][0],
+        "废弃：旧逻辑已过时"
+    );
+
+    // 验证原始 turns.text 未被污染
+    let first_turn_text = memory["turns"][0]["user_message"]["text"]
+        .as_str()
+        .unwrap();
+    assert!(
+        !first_turn_text.contains("[新增事实]"),
+        "原始 text 不应包含 update 标记"
+    );
+}
+
+#[tokio::test]
+async fn test_update_memory_empty_returns_400() {
+    let server = TestServer::start().await;
+    let client = reqwest::Client::new();
+
+    // 先归档
+    let body = json!({
+        "turns": make_turns_json(1, 100),
+        "project_id": null
+    });
+    let resp = client
+        .post(server.url("/api/v1/sessions/sess-empty-upd/archive"))
+        .json(&body)
+        .send()
+        .await
+        .expect("归档失败");
+    let summary: Value = resp.json().await.expect("解析摘要失败");
+    let hook_id = summary["hook_id"].as_str().unwrap();
+
+    // 空更新应返回 400
+    let update_body = json!({
+        "added_facts": [],
+        "revised_facts": [],
+        "deprecated_facts": [],
+        "project_id": null
+    });
+    let resp = client
+        .patch(server.url(&format!(
+            "/api/v1/sessions/sess-empty-upd/memories/{}",
+            hook_id
+        )))
+        .json(&update_body)
+        .send()
+        .await
+        .expect("请求失败");
+
+    assert_eq!(resp.status(), 400);
+    let err: Value = resp.json().await.expect("解析错误失败");
+    assert_eq!(err["error"]["code"].as_str().unwrap(), "BAD_REQUEST");
+}
+
+#[tokio::test]
+async fn test_update_memory_nonexistent_hook_returns_404() {
+    let server = TestServer::start().await;
+    let client = reqwest::Client::new();
+
+    let fake_id = uuid::Uuid::new_v4().to_string();
+    let update_body = json!({
+        "added_facts": ["test fact"],
+        "project_id": null
+    });
+    let resp = client
+        .patch(server.url(&format!(
+            "/api/v1/sessions/sess-x/memories/{}",
+            fake_id
+        )))
+        .json(&update_body)
+        .send()
+        .await
+        .expect("请求失败");
+
+    assert_eq!(resp.status(), 404);
+    let err: Value = resp.json().await.expect("解析错误失败");
+    assert_eq!(err["error"]["code"].as_str().unwrap(), "NOT_FOUND");
 }

@@ -161,6 +161,12 @@ pub struct MemoryFile {
     pub access_count: u64,
     /// 用户显式重要性标记（0-100，默认 0）
     pub importance: u8,
+    /// 记忆迭代更新历史（v2.4 批次 3 风险点修复）
+    ///
+    /// 每次通过 `update_memory` 更新时追加一条 [`MemoryUpdateRecord`]，
+    /// 不污染原始 `turns` 内容。旧文件无此字段时默认为空（向后兼容）。
+    #[serde(default)]
+    pub updates: Vec<MemoryUpdateRecord>,
 }
 
 /// 归档周期层级
@@ -177,7 +183,7 @@ pub enum ArchivePeriod {
 /// 索引钩子（指向记忆库中一个记忆文件的指针）
 ///
 /// 钩子是分层设计：
-/// - **摘要钩子**：注入到 system prompt，包含标题+标签+时间戳（轻量）
+/// - **摘要钩子**：注入到 system prompt，包含结构化摘要+标签+时间戳（轻量）
 /// - **详细钩子**：通过 tool 调用按需检索（含完整信息）
 ///
 /// 本结构体包含完整信息，分层展示由 [`retrieve`] 模块处理。
@@ -185,12 +191,10 @@ pub enum ArchivePeriod {
 pub struct IndexHook {
     /// 钩子唯一 ID
     pub id: Uuid,
-    /// 指向的记忆文件 ID
-    pub memory_file_id: Uuid,
-    /// 记忆文件在记忆库中的相对路径
-    pub memory_file_path: String,
-    /// 摘要标题（用于 system prompt 注入）
-    pub summary_title: String,
+    /// 指向的记忆文件 ID（LocalStorage 用路径作 ID，SQLite 用 UUID）
+    pub memory_id: String,
+    /// 结构化摘要（借鉴 Memora 线索锚点设计）
+    pub summary: Summary,
     /// 该钩子的标签集合
     pub tags: Vec<Tag>,
     /// 记忆文件归档时间
@@ -199,6 +203,126 @@ pub struct IndexHook {
     pub period: ArchivePeriod,
     /// Token 数（供检索参考）
     pub token_count: usize,
+}
+
+/// 结构化摘要（借鉴 Memora 线索锚点设计）
+///
+/// 从单一标题升级为多维摘要，支持分级生成：
+/// - 日级：启发式生成（title + key_facts）
+/// - 周级：LLM 生成（title + abstract + key_facts + key_entities）
+/// - 月级：LLM 生成（全字段，含 clue_anchors）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Summary {
+    /// 一句话标题（向后兼容原 summary_title）
+    ///
+    /// 日级启发式：首条消息前 80 字符
+    pub title: String,
+
+    /// 抽象摘要（2-3 句话，提炼主题）
+    ///
+    /// 周级/月级 LLM 生成，日级为 None
+    #[serde(default)]
+    pub abstract_text: Option<String>,
+
+    /// 关键事实（事实级别，可被直接引用）
+    ///
+    /// 周级/月级 LLM 生成，日级为空
+    #[serde(default)]
+    pub key_facts: Vec<String>,
+
+    /// 关键实体（人名/项目名/技术名词等）
+    ///
+    /// 周级/月级 LLM 生成，日级为空
+    #[serde(default)]
+    pub key_entities: Vec<String>,
+
+    /// 线索锚点（用于检索匹配的关键词）
+    ///
+    /// 月级 LLM 生成，日级/周级为空
+    #[serde(default)]
+    pub clue_anchors: Vec<String>,
+}
+
+impl Summary {
+    /// 创建仅含标题的摘要（日级启发式用）
+    pub fn from_title(title: impl Into<String>) -> Self {
+        Self {
+            title: title.into(),
+            abstract_text: None,
+            key_facts: Vec::new(),
+            key_entities: Vec::new(),
+            clue_anchors: Vec::new(),
+        }
+    }
+
+    /// 判断是否为高级摘要（含 abstract 或 key_facts）
+    pub fn is_rich(&self) -> bool {
+        self.abstract_text.is_some() || !self.key_facts.is_empty()
+    }
+}
+
+/// 记忆迭代更新（借鉴 QwenLong-L1.5 阶段 2：细化/扩展/修正）
+///
+/// 用于 [`crate::storage::Storage::update_memory`] 方法，
+/// 支持记忆随新信息迭代更新，而非静态归档。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MemoryUpdate {
+    /// 新增的事实（细化记忆）
+    #[serde(default)]
+    pub added_facts: Vec<String>,
+
+    /// 修正的事实（扩展/修正已有记忆）
+    #[serde(default)]
+    pub revised_facts: Vec<String>,
+
+    /// 标记为过时的事实（不再有效）
+    #[serde(default)]
+    pub deprecated_facts: Vec<String>,
+}
+
+impl MemoryUpdate {
+    /// 创建空的更新
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 判断是否为空更新
+    pub fn is_empty(&self) -> bool {
+        self.added_facts.is_empty() && self.revised_facts.is_empty() && self.deprecated_facts.is_empty()
+    }
+
+    /// 添加一条新事实
+    pub fn add_fact(mut self, fact: impl Into<String>) -> Self {
+        self.added_facts.push(fact.into());
+        self
+    }
+
+    /// 修正一条事实
+    pub fn revise_fact(mut self, fact: impl Into<String>) -> Self {
+        self.revised_facts.push(fact.into());
+        self
+    }
+
+    /// 标记一条事实为过时
+    pub fn deprecate_fact(mut self, fact: impl Into<String>) -> Self {
+        self.deprecated_facts.push(fact.into());
+        self
+    }
+}
+
+/// 记忆更新记录（带时间戳）
+///
+/// 包装 [`MemoryUpdate`] + 更新时间，用于 [`MemoryFile::updates`] 字段。
+///
+/// 设计目的：将迭代更新历史独立存储，不污染原始 `turns` 内容。
+/// 多次 PATCH 同一 memory 时，updates 追加新记录，便于追溯演进过程。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryUpdateRecord {
+    /// 更新时间戳
+    pub updated_at: DateTime<Utc>,
+    /// 更新内容（added/revised/deprecated facts）
+    #[serde(flatten)]
+    pub update: MemoryUpdate,
 }
 
 /// 索引文档（钩子集合）
@@ -283,6 +407,21 @@ impl ArchivePeriod {
         }
     }
 
+    /// 返回字符串标识（用于 SQLite 存储等场景）
+    pub fn as_str(&self) -> &'static str {
+        self.as_dir_name()
+    }
+
+    /// 从字符串解析（与 [`as_str`](Self::as_str) 互逆）
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "daily" => Some(Self::Daily),
+            "weekly" => Some(Self::Weekly),
+            "monthly" => Some(Self::Monthly),
+            _ => None,
+        }
+    }
+
     /// 返回所有变体（用于遍历）
     pub fn all() -> [Self; 3] {
         [Self::Daily, Self::Weekly, Self::Monthly]
@@ -323,6 +462,7 @@ impl MemoryFile {
             period,
             access_count: 0,
             importance: 0,
+            updates: Vec::new(),
         }
     }
 
@@ -347,10 +487,14 @@ impl MemoryFile {
 impl IndexHook {
     /// 从记忆文件生成索引钩子
     ///
-    /// `summary_title` 在 P1 阶段采用启发式：取首个轮次的用户文本前 80 字符
-    /// （P2 阶段接入 LLM 后可优化为语义摘要）
-    pub fn from_memory_file(file: &MemoryFile, memory_file_path: String) -> Self {
-        let summary_title = file
+    /// `summary` 在 P1 阶段采用启发式：取首个轮次的用户文本前 80 字符作为 title
+    /// （P2 阶段接入 LLM 后可优化为结构化摘要）
+    ///
+    /// `memory_id` 参数：
+    /// - LocalStorage 后端：传入文件相对路径（POSIX 分隔符）
+    /// - SQLite 后端：传入 UUID 字符串
+    pub fn from_memory_file(file: &MemoryFile, memory_id: String) -> Self {
+        let title = file
             .turns
             .first()
             .and_then(|t| t.user_message.text.as_ref())
@@ -365,9 +509,8 @@ impl IndexHook {
 
         Self {
             id: Uuid::new_v4(),
-            memory_file_id: file.id,
-            memory_file_path,
-            summary_title,
+            memory_id,
+            summary: Summary::from_title(title),
             tags: file.tags.clone(),
             archived_at: file.archived_at,
             period: file.period,
@@ -411,9 +554,9 @@ impl IndexDocument {
     }
 
     /// 按记忆文件 ID 查找钩子
-    pub fn find_by_memory(&self, memory_file_id: Uuid) -> Option<&IndexHook> {
-        self.hooks
-            .iter()
-            .find(|h| h.memory_file_id == memory_file_id)
+    ///
+    /// `memory_id` 在 LocalStorage 后端为路径字符串，在 SQLite 后端为 UUID 字符串
+    pub fn find_by_memory(&self, memory_id: &str) -> Option<&IndexHook> {
+        self.hooks.iter().find(|h| h.memory_id == memory_id)
     }
 }

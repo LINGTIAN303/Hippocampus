@@ -20,6 +20,12 @@ thiserror.workspace = true
 tracing.workspace = true
 async-trait.workspace = true
 tokio.workspace = true
+# v2.4 新增：双格式序列化 + SQLite 后端 + 细粒度锁
+rmp-serde.workspace = true
+rusqlite.workspace = true
+r2d2.workspace = true
+r2d2_sqlite.workspace = true
+dashmap.workspace = true
 
 [dev-dependencies]
 tokio = { version = "1.0", features = ["full"] }

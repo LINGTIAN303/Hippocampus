@@ -168,6 +168,112 @@ impl Scorer for DefaultScorer {
 }
 
 // ============================================================================
+// v2.4: 异步评分器（LLM 评分支持）
+// ============================================================================
+
+/// 异步评分器 trait
+///
+/// 用于需要外部调用（如 LLM API）的评分器。
+/// 与同步 [`Scorer`] 并存，Compactor 可选支持。
+///
+/// **设计理由**：LLM 评分需要网络 IO，必须是异步的。
+/// 但现有 `Scorer` trait 是同步的（启发式算法无需 IO），
+/// 修改为异步会影响所有调用方。故新增并行 trait。
+///
+/// **使用场景**：
+/// - 月级淘汰时，用 LLM 评估记忆的主题相关性
+/// - 混合评分：启发式 3 维 + LLM topic_relevance 维
+#[async_trait::async_trait]
+pub trait AsyncScorer: Send + Sync {
+    /// 对记忆文件异步评分，返回 0.0-100.0 的分数
+    async fn score(&self, file: &MemoryFile) -> crate::Result<f64>;
+}
+
+/// LLM 评分器配置
+///
+/// 定义调用外部 LLM API 的参数。
+/// 具体实现（HttpLlmScorer）在 hippocampus-server crate 中。
+///
+/// **评分维度**：topic_relevance（主题相关性）
+/// **Prompt 策略**：将 MemoryFile 的摘要信息发送给 LLM，让其评估与当前主题的相关性
+#[derive(Debug, Clone)]
+pub struct LlmScorerConfig {
+    /// LLM API 端点 URL（如 https://api.example.com/v1/chat/completions）
+    pub api_url: String,
+    /// API Key（Bearer token）
+    pub api_key: String,
+    /// 模型名称（如 gpt-4o-mini / deepseek-chat）
+    pub model: String,
+    /// 评分主题描述（用于评估相关性，如 "Agent 记忆库开发"）
+    pub topic: String,
+    /// 请求超时（秒），默认 30
+    pub timeout_secs: u64,
+    /// 最大 token 数（限制 LLM 输出），默认 100
+    pub max_tokens: u32,
+}
+
+impl Default for LlmScorerConfig {
+    fn default() -> Self {
+        Self {
+            api_url: String::new(),
+            api_key: String::new(),
+            model: "gpt-4o-mini".into(),
+            topic: String::new(),
+            timeout_secs: 30,
+            max_tokens: 100,
+        }
+    }
+}
+
+/// 混合评分器（启发式 + LLM）
+///
+/// 组合 [`DefaultScorer`]（3 维启发式）和 [`AsyncScorer`]（LLM topic_relevance），
+/// 按 [`ScoreWeights`] 加权得到最终分数。
+///
+/// **评分流程**：
+/// 1. 用 DefaultScorer 计算 timeliness + access_frequency + user_marked
+/// 2. 用 AsyncScorer 计算 topic_relevance
+/// 3. 按权重加权求和
+pub struct HybridScorer {
+    /// 启发式评分器（3 维）
+    heuristic: DefaultScorer,
+    /// LLM 异步评分器（topic_relevance 维）
+    llm: Box<dyn AsyncScorer>,
+    /// 评分权重
+    weights: ScoreWeights,
+}
+
+impl HybridScorer {
+    /// 创建混合评分器
+    ///
+    /// - `llm`：LLM 异步评分器实现
+    /// - `weights`：权重配置（topic_relevance 应 > 0 才有意义）
+    pub fn new(llm: Box<dyn AsyncScorer>, weights: ScoreWeights) -> Self {
+        Self {
+            heuristic: DefaultScorer::with_weights(weights.clone()),
+            llm,
+            weights,
+        }
+    }
+
+    /// 异步评分（组合 4 维）
+    pub async fn score(&self, file: &MemoryFile) -> crate::Result<f64> {
+        let timeliness = self.heuristic.timeliness_score(file);
+        let access = self.heuristic.access_frequency_score(file);
+        let user = self.heuristic.user_marked_score(file);
+        let topic = self.llm.score(file).await.unwrap_or(50.0); // LLM 失败降级为 50
+
+        let w = &self.weights;
+        let total = timeliness * w.timeliness
+            + access * w.access_frequency
+            + topic * w.topic_relevance
+            + user * w.user_marked;
+
+        Ok(total.clamp(0.0, 100.0))
+    }
+}
+
+// ============================================================================
 // 单元测试
 // ============================================================================
 

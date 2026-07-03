@@ -38,25 +38,46 @@
 //! - 所有 `read_*` / `delete_*` 方法接受相对路径
 //! - `read_index` / `list_memories` 按 session_id + period 查找（无需路径）
 
+use crate::serialization::SerializationFormat;
 use crate::model::{ArchivePeriod, IndexDocument, IndexHook, MemoryFile};
 use chrono::{Datelike, NaiveDateTime};
+use dashmap::DashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tokio::sync::RwLock;
 
 /// 存储后端 trait
 ///
 /// 所有存储后端（本地文件树、SQLite、S3 等）需实现此 trait。
 /// 设计为单写多读：写入操作串行化，读取操作可并发。
+///
+/// ## ID 导向 + 双层检索（v2.4 重构）
+///
+/// - **session 层**：单一会话内的记忆存储（隔离）
+///   - `write_memory` / `read_memory` / `delete_memory`：按 `memory_id`（相对路径或数据库 ID）
+///   - `read_index` / `append_hook` / `list_memories`：按 `session_id` + `period`
+/// - **project 层**：跨会话的聚合索引（共享）
+///   - `read_project_index` / `append_project_hook` / `list_project_memories`：按 `project_id` + `period`
+///
+/// ### 双写模式
+///
+/// `archive` 时调用方应同时调用 `append_hook`（session 级）和 `append_project_hook`（project 级），
+/// 实现跨会话检索能力。project 级方法带默认实现返回未实现错误，旧后端可继续工作。
+///
+/// ### 记忆迭代更新
+///
+/// `update_memory` 用于批次 3 的记忆迭代更新（added/revised/deprecated facts），
+/// 默认实现返回未实现错误。
 #[async_trait::async_trait]
 pub trait Storage: Send + Sync {
-    /// 写入记忆文件，返回相对路径
+    /// 写入记忆文件，返回 memory_id（相对路径或数据库 ID）
     async fn write_memory(&self, file: &MemoryFile) -> crate::Result<String>;
 
-    /// 读取记忆文件（按相对路径）
-    async fn read_memory(&self, path: &str) -> crate::Result<MemoryFile>;
+    /// 读取记忆文件（按 memory_id）
+    async fn read_memory(&self, memory_id: &str) -> crate::Result<MemoryFile>;
 
     /// 删除记忆文件
-    async fn delete_memory(&self, path: &str) -> crate::Result<()>;
+    async fn delete_memory(&self, memory_id: &str) -> crate::Result<()>;
 
     /// 写入索引文档（全量覆盖写）
     async fn write_index(&self, doc: &IndexDocument) -> crate::Result<String>;
@@ -90,32 +111,195 @@ pub trait Storage: Send + Sync {
         project_id: Option<&str>,
         period: ArchivePeriod,
     ) -> crate::Result<Vec<String>>;
+
+    // ========================================================================
+    // project 层聚合索引（v2.4 新增，跨会话检索）
+    // ========================================================================
+
+    /// 读取 project 级聚合索引文档
+    ///
+    /// 用于跨会话检索：同一个 project 下的所有 session 的记忆钩子
+    /// 都聚合到此索引文档中。
+    ///
+    /// 返回 `Ok(None)` 表示文档不存在
+    async fn read_project_index(
+        &self,
+        _project_id: &str,
+        _period: ArchivePeriod,
+    ) -> crate::Result<Option<IndexDocument>> {
+        // 默认实现：返回未实现错误（旧后端可继续工作，但不支持跨会话检索）
+        Err(crate::Error::Storage(
+            "read_project_index 未实现: 后端不支持 project 级聚合索引".into(),
+        ))
+    }
+
+    /// 追加钩子到 project 级聚合索引（双写模式）
+    ///
+    /// `archive` 时应同时调用 `append_hook`（session 级）和 `append_project_hook`（project 级），
+    /// 实现跨会话检索能力。
+    async fn append_project_hook(
+        &self,
+        _project_id: &str,
+        _period: ArchivePeriod,
+        _hook: IndexHook,
+    ) -> crate::Result<()> {
+        Err(crate::Error::Storage(
+            "append_project_hook 未实现: 后端不支持 project 级聚合索引".into(),
+        ))
+    }
+
+    /// 列出 project 下某周期层级的所有记忆文件路径（跨 session）
+    async fn list_project_memories(
+        &self,
+        _project_id: &str,
+        _period: ArchivePeriod,
+    ) -> crate::Result<Vec<String>> {
+        Err(crate::Error::Storage(
+            "list_project_memories 未实现: 后端不支持 project 级聚合索引".into(),
+        ))
+    }
+
+    // ========================================================================
+    // 记忆迭代更新（v2.4 批次 3 新增）
+    // ========================================================================
+
+    /// 更新记忆文件（added/revised/deprecated facts）
+    ///
+    /// 用于批次 3 的记忆迭代更新：当 LLM 检测到新事实/修正事实/废弃事实时，
+    /// 通过此方法更新记忆文件。
+    async fn update_memory(
+        &self,
+        _memory_id: &str,
+        _updates: crate::model::MemoryUpdate,
+    ) -> crate::Result<()> {
+        Err(crate::Error::Storage(
+            "update_memory 未实现: 后端不支持记忆迭代更新".into(),
+        ))
+    }
 }
 
 /// 本地文件树存储后端
 ///
-/// 将记忆文件以 JSON 格式存储在本地文件系统中。
+/// 将记忆文件以 JSON 或 MessagePack 格式存储在本地文件系统中。
 /// 文件树结构见模块文档。
 ///
-/// ## 并发
+/// ## 并发（v2.4 升级：细粒度锁）
 ///
-/// 内部用 [`RwLock`] 串行化写操作，读操作无锁可并发。
+/// 内部用 [`DashMap`] + per-scope [`RwLock`] 实现细粒度并发：
+/// - 不同 session/project 的写操作可并发
+/// - 同一 session/project 的写操作串行化
+/// - 读操作无锁可并发
+///
 /// 跨进程并发需由调用方保证（如文件锁）。
+///
+/// ## 双格式支持（v2.4 新增）
+///
+/// 通过 [`SerializationFormat`] 配置序列化格式：
+/// - `Json`（默认）：可读性好，便于调试
+/// - `MessagePack`：二进制紧凑，体积更小
+///
+/// 读取时根据文件后缀自动识别格式（`.json` / `.msgpack`）。
 pub struct LocalStorage {
     /// 根目录路径
     root: PathBuf,
-    /// 写操作串行化锁（读操作无需获取）
-    write_lock: RwLock<()>,
+    /// 序列化格式（默认 JSON）
+    format: SerializationFormat,
+    /// 细粒度写锁（key = "session:{id}" 或 "project:{id}"）
+    write_locks: DashMap<String, Arc<RwLock<()>>>,
 }
 
 impl LocalStorage {
-    /// 创建新的本地存储后端
+    /// 创建新的本地存储后端（默认 JSON 格式）
     ///
     /// 注意：不会立即创建根目录，延迟到首次写入时创建。
     pub fn new(root: impl Into<PathBuf>) -> Self {
+        Self::with_format(root, SerializationFormat::Json)
+    }
+
+    /// 创建新的本地存储后端（指定序列化格式）
+    ///
+    /// **自动迁移**：构造时检测旧文件树结构（v2.3 `{root}/{session_id}/...`）
+    /// 并迁移到新结构（v2.4 `{root}/sessions/{session_id}/...`）。幂等。
+    pub fn with_format(root: impl Into<PathBuf>, format: SerializationFormat) -> Self {
+        let root = root.into();
+        Self::migrate_legacy_structure(&root);
         Self {
-            root: root.into(),
-            write_lock: RwLock::new(()),
+            root,
+            format,
+            write_locks: DashMap::new(),
+        }
+    }
+
+    /// 检测并迁移旧文件树结构（v2.3 → v2.4）
+    ///
+    /// 旧结构：`{root}/{session_id}/{period}/...`
+    /// 新结构：`{root}/sessions/{session_id}/{period}/...`
+    ///
+    /// 判定规则：root 下的直接子目录（排除 `sessions`/`projects`），
+    /// 若包含 `daily`/`weekly`/`monthly` 任意子目录，视为旧 session 目录。
+    ///
+    /// 幂等：已是新结构则跳过；目标已存在则跳过（不覆盖）。
+    fn migrate_legacy_structure(root: &Path) {
+        let entries = match std::fs::read_dir(root) {
+            Ok(e) => e,
+            Err(_) => return, // 目录不存在，无需迁移
+        };
+
+        const PERIOD_DIRS: &[&str] = &["daily", "weekly", "monthly"];
+        const NEW_TOP_DIRS: &[&str] = &["sessions", "projects"];
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+
+            let name = match path.file_name().and_then(|n| n.to_str()) {
+                Some(n) => n.to_string(),
+                None => continue,
+            };
+
+            // 跳过新结构顶层目录
+            if NEW_TOP_DIRS.contains(&name.as_str()) {
+                continue;
+            }
+
+            // 检测旧 session 目录特征
+            let is_legacy_session = PERIOD_DIRS.iter().any(|p| path.join(p).exists());
+            if !is_legacy_session {
+                continue;
+            }
+
+            // 迁移到 sessions/{session_id}/
+            let sessions_dir = root.join("sessions");
+            if let Err(e) = std::fs::create_dir_all(&sessions_dir) {
+                tracing::warn!(error = %e, "创建 sessions/ 目录失败，跳过迁移");
+                continue;
+            }
+
+            let dest = sessions_dir.join(&name);
+            if dest.exists() {
+                tracing::warn!(
+                    legacy_dir = %path.display(),
+                    dest = %dest.display(),
+                    "跳过迁移：目标目录已存在"
+                );
+                continue;
+            }
+
+            match std::fs::rename(&path, &dest) {
+                Ok(()) => tracing::info!(
+                    session_id = %name,
+                    "迁移旧结构 session 目录: {} → {}",
+                    path.display(),
+                    dest.display()
+                ),
+                Err(e) => tracing::warn!(
+                    legacy_dir = %path.display(),
+                    error = %e,
+                    "迁移旧结构 session 目录失败"
+                ),
+            }
         }
     }
 
@@ -124,41 +308,46 @@ impl LocalStorage {
         &self.root
     }
 
+    /// 序列化格式
+    pub fn format(&self) -> SerializationFormat {
+        self.format
+    }
+
     // ========================================================================
     // 路径生成（纯函数，无 IO）
     // ========================================================================
 
-    /// 生成 scope 根目录（sessions/{id} 或 projects/{id}）
-    fn scope_dir(&self, session_id: &str, project_id: Option<&str>) -> PathBuf {
-        if let Some(pid) = project_id {
-            PathBuf::from("projects").join(pid)
-        } else {
-            PathBuf::from("sessions").join(session_id)
-        }
+    /// 生成 session scope 根目录（sessions/{session_id}）
+    fn session_scope_dir(&self, session_id: &str) -> PathBuf {
+        PathBuf::from("sessions").join(session_id)
     }
 
-    /// 生成某周期层级的目录路径（相对）
-    fn period_dir(
-        &self,
-        session_id: &str,
-        project_id: Option<&str>,
-        period: ArchivePeriod,
-    ) -> PathBuf {
-        self.scope_dir(session_id, project_id)
-            .join(period.as_dir_name())
+    /// 生成 project scope 根目录（projects/{project_id}）
+    fn project_scope_dir(&self, project_id: &str) -> PathBuf {
+        PathBuf::from("projects").join(project_id)
+    }
+
+    /// 生成 session 某周期层级的目录路径（相对）
+    fn period_dir(&self, session_id: &str, period: ArchivePeriod) -> PathBuf {
+        self.session_scope_dir(session_id).join(period.as_dir_name())
     }
 
     /// 生成记忆文件的相对路径
+    ///
+    /// 记忆文件始终存到 `sessions/{session_id}/{period}/...`（v2.4 设计：session 隔离）。
+    /// project 级聚合通过 `append_project_hook` 双写索引实现跨会话检索。
     fn memory_relative_path(&self, file: &MemoryFile) -> PathBuf {
-        let dir = self.period_dir(&file.session_id, file.project_id.as_deref(), file.period);
+        let dir = self.period_dir(&file.session_id, file.period);
         dir.join(self.memory_filename(file))
     }
 
     /// 生成记忆文件名
     ///
-    /// - Daily: `{YYYY-MM-DD}_{HHMMSS}_{mmm}.json`（日期+秒级时间戳+毫秒，避免并发冲突）
-    /// - Weekly: `{YYYY}-W{WW}.json`（ISO 周数）
-    /// - Monthly: `{YYYY}-{MM}.json`
+    /// - Daily: `{YYYY-MM-DD}_{HHMMSS}_{mmm}.{ext}`（日期+毫秒时间戳）
+    /// - Weekly: `{YYYY}-W{WW}.{ext}`（ISO 周数）
+    /// - Monthly: `{YYYY}-{MM}.{ext}`
+    ///
+    /// 文件后缀由序列化格式决定（`json` / `msgpack`）。
     ///
     /// # 毫秒精度的理由
     ///
@@ -166,24 +355,27 @@ impl LocalStorage {
     /// 毫秒精度足以区分正常归档节奏，且可在文件名中保留可读性。
     fn memory_filename(&self, file: &MemoryFile) -> String {
         let dt: NaiveDateTime = file.archived_at.naive_utc();
+        let ext = self.format.extension();
         match file.period {
-            ArchivePeriod::Daily => format!("{}.json", dt.format("%Y-%m-%d_%H%M%S_%3f")),
+            ArchivePeriod::Daily => format!("{}.{}", dt.format("%Y-%m-%d_%H%M%S_%3f"), ext),
             ArchivePeriod::Weekly => {
                 let iso = file.archived_at.iso_week();
-                format!("{:04}-W{:02}.json", iso.year(), iso.week())
+                format!("{:04}-W{:02}.{}", iso.year(), iso.week(), ext)
             }
-            ArchivePeriod::Monthly => format!("{:04}-{:02}.json", dt.year(), dt.month()),
+            ArchivePeriod::Monthly => format!("{:04}-{:02}.{}", dt.year(), dt.month(), ext),
         }
     }
 
-    /// 生成索引文档的相对路径
-    fn index_relative_path(
-        &self,
-        session_id: &str,
-        project_id: Option<&str>,
-        period: ArchivePeriod,
-    ) -> PathBuf {
-        self.scope_dir(session_id, project_id)
+    /// 生成 session 级索引文档的相对路径
+    fn session_index_path(&self, session_id: &str, period: ArchivePeriod) -> PathBuf {
+        self.session_scope_dir(session_id)
+            .join("index")
+            .join(format!("{}_index.json", period.as_dir_name()))
+    }
+
+    /// 生成 project 级聚合索引文档的相对路径
+    fn project_index_path(&self, project_id: &str, period: ArchivePeriod) -> PathBuf {
+        self.project_scope_dir(project_id)
             .join("index")
             .join(format!("{}_index.json", period.as_dir_name()))
     }
@@ -196,6 +388,48 @@ impl LocalStorage {
     /// 将相对路径转换为 POSIX 分隔符字符串（跨平台一致）
     fn to_posix_string(relative: &Path) -> String {
         relative.to_string_lossy().replace('\\', "/")
+    }
+
+    // ========================================================================
+    // 细粒度锁
+    // ========================================================================
+
+    /// 获取 scope 写锁的 Arc 句柄（不阻塞）
+    ///
+    /// 若该 scope 的锁不存在则创建。返回 `Arc<RwLock<()>>` 供调用方 `.write().await`。
+    fn get_write_lock(&self, scope_type: &str, scope_id: &str) -> Arc<RwLock<()>> {
+        let key = format!("{}:{}", scope_type, scope_id);
+        self.write_locks
+            .entry(key)
+            .or_insert_with(|| Arc::new(RwLock::new(())))
+            .clone()
+    }
+
+    /// 获取 session 写锁
+    fn session_write_lock(&self, session_id: &str) -> Arc<RwLock<()>> {
+        self.get_write_lock("session", session_id)
+    }
+
+    /// 获取 project 写锁
+    fn project_write_lock(&self, project_id: &str) -> Arc<RwLock<()>> {
+        self.get_write_lock("project", project_id)
+    }
+
+    // ========================================================================
+    // 路径解析（辅助方法）
+    // ========================================================================
+
+    /// 从 memory_id（相对路径）解析出 session_id
+    ///
+    /// memory_id 格式：`sessions/{session_id}/daily/xxx.json`
+    /// 返回 `None` 表示无法解析（路径不符合预期格式）。
+    fn parse_session_id(memory_id: &str) -> Option<String> {
+        let parts: Vec<&str> = memory_id.splitn(4, '/').collect();
+        if parts.len() >= 2 && parts[0] == "sessions" {
+            Some(parts[1].to_string())
+        } else {
+            None
+        }
     }
 
     // ========================================================================
@@ -242,43 +476,60 @@ impl LocalStorage {
 #[async_trait::async_trait]
 impl Storage for LocalStorage {
     async fn write_memory(&self, file: &MemoryFile) -> crate::Result<String> {
-        let _guard = self.write_lock.write().await;
+        // 细粒度锁：per session 串行化写
+        let lock = self.session_write_lock(&file.session_id);
+        let _guard = lock.write().await;
 
         let relative = self.memory_relative_path(file);
         let abs = self.abs_path(&relative);
         self.ensure_parent_dir(&abs).await?;
 
-        let json = serde_json::to_vec_pretty(file)
-            .map_err(|e| crate::Error::Serialize(format!("序列化 MemoryFile 失败: {}", e)))?;
-
-        self.atomic_write(&abs, &json).await?;
+        // 双格式序列化（v2.4）
+        let content = self.format.serialize_memory(file)?;
+        self.atomic_write(&abs, &content).await?;
 
         Ok(Self::to_posix_string(&relative))
     }
 
-    async fn read_memory(&self, path: &str) -> crate::Result<MemoryFile> {
-        let abs = self.root.join(path);
+    async fn read_memory(&self, memory_id: &str) -> crate::Result<MemoryFile> {
+        let abs = self.root.join(memory_id);
         let content = tokio::fs::read(&abs)
             .await
-            .map_err(|e| crate::Error::Storage(format!("读取记忆文件失败 {:?}: {}", path, e)))?;
+            .map_err(|e| crate::Error::Storage(format!("读取记忆文件失败 {:?}: {}", memory_id, e)))?;
 
-        serde_json::from_slice(&content)
-            .map_err(|e| crate::Error::Serialize(format!("反序列化 MemoryFile 失败: {}", e)))
+        // 根据文件后缀自动识别格式（v2.4）
+        let path = Path::new(memory_id);
+        let ext = path.extension().and_then(|e| e.to_str());
+        let format = SerializationFormat::detect_from_extension(ext);
+        format.deserialize_memory(&content)
     }
 
-    async fn delete_memory(&self, path: &str) -> crate::Result<()> {
-        let _guard = self.write_lock.write().await;
-        let abs = self.root.join(path);
-        tokio::fs::remove_file(&abs)
-            .await
-            .map_err(|e| crate::Error::Storage(format!("删除记忆文件失败 {:?}: {}", path, e)))?;
+    async fn delete_memory(&self, memory_id: &str) -> crate::Result<()> {
+        // 从 memory_id 解析 session_id 获取细粒度锁（解析失败则无锁删除）
+        if let Some(session_id) = Self::parse_session_id(memory_id) {
+            let lock = self.session_write_lock(&session_id);
+            let _guard = lock.write().await;
+            let abs = self.root.join(memory_id);
+            tokio::fs::remove_file(&abs)
+                .await
+                .map_err(|e| crate::Error::Storage(format!("删除记忆文件失败 {:?}: {}", memory_id, e)))?;
+        } else {
+            // 无法解析 session_id，直接删除（无锁）
+            let abs = self.root.join(memory_id);
+            tokio::fs::remove_file(&abs)
+                .await
+                .map_err(|e| crate::Error::Storage(format!("删除记忆文件失败 {:?}: {}", memory_id, e)))?;
+        }
         Ok(())
     }
 
     async fn write_index(&self, doc: &IndexDocument) -> crate::Result<String> {
-        let _guard = self.write_lock.write().await;
+        // 细粒度锁：per session
+        let lock = self.session_write_lock(&doc.session_id);
+        let _guard = lock.write().await;
 
-        let relative = self.index_relative_path(&doc.session_id, doc.project_id.as_deref(), doc.period);
+        // v2.4: session 级索引始终存到 sessions/{session_id}/index/
+        let relative = self.session_index_path(&doc.session_id, doc.period);
         let abs = self.abs_path(&relative);
         self.ensure_parent_dir(&abs).await?;
 
@@ -293,10 +544,11 @@ impl Storage for LocalStorage {
     async fn read_index(
         &self,
         session_id: &str,
-        project_id: Option<&str>,
+        _project_id: Option<&str>,
         period: ArchivePeriod,
     ) -> crate::Result<Option<IndexDocument>> {
-        let relative = self.index_relative_path(session_id, project_id, period);
+        // v2.4: session 级索引始终从 sessions/{session_id}/index/ 读取
+        let relative = self.session_index_path(session_id, period);
         let abs = self.abs_path(&relative);
 
         match tokio::fs::read(&abs).await {
@@ -317,13 +569,16 @@ impl Storage for LocalStorage {
     async fn append_hook(
         &self,
         session_id: &str,
-        project_id: Option<&str>,
+        _project_id: Option<&str>,
         period: ArchivePeriod,
         hook: IndexHook,
     ) -> crate::Result<()> {
-        let _guard = self.write_lock.write().await;
+        // 细粒度锁：per session
+        let lock = self.session_write_lock(session_id);
+        let _guard = lock.write().await;
 
-        let relative = self.index_relative_path(session_id, project_id, period);
+        // v2.4: session 级索引始终存到 sessions/{session_id}/index/
+        let relative = self.session_index_path(session_id, period);
         let abs = self.abs_path(&relative);
 
         // 读-改-写
@@ -333,7 +588,7 @@ impl Storage for LocalStorage {
             })?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 // 文档不存在则创建新的
-                IndexDocument::new(session_id.to_string(), project_id.map(String::from), period)
+                IndexDocument::new(session_id.to_string(), None, period)
             }
             Err(e) => {
                 return Err(crate::Error::Storage(format!(
@@ -358,10 +613,11 @@ impl Storage for LocalStorage {
     async fn list_memories(
         &self,
         session_id: &str,
-        project_id: Option<&str>,
+        _project_id: Option<&str>,
         period: ArchivePeriod,
     ) -> crate::Result<Vec<String>> {
-        let relative = self.period_dir(session_id, project_id, period);
+        // v2.4: 记忆文件始终从 sessions/{session_id}/{period}/ 列出
+        let relative = self.period_dir(session_id, period);
         let abs = self.abs_path(&relative);
 
         let mut entries = match tokio::fs::read_dir(&abs).await {
@@ -383,17 +639,155 @@ impl Storage for LocalStorage {
             .map_err(|e| crate::Error::Storage(format!("遍历目录失败: {}", e)))?
         {
             let p = entry.path();
-            if p.extension().and_then(|e| e.to_str()) == Some("json") {
-                // 转为相对路径（POSIX 分隔符）
-                let rel = p
-                    .strip_prefix(&self.root)
-                    .map_err(|e| crate::Error::Storage(format!("路径截取失败: {}", e)))?;
-                paths.push(Self::to_posix_string(rel));
+            // v2.4: 支持双后缀（json / msgpack）
+            if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
+                if ext == "json" || ext == "msgpack" {
+                    // 转为相对路径（POSIX 分隔符）
+                    let rel = p
+                        .strip_prefix(&self.root)
+                        .map_err(|e| crate::Error::Storage(format!("路径截取失败: {}", e)))?;
+                    paths.push(Self::to_posix_string(rel));
+                }
             }
         }
 
         paths.sort();
         Ok(paths)
+    }
+
+    // ========================================================================
+    // project 层聚合索引（v2.4 新增，跨会话检索）
+    // ========================================================================
+
+    async fn read_project_index(
+        &self,
+        project_id: &str,
+        period: ArchivePeriod,
+    ) -> crate::Result<Option<IndexDocument>> {
+        let relative = self.project_index_path(project_id, period);
+        let abs = self.abs_path(&relative);
+
+        match tokio::fs::read(&abs).await {
+            Ok(content) => {
+                let doc: IndexDocument = serde_json::from_slice(&content)
+                    .map_err(|e| crate::Error::Serialize(format!("反序列化 IndexDocument 失败: {}", e)))?;
+                Ok(Some(doc))
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(crate::Error::Storage(format!(
+                "读取 project 索引文档失败 {:?}: {}",
+                path_display(&relative),
+                e
+            ))),
+        }
+    }
+
+    async fn append_project_hook(
+        &self,
+        project_id: &str,
+        period: ArchivePeriod,
+        hook: IndexHook,
+    ) -> crate::Result<()> {
+        // 细粒度锁：per project
+        let lock = self.project_write_lock(project_id);
+        let _guard = lock.write().await;
+
+        let relative = self.project_index_path(project_id, period);
+        let abs = self.abs_path(&relative);
+
+        // 读-改-写
+        let mut doc: IndexDocument = match tokio::fs::read(&abs).await {
+            Ok(content) => serde_json::from_slice(&content).map_err(|e| {
+                crate::Error::Serialize(format!("反序列化 IndexDocument 失败: {}", e))
+            })?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                // 文档不存在则创建新的（project 级索引的 session_id 字段填 project_id）
+                IndexDocument::new(project_id.to_string(), Some(project_id.to_string()), period)
+            }
+            Err(e) => {
+                return Err(crate::Error::Storage(format!(
+                    "读取 project 索引文档失败 {:?}: {}",
+                    path_display(&relative),
+                    e
+                )))
+            }
+        };
+
+        doc.add_hook(hook);
+
+        let json = serde_json::to_vec_pretty(&doc)
+            .map_err(|e| crate::Error::Serialize(format!("序列化 IndexDocument 失败: {}", e)))?;
+
+        self.ensure_parent_dir(&abs).await?;
+        self.atomic_write(&abs, &json).await?;
+
+        Ok(())
+    }
+
+    async fn list_project_memories(
+        &self,
+        project_id: &str,
+        period: ArchivePeriod,
+    ) -> crate::Result<Vec<String>> {
+        // 通过 project 级聚合索引的 hooks 反查 memory_id 列表
+        let doc = self.read_project_index(project_id, period).await?;
+        let mut memory_ids: Vec<String> = match doc {
+            Some(d) => d.hooks.into_iter().map(|h| h.memory_id).collect(),
+            None => Vec::new(),
+        };
+        memory_ids.sort();
+        memory_ids.dedup();
+        Ok(memory_ids)
+    }
+
+    // ========================================================================
+    // 记忆迭代更新（v2.4 批次 3）
+    // ========================================================================
+
+    async fn update_memory(
+        &self,
+        memory_id: &str,
+        updates: crate::model::MemoryUpdate,
+    ) -> crate::Result<()> {
+        // 空更新直接返回（幂等）
+        if updates.is_empty() {
+            return Ok(());
+        }
+
+        // 从 memory_id 解析 session_id 获取细粒度锁
+        let session_id = Self::parse_session_id(memory_id)
+            .unwrap_or_else(|| "unknown".to_string());
+        let lock = self.session_write_lock(&session_id);
+        let _guard = lock.write().await;
+
+        // 读取现有 MemoryFile
+        let mut file = self.read_memory(memory_id).await?;
+
+        // v2.4 风险点修复：将 updates 追加到独立的 updates 字段
+        // 不再修改 first_turn.user_message.text，保持原始上下文完整
+        file.updates.push(crate::model::MemoryUpdateRecord {
+            updated_at: chrono::Utc::now(),
+            update: updates.clone(),
+        });
+
+        // 序列化回写（保持原格式）
+        let abs = self.root.join(memory_id);
+        let path = Path::new(memory_id);
+        let ext = path.extension().and_then(|e| e.to_str());
+        let format = SerializationFormat::detect_from_extension(ext);
+        let content = format.serialize_memory(&file)?;
+        self.atomic_write(&abs, &content).await?;
+
+        tracing::info!(
+            memory_id = %memory_id,
+            added = updates.added_facts.len(),
+            revised = updates.revised_facts.len(),
+            deprecated = updates.deprecated_facts.len(),
+            total_updates = file.updates.len(),
+            "记忆迭代更新完成（独立字段存储）"
+        );
+
+        Ok(())
     }
 }
 
@@ -558,7 +952,7 @@ mod tests {
         assert!(doc.is_some());
         let doc = doc.unwrap();
         assert_eq!(doc.hooks.len(), 1);
-        assert_eq!(doc.hooks[0].memory_file_path, memory_path);
+        assert_eq!(doc.hooks[0].memory_id, memory_path);
     }
 
     #[tokio::test]
@@ -622,7 +1016,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(read_back.hooks.len(), 1);
-        assert_eq!(read_back.hooks[0].memory_file_path, "new-path");
+        assert_eq!(read_back.hooks[0].memory_id, "new-path");
     }
 
     #[tokio::test]
@@ -633,16 +1027,32 @@ mod tests {
         let file = make_test_memory_with_project(ArchivePeriod::Daily);
         let path = storage.write_memory(&file).await.unwrap();
 
-        // 验证路径走 projects/ 而非 sessions/
-        assert!(path.starts_with("projects/proj-001/daily/"));
-        assert!(!path.contains("sessions/"));
+        // v2.4: 记忆文件始终存到 sessions/{session_id}/（session 隔离）
+        assert!(path.starts_with("sessions/test-session/daily/"));
+        assert!(!path.contains("projects/"));
 
-        // list_memories 用 project_id 参数
+        // list_memories 用 session_id 参数
         let paths = storage
-            .list_memories("ignored", Some("proj-001"), ArchivePeriod::Daily)
+            .list_memories("test-session", Some("proj-001"), ArchivePeriod::Daily)
             .await
             .unwrap();
         assert_eq!(paths.len(), 1);
+
+        // project 级聚合索引（双写）：append_project_hook
+        let hook = IndexHook::from_memory_file(&file, path.clone());
+        storage
+            .append_project_hook("proj-001", ArchivePeriod::Daily, hook.clone())
+            .await
+            .unwrap();
+
+        // 从 project 级索引能读到这个 hook
+        let proj_index = storage
+            .read_project_index("proj-001", ArchivePeriod::Daily)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(proj_index.hooks.len(), 1);
+        assert_eq!(proj_index.hooks[0].memory_id, path);
     }
 
     #[tokio::test]
@@ -701,5 +1111,232 @@ mod tests {
         // 读回应该是 file2 的内容
         let read_back = storage.read_memory(&path2).await.unwrap();
         assert_eq!(read_back.id, file2.id);
+    }
+
+    // ====================================================================
+    // v2.4 自动迁移测试
+    // ====================================================================
+
+    #[test]
+    fn test_migrate_legacy_structure() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        // 旧结构：{root}/sess-old/daily/... + index/
+        let old_dir = root.join("sess-old");
+        std::fs::create_dir_all(old_dir.join("daily")).unwrap();
+        std::fs::create_dir_all(old_dir.join("index")).unwrap();
+        std::fs::write(old_dir.join("daily").join("test.json"), "{}").unwrap();
+
+        // 触发迁移
+        let _storage = LocalStorage::new(root);
+
+        // 旧目录应被移动到 sessions/sess-old/
+        assert!(!old_dir.exists(), "旧目录应已迁移");
+        let new_dir = root.join("sessions").join("sess-old");
+        assert!(new_dir.exists(), "新目录应存在");
+        assert!(new_dir.join("daily").join("test.json").exists());
+        assert!(new_dir.join("index").exists());
+    }
+
+    #[test]
+    fn test_migrate_idempotent() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        // 旧结构
+        std::fs::create_dir_all(root.join("sess-1").join("daily")).unwrap();
+
+        // 第一次迁移
+        let _s1 = LocalStorage::new(root);
+        assert!(root.join("sessions").join("sess-1").exists());
+        assert!(!root.join("sess-1").exists());
+
+        // 第二次构造（已是新结构），不应重复迁移
+        let _s2 = LocalStorage::new(root);
+        assert!(root.join("sessions").join("sess-1").exists());
+        assert!(!root.join("sess-1").exists());
+    }
+
+    #[test]
+    fn test_migrate_skips_non_session_dirs() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        // 非 session 目录（无 daily/weekly/monthly 子目录）
+        std::fs::create_dir_all(root.join("random-dir")).unwrap();
+        std::fs::write(root.join("random-dir").join("file.txt"), "hello").unwrap();
+
+        let _storage = LocalStorage::new(root);
+
+        // 应保留不动
+        assert!(root.join("random-dir").exists());
+        assert!(!root.join("sessions").exists());
+    }
+
+    #[test]
+    fn test_migrate_skips_when_dest_exists() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        // 先建新结构 sessions/sess-dup/daily/new.json
+        let new_file = root
+            .join("sessions")
+            .join("sess-dup")
+            .join("daily")
+            .join("new.json");
+        std::fs::create_dir_all(new_file.parent().unwrap()).unwrap();
+        std::fs::write(&new_file, "{}").unwrap();
+
+        // 再建旧结构 sess-dup/daily/old.json
+        let old_file = root.join("sess-dup").join("daily").join("old.json");
+        std::fs::create_dir_all(old_file.parent().unwrap()).unwrap();
+        std::fs::write(&old_file, "{}").unwrap();
+
+        // 触发迁移
+        let _storage = LocalStorage::new(root);
+
+        // 目标已存在 → 旧目录保留不覆盖
+        assert!(root.join("sess-dup").exists(), "目标已存在时旧目录应保留");
+        assert!(new_file.exists(), "新结构文件应保留");
+        assert!(old_file.exists(), "旧文件应保留");
+    }
+
+    #[test]
+    fn test_migrate_multiple_sessions() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        // 多个旧 session 目录
+        for sid in ["sess-a", "sess-b", "sess-c"] {
+            std::fs::create_dir_all(root.join(sid).join("weekly")).unwrap();
+        }
+
+        let _storage = LocalStorage::new(root);
+
+        for sid in ["sess-a", "sess-b", "sess-c"] {
+            assert!(!root.join(sid).exists(), "旧目录 {} 应已迁移", sid);
+            assert!(
+                root.join("sessions").join(sid).join("weekly").exists(),
+                "新目录 {} 应存在",
+                sid
+            );
+        }
+    }
+
+    #[test]
+    fn test_migrate_nonexistent_root() {
+        // root 不存在时不报错
+        let _storage = LocalStorage::new(std::path::Path::new("/nonexistent/path/xyz"));
+    }
+
+    // ====================================================================
+    // v2.4 记忆迭代更新测试
+    // ====================================================================
+
+    #[tokio::test]
+    async fn test_local_update_memory_added_revised_deprecated() {
+        let tmp = TempDir::new().unwrap();
+        let storage = LocalStorage::new(tmp.path());
+
+        let file = make_test_memory(ArchivePeriod::Daily, "sess-upd");
+        let memory_id = storage.write_memory(&file).await.unwrap();
+        let original_text = file.turns[0].user_message.text.clone().unwrap();
+
+        // 应用三类更新
+        let updates = crate::model::MemoryUpdate::new()
+            .add_fact("新事实：v2.4 批次 3 完成")
+            .revise_fact("修正：原计划 v2.5 改为 v2.4")
+            .deprecate_fact("废弃：旧的启发式评分已过时");
+
+        storage.update_memory(&memory_id, updates).await.unwrap();
+
+        // 验证 updates 字段（v2.4 风险点修复：独立存储）
+        let restored = storage.read_memory(&memory_id).await.unwrap();
+        assert_eq!(restored.updates.len(), 1, "应有 1 条更新记录");
+
+        let record = &restored.updates[0];
+        assert_eq!(
+            record.update.added_facts,
+            vec!["新事实：v2.4 批次 3 完成"]
+        );
+        assert_eq!(
+            record.update.revised_facts,
+            vec!["修正：原计划 v2.5 改为 v2.4"]
+        );
+        assert_eq!(
+            record.update.deprecated_facts,
+            vec!["废弃：旧的启发式评分已过时"]
+        );
+
+        // 验证原始 text 未被污染
+        let restored_text = restored.turns[0].user_message.text.as_ref().unwrap();
+        assert_eq!(
+            *restored_text, original_text,
+            "原始 text 不应被 update 修改"
+        );
+        assert!(
+            !restored_text.contains("[新增事实]"),
+            "原始 text 不应包含 update 标记"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_local_update_memory_empty_is_noop() {
+        let tmp = TempDir::new().unwrap();
+        let storage = LocalStorage::new(tmp.path());
+
+        let file = make_test_memory(ArchivePeriod::Daily, "sess-empty-upd");
+        let memory_id = storage.write_memory(&file).await.unwrap();
+        let original = storage.read_memory(&memory_id).await.unwrap();
+        let original_text = original.turns[0].user_message.text.clone().unwrap();
+
+        // 空更新 no-op
+        storage
+            .update_memory(&memory_id, crate::model::MemoryUpdate::new())
+            .await
+            .unwrap();
+
+        let restored = storage.read_memory(&memory_id).await.unwrap();
+        let restored_text = restored.turns[0].user_message.text.as_ref().unwrap();
+        assert_eq!(*restored_text, original_text);
+        assert!(restored.updates.is_empty(), "空更新不应产生 updates 记录");
+    }
+
+    #[tokio::test]
+    async fn test_local_update_memory_nonexistent_fails() {
+        let tmp = TempDir::new().unwrap();
+        let storage = LocalStorage::new(tmp.path());
+
+        let result = storage
+            .update_memory(
+                "sessions/sess-x/daily/nonexistent.json",
+                crate::model::MemoryUpdate::new().add_fact("test"),
+            )
+            .await;
+        assert!(result.is_err(), "更新不存在的记忆应失败");
+    }
+
+    #[tokio::test]
+    async fn test_local_update_memory_idempotent_append() {
+        let tmp = TempDir::new().unwrap();
+        let storage = LocalStorage::new(tmp.path());
+
+        let file = make_test_memory(ArchivePeriod::Daily, "sess-idem");
+        let memory_id = storage.write_memory(&file).await.unwrap();
+
+        // 第一次更新
+        let updates1 = crate::model::MemoryUpdate::new().add_fact("事实 A");
+        storage.update_memory(&memory_id, updates1).await.unwrap();
+
+        // 第二次更新
+        let updates2 = crate::model::MemoryUpdate::new().add_fact("事实 B");
+        storage.update_memory(&memory_id, updates2).await.unwrap();
+
+        // 验证两次更新都保留为独立记录
+        let restored = storage.read_memory(&memory_id).await.unwrap();
+        assert_eq!(restored.updates.len(), 2, "应有 2 条独立更新记录");
+        assert_eq!(restored.updates[0].update.added_facts, vec!["事实 A"]);
+        assert_eq!(restored.updates[1].update.added_facts, vec!["事实 B"]);
     }
 }

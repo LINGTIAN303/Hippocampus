@@ -1,0 +1,1237 @@
+//! # SQLite 存储后端
+//!
+//! 基于 rusqlite + r2d2 连接池的 SQLite 存储后端，支持 WAL 模式并发读写。
+//!
+//! ## 设计
+//!
+//! - [`SqliteStorage`]：一个实例对应一个 project 的数据库
+//! - 数据库文件路径：`{root}/projects/{project_id}/memories.db`
+//! - 无 `project_id` 时使用 `_default.db`
+//! - 内部用 [`r2d2`] 连接池管理 [`rusqlite`] 连接（WAL 模式支持并发读）
+//! - 所有 async 方法通过 [`tokio::task::spawn_blocking`] 包装同步 rusqlite 调用
+//!
+//! ## WAL 模式
+//!
+//! 启动时执行：
+//! ```sql
+//! PRAGMA journal_mode = WAL;       -- WAL 模式，读写不互斥
+//! PRAGMA synchronous = NORMAL;     -- WAL 下安全且更快
+//! PRAGMA busy_timeout = 5000;      -- 5 秒等待锁
+//! PRAGMA foreign_keys = ON;        -- 启用外键约束
+//! ```
+//!
+//! ## 表结构
+//!
+//! - `memories`：记忆文件（按 UUID 主键，content 字段存序列化后的完整 MemoryFile）
+//! - `hooks`：索引钩子（按 UUID 主键，scope 区分 session/project）
+//!
+//! ## 与 LocalStorage 共存
+//!
+//! v2.4 设计为「混合共存 + 手动迁移」：
+//! - 旧数据：LocalStorage 文件树
+//! - 新数据：SqliteStorage 数据库
+//! - 迁移：通过 `migrator` 模块的迁移工具（批次 4 实现）
+
+use crate::model::{ArchivePeriod, IndexDocument, IndexHook, MemoryFile, MemoryUpdate};
+use crate::serialization::SerializationFormat;
+use crate::storage::Storage;
+use chrono::{DateTime, Utc};
+use r2d2::Pool;
+use r2d2_sqlite::SqliteConnectionManager;
+use std::path::PathBuf;
+use uuid::Uuid;
+
+/// SQLite 存储后端
+///
+/// 一个实例对应一个 project 的数据库。多个 project 共用一个 root 目录时，
+/// 每个 project 有独立的数据库文件。
+///
+/// ## 并发
+///
+/// 内部用 r2d2 连接池，WAL 模式下：
+/// - 读操作可并发（多个连接同时读）
+/// - 写操作串行化（SQLite 数据库级写锁）
+/// - busy_timeout=5000ms 避免短时锁冲突
+///
+/// ## 跨进程安全
+///
+/// SQLite WAL 模式支持多进程并发访问同一数据库文件，但写仍是单进程独占。
+pub struct SqliteStorage {
+    /// r2d2 连接池
+    pool: Pool<SqliteConnectionManager>,
+    /// 序列化格式（决定 content 字段的存储格式）
+    format: SerializationFormat,
+    /// 绑定的 project_id（可为空，对应 _default.db）
+    project_id: Option<String>,
+}
+
+impl std::fmt::Debug for SqliteStorage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SqliteStorage")
+            .field("format", &self.format)
+            .field("project_id", &self.project_id)
+            .field("pool_state", &self.pool.state())
+            .finish()
+    }
+}
+
+/// SQL 初始化语句
+const INIT_SQL: &str = r#"
+PRAGMA journal_mode = WAL;
+PRAGMA synchronous = NORMAL;
+PRAGMA busy_timeout = 5000;
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS memories (
+    memory_id   TEXT PRIMARY KEY,
+    session_id  TEXT NOT NULL,
+    project_id  TEXT,
+    period      TEXT NOT NULL,
+    archived_at TEXT NOT NULL,
+    content     BLOB NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_memories_session ON memories(session_id, period);
+CREATE INDEX IF NOT EXISTS idx_memories_project ON memories(project_id, period);
+
+CREATE TABLE IF NOT EXISTS hooks (
+    hook_id        TEXT NOT NULL,
+    memory_id      TEXT NOT NULL,
+    session_id     TEXT NOT NULL,
+    project_id     TEXT,
+    period         TEXT NOT NULL,
+    summary_title  TEXT NOT NULL,
+    tags           TEXT NOT NULL,
+    archived_at    TEXT NOT NULL,
+    token_count    INTEGER NOT NULL,
+    scope          TEXT NOT NULL,
+    PRIMARY KEY (hook_id, scope),
+    FOREIGN KEY (memory_id) REFERENCES memories(memory_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_hooks_session ON hooks(session_id, period, scope);
+CREATE INDEX IF NOT EXISTS idx_hooks_project ON hooks(project_id, period, scope);
+CREATE INDEX IF NOT EXISTS idx_hooks_memory ON hooks(memory_id);
+"#;
+
+impl SqliteStorage {
+    /// 创建新的 SQLite 存储后端（默认 JSON 格式）
+    ///
+    /// - `root`：根目录（数据库文件存放位置）
+    /// - `project_id`：项目 ID（决定数据库文件路径，None 时用 `_default`）
+    ///
+    /// 数据库路径：`{root}/projects/{project_id or "_default"}/memories.db`
+    pub fn new(root: impl Into<PathBuf>, project_id: Option<String>) -> crate::Result<Self> {
+        Self::with_format(root, project_id, SerializationFormat::Json)
+    }
+
+    /// 创建新的 SQLite 存储后端（指定序列化格式）
+    pub fn with_format(
+        root: impl Into<PathBuf>,
+        project_id: Option<String>,
+        format: SerializationFormat,
+    ) -> crate::Result<Self> {
+        let root = root.into();
+        let project_dir = match &project_id {
+            Some(pid) => root.join("projects").join(pid),
+            None => root.join("projects").join("_default"),
+        };
+
+        // 创建目录（同步阻塞，仅初始化时执行一次）
+        std::fs::create_dir_all(&project_dir).map_err(|e| {
+            crate::Error::Storage(format!("创建项目目录失败 {:?}: {}", project_dir, e))
+        })?;
+
+        let db_path = project_dir.join("memories.db");
+        let manager = SqliteConnectionManager::file(&db_path).with_init(|c| {
+            c.execute_batch(INIT_SQL)
+        });
+
+        let pool = Pool::builder()
+            .max_size(8) // 默认 8 个连接（WAL 下读可并发）
+            .build(manager)
+            .map_err(|e| {
+                crate::Error::Storage(format!("创建连接池失败 {:?}: {}", db_path, e))
+            })?;
+
+        Ok(Self {
+            pool,
+            format,
+            project_id,
+        })
+    }
+
+    /// 序列化格式
+    pub fn format(&self) -> SerializationFormat {
+        self.format
+    }
+
+    /// 绑定的 project_id
+    pub fn project_id(&self) -> Option<&str> {
+        self.project_id.as_deref()
+    }
+
+    /// 序列化 MemoryFile → BLOB
+    fn serialize_memory(&self, file: &MemoryFile) -> crate::Result<Vec<u8>> {
+        self.format.serialize_memory(file)
+    }
+
+    /// 序列化 Vec<Tag> → JSON 字符串
+    fn serialize_tags(tags: &[crate::model::Tag]) -> crate::Result<String> {
+        serde_json::to_string(tags)
+            .map_err(|e| crate::Error::Serialize(format!("序列化 tags 失败: {}", e)))
+    }
+
+    /// 从数据库行构造 IndexHook
+    fn hook_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<IndexHook> {
+        let hook_id: String = row.get(0)?;
+        let memory_id: String = row.get(1)?;
+        let summary_title: String = row.get(5)?;
+        let tags_json: String = row.get(6)?;
+        let archived_at: String = row.get(7)?;
+        let token_count: i64 = row.get(8)?;
+
+        let tags: Vec<crate::model::Tag> =
+            serde_json::from_str(&tags_json).unwrap_or_default();
+        let archived_at = DateTime::parse_from_rfc3339(&archived_at)
+            .map(|dt| dt.with_timezone(&Utc))
+            .unwrap_or_else(|_| Utc::now());
+        let period_str: String = row.get(4)?;
+        let period = ArchivePeriod::from_str(&period_str).unwrap_or(ArchivePeriod::Daily);
+
+        Ok(IndexHook {
+            id: Uuid::parse_str(&hook_id).unwrap_or_else(|_| Uuid::new_v4()),
+            memory_id,
+            summary: crate::model::Summary {
+                title: summary_title,
+                abstract_text: None,
+                key_facts: Vec::new(),
+                key_entities: Vec::new(),
+                clue_anchors: Vec::new(),
+            },
+            tags,
+            archived_at,
+            period,
+            token_count: token_count as usize,
+        })
+    }
+
+    /// 在 spawn_blocking 中执行数据库操作
+    ///
+    /// 由于 rusqlite 是同步的，用 spawn_blocking 包装避免阻塞 tokio runtime。
+    /// `F` 闭包接收连接，返回 `crate::Result<T>`。
+    async fn with_conn<F, T>(&self, f: F) -> crate::Result<T>
+    where
+        F: FnOnce(&mut rusqlite::Connection) -> crate::Result<T> + Send + 'static,
+        T: Send + 'static,
+    {
+        let pool = self.pool.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut conn = pool.get().map_err(|e| {
+                crate::Error::Storage(format!("获取数据库连接失败: {}", e))
+            })?;
+            f(&mut conn)
+        })
+        .await
+        .map_err(|e| crate::Error::Storage(format!("数据库任务执行失败: {}", e)))?
+    }
+}
+
+#[async_trait::async_trait]
+impl Storage for SqliteStorage {
+    async fn write_memory(&self, file: &MemoryFile) -> crate::Result<String> {
+        let content = self.serialize_memory(file)?;
+        let memory_id = file.id.to_string();
+        let session_id = file.session_id.clone();
+        let project_id = file.project_id.clone();
+        let period = file.period.as_str().to_string();
+        let archived_at = file.archived_at.to_rfc3339();
+
+        // 克隆 content 用于 spawn_blocking
+        let content = content.clone();
+        let memory_id_clone = memory_id.clone();
+
+        self.with_conn(move |conn| {
+            conn.execute(
+                "INSERT OR REPLACE INTO memories (memory_id, session_id, project_id, period, archived_at, content)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                rusqlite::params![
+                    &memory_id_clone,
+                    &session_id,
+                    project_id.as_deref(),
+                    &period,
+                    &archived_at,
+                    &content,
+                ],
+            )
+            .map_err(|e| {
+                crate::Error::Storage(format!("写入 memories 失败: {}", e))
+            })?;
+            Ok(())
+        })
+        .await?;
+
+        // 返回 memory_id（UUID 字符串，与 LocalStorage 的路径不同）
+        Ok(memory_id)
+    }
+
+    async fn read_memory(&self, memory_id: &str) -> crate::Result<MemoryFile> {
+        let memory_id = memory_id.to_string();
+        let format = self.format;
+
+        self.with_conn(move |conn| {
+            let content: Vec<u8> = conn
+                .query_row(
+                    "SELECT content FROM memories WHERE memory_id = ?1",
+                    rusqlite::params![&memory_id],
+                    |row| row.get(0),
+                )
+                .map_err(|e| match e {
+                    rusqlite::Error::QueryReturnedNoRows => {
+                        crate::Error::Storage(format!("记忆文件不存在: {}", memory_id))
+                    }
+                    other => crate::Error::Storage(format!("查询 memories 失败: {}", other)),
+                })?;
+            format.deserialize_memory(&content)
+        })
+        .await
+    }
+
+    async fn delete_memory(&self, memory_id: &str) -> crate::Result<()> {
+        let memory_id = memory_id.to_string();
+
+        self.with_conn(move |conn| {
+            conn.execute(
+                "DELETE FROM memories WHERE memory_id = ?1",
+                rusqlite::params![&memory_id],
+            )
+            .map_err(|e| crate::Error::Storage(format!("删除 memories 失败: {}", e)))?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn write_index(&self, doc: &IndexDocument) -> crate::Result<String> {
+        let session_id = doc.session_id.clone();
+        let project_id = doc.project_id.clone();
+        let period = doc.period.as_str().to_string();
+
+        // 收集所有 hooks 的数据
+        let hooks_data: Vec<(String, String, String, String, String, String, String, i64)> = doc
+            .hooks
+            .iter()
+            .map(|h| {
+                Ok::<_, crate::Error>((
+                    h.id.to_string(),
+                    h.memory_id.clone(),
+                    session_id.clone(),
+                    h.summary.title.clone(),
+                    Self::serialize_tags(&h.tags)?,
+                    h.archived_at.to_rfc3339(),
+                    h.period.as_str().to_string(),
+                    h.token_count as i64,
+                ))
+            })
+            .collect::<crate::Result<Vec<_>>>()?;
+
+        let doc_id = doc.id.to_string();
+
+        self.with_conn(move |conn| {
+            // 事务：先删除旧 hooks，再插入新 hooks
+            let tx = conn.transaction().map_err(|e| {
+                crate::Error::Storage(format!("开启事务失败: {}", e))
+            })?;
+
+            // 删除旧 hooks（同 session + period + scope=session）
+            tx.execute(
+                "DELETE FROM hooks WHERE session_id = ?1 AND period = ?2 AND scope = 'session'",
+                rusqlite::params![&session_id, &period],
+            )
+            .map_err(|e| crate::Error::Storage(format!("删除旧 hooks 失败: {}", e)))?;
+
+            // 插入新 hooks
+            for (hook_id, memory_id, sess, summary_title, tags_json, archived_at, period_str, token_count) in &hooks_data {
+                tx.execute(
+                    "INSERT OR REPLACE INTO hooks (hook_id, memory_id, session_id, project_id, period, summary_title, tags, archived_at, token_count, scope)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'session')",
+                    rusqlite::params![
+                        hook_id,
+                        memory_id,
+                        sess,
+                        project_id.as_deref(),
+                        period_str,
+                        summary_title,
+                        tags_json,
+                        archived_at,
+                        token_count,
+                    ],
+                )
+                .map_err(|e| crate::Error::Storage(format!("插入 hooks 失败: {}", e)))?;
+            }
+
+            tx.commit().map_err(|e| {
+                crate::Error::Storage(format!("提交事务失败: {}", e))
+            })?;
+            Ok(())
+        })
+        .await?;
+
+        Ok(doc_id)
+    }
+
+    async fn read_index(
+        &self,
+        session_id: &str,
+        _project_id: Option<&str>,
+        period: ArchivePeriod,
+    ) -> crate::Result<Option<IndexDocument>> {
+        let session_id = session_id.to_string();
+        let period_str = period.as_str().to_string();
+        let project_id = self.project_id.clone();
+
+        self.with_conn(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT hook_id, memory_id, session_id, project_id, period, summary_title, tags, archived_at, token_count
+                     FROM hooks
+                     WHERE session_id = ?1 AND period = ?2 AND scope = 'session'
+                     ORDER BY archived_at ASC",
+                )
+                .map_err(|e| crate::Error::Storage(format!("准备查询失败: {}", e)))?;
+
+            let hooks: Vec<IndexHook> = stmt
+                .query_map(
+                    rusqlite::params![&session_id, &period_str],
+                    Self::hook_from_row,
+                )
+                .map_err(|e| crate::Error::Storage(format!("查询 hooks 失败: {}", e)))?
+                .filter_map(|r| r.ok())
+                .collect();
+
+            if hooks.is_empty() {
+                return Ok(None);
+            }
+
+            Ok(Some(IndexDocument {
+                id: Uuid::new_v4(),
+                schema_version: 1,
+                session_id,
+                project_id,
+                hooks,
+                updated_at: Utc::now(),
+                period,
+            }))
+        })
+        .await
+    }
+
+    async fn append_hook(
+        &self,
+        session_id: &str,
+        project_id: Option<&str>,
+        period: ArchivePeriod,
+        hook: IndexHook,
+    ) -> crate::Result<()> {
+        let hook_id = hook.id.to_string();
+        let memory_id = hook.memory_id.clone();
+        let session_id = session_id.to_string();
+        let project_id = project_id.map(|s| s.to_string());
+        let period_str = period.as_str().to_string();
+        let summary_title = hook.summary.title.clone();
+        let tags_json = Self::serialize_tags(&hook.tags)?;
+        let archived_at = hook.archived_at.to_rfc3339();
+        let token_count = hook.token_count as i64;
+        // 用 hook 自带的 period（与参数 period 可能不同？统一用参数 period）
+        let _ = period;
+
+        self.with_conn(move |conn| {
+            conn.execute(
+                "INSERT OR REPLACE INTO hooks (hook_id, memory_id, session_id, project_id, period, summary_title, tags, archived_at, token_count, scope)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'session')",
+                rusqlite::params![
+                    &hook_id,
+                    &memory_id,
+                    &session_id,
+                    project_id.as_deref(),
+                    &period_str,
+                    &summary_title,
+                    &tags_json,
+                    &archived_at,
+                    token_count,
+                ],
+            )
+            .map_err(|e| crate::Error::Storage(format!("插入 hook 失败: {}", e)))?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn list_memories(
+        &self,
+        session_id: &str,
+        _project_id: Option<&str>,
+        period: ArchivePeriod,
+    ) -> crate::Result<Vec<String>> {
+        let session_id = session_id.to_string();
+        let period_str = period.as_str().to_string();
+
+        self.with_conn(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT memory_id FROM memories
+                     WHERE session_id = ?1 AND period = ?2
+                     ORDER BY archived_at ASC",
+                )
+                .map_err(|e| crate::Error::Storage(format!("准备查询失败: {}", e)))?;
+
+            let ids: Vec<String> = stmt
+                .query_map(rusqlite::params![&session_id, &period_str], |row| {
+                    row.get(0)
+                })
+                .map_err(|e| crate::Error::Storage(format!("查询 memories 失败: {}", e)))?
+                .filter_map(|r| r.ok())
+                .collect();
+
+            Ok(ids)
+        })
+        .await
+    }
+
+    // ========================================================================
+    // project 层聚合索引
+    // ========================================================================
+
+    async fn read_project_index(
+        &self,
+        project_id: &str,
+        period: ArchivePeriod,
+    ) -> crate::Result<Option<IndexDocument>> {
+        let project_id = project_id.to_string();
+        let period_str = period.as_str().to_string();
+
+        self.with_conn(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT hook_id, memory_id, session_id, project_id, period, summary_title, tags, archived_at, token_count
+                     FROM hooks
+                     WHERE project_id = ?1 AND period = ?2 AND scope = 'project'
+                     ORDER BY archived_at ASC",
+                )
+                .map_err(|e| crate::Error::Storage(format!("准备查询失败: {}", e)))?;
+
+            let hooks: Vec<IndexHook> = stmt
+                .query_map(
+                    rusqlite::params![&project_id, &period_str],
+                    Self::hook_from_row,
+                )
+                .map_err(|e| crate::Error::Storage(format!("查询 project hooks 失败: {}", e)))?
+                .filter_map(|r| r.ok())
+                .collect();
+
+            if hooks.is_empty() {
+                return Ok(None);
+            }
+
+            // 取第一个 hook 的 session_id 作为文档 session_id（聚合文档）
+            let sess = hooks
+                .first()
+                .map(|h| h.memory_id.clone())
+                .unwrap_or_default();
+
+            Ok(Some(IndexDocument {
+                id: Uuid::new_v4(),
+                schema_version: 1,
+                session_id: sess, // project 级聚合文档，session_id 仅作占位
+                project_id: Some(project_id),
+                hooks,
+                updated_at: Utc::now(),
+                period,
+            }))
+        })
+        .await
+    }
+
+    async fn append_project_hook(
+        &self,
+        project_id: &str,
+        period: ArchivePeriod,
+        hook: IndexHook,
+    ) -> crate::Result<()> {
+        let hook_id = hook.id.to_string();
+        let memory_id = hook.memory_id.clone();
+        let project_id = project_id.to_string();
+        let period_str = period.as_str().to_string();
+        let summary_title = hook.summary.title.clone();
+        let tags_json = Self::serialize_tags(&hook.tags)?;
+        let archived_at = hook.archived_at.to_rfc3339();
+        let token_count = hook.token_count as i64;
+        // project 级 hook 的 session_id 字段：IndexHook 没有 session_id 字段，
+        // 用 memory_id 作为占位（project 级查询不依赖 session_id 字段）
+        let session_id_placeholder = memory_id.clone();
+
+        self.with_conn(move |conn| {
+            conn.execute(
+                "INSERT OR REPLACE INTO hooks (hook_id, memory_id, session_id, project_id, period, summary_title, tags, archived_at, token_count, scope)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'project')",
+                rusqlite::params![
+                    &hook_id,
+                    &memory_id,
+                    &session_id_placeholder,
+                    &project_id,
+                    &period_str,
+                    &summary_title,
+                    &tags_json,
+                    &archived_at,
+                    token_count,
+                ],
+            )
+            .map_err(|e| crate::Error::Storage(format!("插入 project hook 失败: {}", e)))?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn list_project_memories(
+        &self,
+        project_id: &str,
+        period: ArchivePeriod,
+    ) -> crate::Result<Vec<String>> {
+        let project_id = project_id.to_string();
+        let period_str = period.as_str().to_string();
+
+        self.with_conn(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT memory_id FROM memories
+                     WHERE project_id = ?1 AND period = ?2
+                     ORDER BY archived_at ASC",
+                )
+                .map_err(|e| crate::Error::Storage(format!("准备查询失败: {}", e)))?;
+
+            let ids: Vec<String> = stmt
+                .query_map(rusqlite::params![&project_id, &period_str], |row| {
+                    row.get(0)
+                })
+                .map_err(|e| crate::Error::Storage(format!("查询 project memories 失败: {}", e)))?
+                .filter_map(|r| r.ok())
+                .collect();
+
+            Ok(ids)
+        })
+        .await
+    }
+
+    // ========================================================================
+    // 记忆迭代更新
+    // ========================================================================
+
+    async fn update_memory(
+        &self,
+        memory_id: &str,
+        updates: MemoryUpdate,
+    ) -> crate::Result<()> {
+        // 空更新直接返回（幂等）
+        if updates.is_empty() {
+            return Ok(());
+        }
+
+        let memory_id = memory_id.to_string();
+        let format = self.format;
+        let added = updates.added_facts.len();
+        let revised = updates.revised_facts.len();
+        let deprecated = updates.deprecated_facts.len();
+        let update_record = crate::model::MemoryUpdateRecord {
+            updated_at: chrono::Utc::now(),
+            update: updates,
+        };
+
+        // v2.4 并发修复：用 BEGIN IMMEDIATE 事务包装「读取-修改-写入」全流程
+        //
+        // 原实现：read_memory（连接A）→ 修改内存 → with_conn UPDATE（连接B）
+        // 问题：两次连接操作之间无事务保护，并发时多个任务读到相同旧状态，
+        //       后写入覆盖先写入，导致 updates 丢失。
+        //
+        // 修复：在同一个 with_conn 闭包内用 BEGIN IMMEDIATE 立即获取写锁，
+        //       确保并发更新串行化。先读取 → 反序列化 → 追加 → 序列化 → 写回 → 提交，
+        //       全程持有写锁，其他写事务会等待 busy_timeout（5s）。
+        self.with_conn(move |conn| {
+            // 1. 立即获取写锁（BEGIN IMMEDIATE，区别于 DEFERRED 的延迟加锁）
+            conn.execute_batch("BEGIN IMMEDIATE")
+                .map_err(|e| crate::Error::Storage(format!("BEGIN IMMEDIATE 失败: {}", e)))?;
+
+            // 2. 在事务内读取现有 content（使用同一个连接，确保看到最新已提交数据）
+            let content: Vec<u8> = match conn.query_row(
+                "SELECT content FROM memories WHERE memory_id = ?1",
+                rusqlite::params![&memory_id],
+                |row| row.get(0),
+            ) {
+                Ok(c) => c,
+                Err(rusqlite::Error::QueryReturnedNoRows) => {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    return Err(crate::Error::Storage(format!("记忆文件不存在: {}", memory_id)));
+                }
+                Err(other) => {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    return Err(crate::Error::Storage(format!("查询 memories 失败: {}", other)));
+                }
+            };
+
+            // 3. 反序列化
+            let mut file = match format.deserialize_memory(&content) {
+                Ok(f) => f,
+                Err(e) => {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    return Err(e);
+                }
+            };
+
+            // 4. 追加更新记录（v2.4 风险点修复：独立 updates 字段，不污染原始上下文）
+            let total_updates = file.updates.len() + 1;
+            file.updates.push(update_record);
+
+            // 5. 重新序列化
+            let new_content = match format.serialize_memory(&file) {
+                Ok(c) => c,
+                Err(e) => {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    return Err(e);
+                }
+            };
+
+            // 6. 写回
+            if let Err(e) = conn.execute(
+                "UPDATE memories SET content = ?1 WHERE memory_id = ?2",
+                rusqlite::params![&new_content, &memory_id],
+            ) {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(crate::Error::Storage(format!("更新 memories 失败: {}", e)));
+            }
+
+            // 7. 提交事务（释放写锁）
+            if let Err(e) = conn.execute_batch("COMMIT") {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(crate::Error::Storage(format!("COMMIT 失败: {}", e)));
+            }
+
+            tracing::info!(
+                memory_id = %memory_id,
+                added = added,
+                revised = revised,
+                deprecated = deprecated,
+                total_updates = total_updates,
+                "SQLite 记忆迭代更新完成（BEGIN IMMEDIATE 事务保护）"
+            );
+
+            Ok(())
+        })
+        .await
+    }
+}
+
+// ============================================================================
+// 单元测试
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{
+        ArchiveConfig, ArchivePeriod, IndexDocument, IndexHook, MemoryFile, MessageContent,
+        MessageTurn, Tag,
+    };
+    use chrono::Utc;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+    use uuid::Uuid;
+
+    /// 构造测试用 MemoryFile
+    fn make_memory(session_id: &str, project_id: Option<&str>, period: ArchivePeriod) -> MemoryFile {
+        let turn = MessageTurn {
+            id: Uuid::new_v4(),
+            user_message: MessageContent {
+                text: Some("用户问：如何实现记忆库？".into()),
+                attachments: Vec::new(),
+                tool_calls: Vec::new(),
+                thinking: None,
+            },
+            llm_message: MessageContent {
+                text: Some("LLM 答：通过归档+索引+检索三级机制".into()),
+                attachments: Vec::new(),
+                tool_calls: Vec::new(),
+                thinking: None,
+            },
+            tags: vec![Tag::Text, Tag::CodeBlock],
+            timestamp: Utc::now(),
+            token_count: 100,
+        };
+        MemoryFile::new(
+            String::from(session_id),
+            project_id.map(String::from),
+            vec![turn],
+            period,
+        )
+    }
+
+    #[tokio::test]
+    async fn test_sqlite_write_and_read_memory() {
+        let tmp = TempDir::new().unwrap();
+        let storage = SqliteStorage::new(tmp.path(), Some("proj-test".into())).unwrap();
+
+        let original = make_memory("sess-1", Some("proj-test"), ArchivePeriod::Daily);
+        let memory_id = storage.write_memory(&original).await.unwrap();
+
+        // memory_id 应该是 UUID 字符串
+        assert!(Uuid::parse_str(&memory_id).is_ok());
+
+        let restored = storage.read_memory(&memory_id).await.unwrap();
+        assert_eq!(original.id, restored.id);
+        assert_eq!(original.session_id, restored.session_id);
+        assert_eq!(original.turns.len(), restored.turns.len());
+        assert_eq!(original.total_tokens, restored.total_tokens);
+    }
+
+    #[tokio::test]
+    async fn test_sqlite_read_nonexistent_memory() {
+        let tmp = TempDir::new().unwrap();
+        let storage = SqliteStorage::new(tmp.path(), None).unwrap();
+
+        let result = storage.read_memory("nonexistent-uuid").await;
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("记忆文件不存在"));
+    }
+
+    #[tokio::test]
+    async fn test_sqlite_delete_memory() {
+        let tmp = TempDir::new().unwrap();
+        let storage = SqliteStorage::new(tmp.path(), None).unwrap();
+
+        let file = make_memory("sess-del", None, ArchivePeriod::Daily);
+        let memory_id = storage.write_memory(&file).await.unwrap();
+
+        // 删除
+        storage.delete_memory(&memory_id).await.unwrap();
+
+        // 再读应失败
+        let result = storage.read_memory(&memory_id).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_sqlite_list_memories() {
+        let tmp = TempDir::new().unwrap();
+        let storage = SqliteStorage::new(tmp.path(), None).unwrap();
+
+        // 写入 3 个文件（同 session + Daily）
+        for i in 0..3 {
+            let mut f = make_memory("sess-list", None, ArchivePeriod::Daily);
+            f.total_tokens = 100 + i;
+            storage.write_memory(&f).await.unwrap();
+        }
+
+        let ids = storage
+            .list_memories("sess-list", None, ArchivePeriod::Daily)
+            .await
+            .unwrap();
+        assert_eq!(ids.len(), 3);
+
+        // 不同 session 不应被列出
+        let other_ids = storage
+            .list_memories("other-session", None, ArchivePeriod::Daily)
+            .await
+            .unwrap();
+        assert_eq!(other_ids.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_sqlite_list_memories_period_filter() {
+        let tmp = TempDir::new().unwrap();
+        let storage = SqliteStorage::new(tmp.path(), None).unwrap();
+
+        let daily_file = make_memory("sess-p", None, ArchivePeriod::Daily);
+        let weekly_file = make_memory("sess-p", None, ArchivePeriod::Weekly);
+        storage.write_memory(&daily_file).await.unwrap();
+        storage.write_memory(&weekly_file).await.unwrap();
+
+        let daily_ids = storage
+            .list_memories("sess-p", None, ArchivePeriod::Daily)
+            .await
+            .unwrap();
+        assert_eq!(daily_ids.len(), 1);
+
+        let weekly_ids = storage
+            .list_memories("sess-p", None, ArchivePeriod::Weekly)
+            .await
+            .unwrap();
+        assert_eq!(weekly_ids.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_sqlite_append_and_read_hook() {
+        let tmp = TempDir::new().unwrap();
+        let storage = SqliteStorage::new(tmp.path(), None).unwrap();
+
+        let file = make_memory("sess-h", None, ArchivePeriod::Daily);
+        let memory_id = storage.write_memory(&file).await.unwrap();
+
+        let hook = IndexHook::from_memory_file(&file, memory_id.clone());
+        storage
+            .append_hook("sess-h", None, ArchivePeriod::Daily, hook.clone())
+            .await
+            .unwrap();
+
+        let doc = storage
+            .read_index("sess-h", None, ArchivePeriod::Daily)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(doc.hooks.len(), 1);
+        assert_eq!(doc.hooks[0].id, hook.id);
+        assert_eq!(doc.hooks[0].memory_id, memory_id);
+        assert_eq!(doc.hooks[0].summary.title, hook.summary.title);
+    }
+
+    #[tokio::test]
+    async fn test_sqlite_read_index_empty() {
+        let tmp = TempDir::new().unwrap();
+        let storage = SqliteStorage::new(tmp.path(), None).unwrap();
+
+        let result = storage
+            .read_index("no-session", None, ArchivePeriod::Daily)
+            .await
+            .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_sqlite_append_multiple_hooks() {
+        let tmp = TempDir::new().unwrap();
+        let storage = SqliteStorage::new(tmp.path(), None).unwrap();
+
+        for i in 0..3 {
+            let mut f = make_memory("sess-mh", None, ArchivePeriod::Daily);
+            f.total_tokens = 100 + i;
+            let memory_id = storage.write_memory(&f).await.unwrap();
+            let hook = IndexHook::from_memory_file(&f, memory_id);
+            storage
+                .append_hook("sess-mh", None, ArchivePeriod::Daily, hook)
+                .await
+                .unwrap();
+        }
+
+        let doc = storage
+            .read_index("sess-mh", None, ArchivePeriod::Daily)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(doc.hooks.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_sqlite_write_index_overwrite() {
+        let tmp = TempDir::new().unwrap();
+        let storage = SqliteStorage::new(tmp.path(), None).unwrap();
+
+        // 写入 2 个 memory（获得真实 memory_id）
+        let file1 = make_memory("sess-ow", None, ArchivePeriod::Daily);
+        let file2 = make_memory("sess-ow", None, ArchivePeriod::Daily);
+        let mid1 = storage.write_memory(&file1).await.unwrap();
+        let mid2 = storage.write_memory(&file2).await.unwrap();
+
+        // 写入初始索引文档（含 2 个 hook，使用真实 memory_id 满足外键约束）
+        let mut doc1 = IndexDocument::new(
+            String::from("sess-ow"),
+            None,
+            ArchivePeriod::Daily,
+        );
+        doc1.add_hook(IndexHook::from_memory_file(&file1, mid1.clone()));
+        doc1.add_hook(IndexHook::from_memory_file(&file2, mid2.clone()));
+        storage.write_index(&doc1).await.unwrap();
+
+        // 验证有 2 个 hook
+        let read1 = storage
+            .read_index("sess-ow", None, ArchivePeriod::Daily)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(read1.hooks.len(), 2);
+
+        // 覆盖写入（只含 1 个 hook）
+        let mut doc2 = IndexDocument::new(
+            String::from("sess-ow"),
+            None,
+            ArchivePeriod::Daily,
+        );
+        doc2.add_hook(IndexHook::from_memory_file(&file1, mid1.clone()));
+        storage.write_index(&doc2).await.unwrap();
+
+        let read2 = storage
+            .read_index("sess-ow", None, ArchivePeriod::Daily)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(read2.hooks.len(), 1);
+        assert_eq!(read2.hooks[0].memory_id, mid1);
+    }
+
+    #[tokio::test]
+    async fn test_sqlite_project_hook_dual_write() {
+        let tmp = TempDir::new().unwrap();
+        let storage = SqliteStorage::new(tmp.path(), Some("proj-dw".into())).unwrap();
+
+        let file = make_memory("sess-dw", Some("proj-dw"), ArchivePeriod::Daily);
+        let memory_id = storage.write_memory(&file).await.unwrap();
+
+        let hook = IndexHook::from_memory_file(&file, memory_id.clone());
+
+        // 双写：session 级 + project 级
+        storage
+            .append_hook("sess-dw", Some("proj-dw"), ArchivePeriod::Daily, hook.clone())
+            .await
+            .unwrap();
+        storage
+            .append_project_hook("proj-dw", ArchivePeriod::Daily, hook.clone())
+            .await
+            .unwrap();
+
+        // session 级索引
+        let sess_doc = storage
+            .read_index("sess-dw", None, ArchivePeriod::Daily)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(sess_doc.hooks.len(), 1);
+
+        // project 级索引
+        let proj_doc = storage
+            .read_project_index("proj-dw", ArchivePeriod::Daily)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(proj_doc.hooks.len(), 1);
+        assert_eq!(proj_doc.hooks[0].memory_id, memory_id);
+    }
+
+    #[tokio::test]
+    async fn test_sqlite_list_project_memories() {
+        let tmp = TempDir::new().unwrap();
+        let storage = SqliteStorage::new(tmp.path(), Some("proj-lpm".into())).unwrap();
+
+        // 写入 2 个文件（同 project 不同 session）
+        let f1 = make_memory("sess-a", Some("proj-lpm"), ArchivePeriod::Daily);
+        let f2 = make_memory("sess-b", Some("proj-lpm"), ArchivePeriod::Daily);
+        storage.write_memory(&f1).await.unwrap();
+        storage.write_memory(&f2).await.unwrap();
+
+        // 跨 session 列出
+        let ids = storage
+            .list_project_memories("proj-lpm", ArchivePeriod::Daily)
+            .await
+            .unwrap();
+        assert_eq!(ids.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_sqlite_msgpack_format() {
+        let tmp = TempDir::new().unwrap();
+        let storage = SqliteStorage::with_format(
+            tmp.path(),
+            Some("proj-mp".into()),
+            SerializationFormat::MessagePack,
+        )
+        .unwrap();
+
+        let original = make_memory("sess-mp", Some("proj-mp"), ArchivePeriod::Daily);
+        let memory_id = storage.write_memory(&original).await.unwrap();
+
+        let restored = storage.read_memory(&memory_id).await.unwrap();
+        assert_eq!(original.id, restored.id);
+        assert_eq!(original.session_id, restored.session_id);
+    }
+
+    #[tokio::test]
+    async fn test_sqlite_update_memory() {
+        let tmp = TempDir::new().unwrap();
+        let storage = SqliteStorage::new(tmp.path(), None).unwrap();
+
+        let file = make_memory("sess-upd", None, ArchivePeriod::Daily);
+        let memory_id = storage.write_memory(&file).await.unwrap();
+        let original_text = file.turns[0].user_message.text.clone().unwrap();
+
+        // 更新记忆：added + revised + deprecated
+        let updates = MemoryUpdate::new()
+            .add_fact("新事实：Hippocampus 项目 v2.4 完成")
+            .revise_fact("修正：原定 v2.3 改为 v2.4")
+            .deprecate_fact("废弃：旧的评分模型已过时");
+
+        storage.update_memory(&memory_id, updates).await.unwrap();
+
+        // 验证 updates 字段（v2.4 风险点修复：独立存储）
+        let restored = storage.read_memory(&memory_id).await.unwrap();
+        assert_eq!(restored.updates.len(), 1, "应有 1 条更新记录");
+
+        let record = &restored.updates[0];
+        assert_eq!(
+            record.update.added_facts,
+            vec!["新事实：Hippocampus 项目 v2.4 完成"]
+        );
+        assert_eq!(
+            record.update.revised_facts,
+            vec!["修正：原定 v2.3 改为 v2.4"]
+        );
+        assert_eq!(
+            record.update.deprecated_facts,
+            vec!["废弃：旧的评分模型已过时"]
+        );
+
+        // 验证原始 text 未被污染
+        let restored_text = restored.turns[0].user_message.text.as_ref().unwrap();
+        assert_eq!(
+            *restored_text, original_text,
+            "原始 text 不应被 update 修改"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_sqlite_update_memory_empty_is_noop() {
+        let tmp = TempDir::new().unwrap();
+        let storage = SqliteStorage::new(tmp.path(), None).unwrap();
+
+        let file = make_memory("sess-upd-empty", None, ArchivePeriod::Daily);
+        let memory_id = storage.write_memory(&file).await.unwrap();
+        let original_text = storage
+            .read_memory(&memory_id)
+            .await
+            .unwrap()
+            .turns[0]
+            .user_message
+            .text
+            .clone()
+            .unwrap();
+
+        // 空更新应是 no-op
+        let updates = MemoryUpdate::new();
+        storage.update_memory(&memory_id, updates).await.unwrap();
+
+        let restored = storage.read_memory(&memory_id).await.unwrap();
+        let restored_text = restored.turns[0].user_message.text.as_ref().unwrap();
+        assert_eq!(*restored_text, original_text, "空更新不应修改内容");
+        assert!(restored.updates.is_empty(), "空更新不应产生 updates 记录");
+    }
+
+    #[tokio::test]
+    async fn test_sqlite_full_workflow() {
+        let tmp = TempDir::new().unwrap();
+        let storage: Arc<dyn Storage> = Arc::new(
+            SqliteStorage::new(tmp.path(), Some("proj-fw".into())).unwrap(),
+        );
+
+        // 模拟 Agent 多轮归档
+        let config = ArchiveConfig {
+            token_threshold: 100,
+            force_truncate_limit: 150,
+            wait_for_turn_completion: true,
+        };
+        let mut archiver = crate::archive::Archiver::new(
+            config,
+            storage.clone(),
+            "sess-fw",
+            Some("proj-fw".into()),
+        );
+
+        archiver.push_turn({
+            let t = MessageTurn {
+                id: Uuid::new_v4(),
+                user_message: MessageContent {
+                    text: Some("讨论 SQLite WAL 模式".into()),
+                    attachments: Vec::new(),
+                    tool_calls: Vec::new(),
+                    thinking: None,
+                },
+                llm_message: MessageContent {
+                    text: Some("WAL 模式支持并发读".into()),
+                    attachments: Vec::new(),
+                    tool_calls: Vec::new(),
+                    thinking: None,
+                },
+                tags: vec![Tag::Text],
+                timestamp: Utc::now(),
+                token_count: 60,
+            };
+            t
+        });
+        archiver.push_turn({
+            let t = MessageTurn {
+                id: Uuid::new_v4(),
+                user_message: MessageContent {
+                    text: Some("继续讨论 r2d2 连接池".into()),
+                    attachments: Vec::new(),
+                    tool_calls: Vec::new(),
+                    thinking: None,
+                },
+                llm_message: MessageContent {
+                    text: Some("r2d2 提供 8 个连接".into()),
+                    attachments: Vec::new(),
+                    tool_calls: Vec::new(),
+                    thinking: None,
+                },
+                tags: vec![Tag::Text],
+                timestamp: Utc::now(),
+                token_count: 50,
+            };
+            t
+        });
+
+        let (memory, hook) = archiver.archive().await.unwrap();
+
+        // 验证归档后状态
+        assert_eq!(archiver.current_tokens(), 0);
+        assert_eq!(archiver.pending_turns_count(), 0);
+
+        // 用 Retriever 渲染 system prompt
+        let retriever = crate::retrieve::Retriever::new(
+            storage.clone(),
+            "sess-fw",
+            Some("proj-fw".into()),
+        );
+        let prompt = retriever.render_to_system_prompt().await.unwrap();
+        assert!(prompt.contains("# 可用记忆索引"));
+        assert!(prompt.contains("SQLite WAL"));
+        assert!(prompt.contains(&hook.id.to_string()));
+
+        // 通过 hook_id 检索详细记忆
+        let retrieved = retriever
+            .retrieve_memory(&hook.id.to_string())
+            .await
+            .unwrap();
+        assert_eq!(retrieved.id, memory.id);
+        assert_eq!(retrieved.turns.len(), 2);
+        assert_eq!(retrieved.total_tokens, 110);
+        assert!(!retrieved.truncated);
+    }
+
+    #[tokio::test]
+    async fn test_sqlite_session_isolation() {
+        // 验证不同 session 的记忆互不干扰
+        let tmp = TempDir::new().unwrap();
+        let storage = SqliteStorage::new(tmp.path(), None).unwrap();
+
+        let f1 = make_memory("sess-iso-a", None, ArchivePeriod::Daily);
+        let f2 = make_memory("sess-iso-b", None, ArchivePeriod::Daily);
+        storage.write_memory(&f1).await.unwrap();
+        storage.write_memory(&f2).await.unwrap();
+
+        let a_ids = storage
+            .list_memories("sess-iso-a", None, ArchivePeriod::Daily)
+            .await
+            .unwrap();
+        let b_ids = storage
+            .list_memories("sess-iso-b", None, ArchivePeriod::Daily)
+            .await
+            .unwrap();
+
+        assert_eq!(a_ids.len(), 1);
+        assert_eq!(b_ids.len(), 1);
+        assert_ne!(a_ids[0], b_ids[0]);
+    }
+}
