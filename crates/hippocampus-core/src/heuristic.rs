@@ -216,7 +216,7 @@ impl ConflictDetector for HeuristicDetector {
 }
 
 // ============================================================================
-// 辅助函数：相似度 + 反义词匹配
+// 辅助函数：相似度 + 反义词匹配（v2.7 多语言优化）
 // ============================================================================
 
 /// 字符串归一化（去首尾空白 + 转小写）
@@ -224,12 +224,66 @@ fn normalize(s: &str) -> String {
     s.trim().to_lowercase()
 }
 
+/// 主语言类型（基于 Unicode 范围检测）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Language {
+    /// 以 CJK 汉字为主
+    Chinese,
+    /// 以拉丁字母为主
+    Latin,
+    /// 混合（无明显主语言）
+    Mixed,
+}
+
+/// 检测字符串的主语言
+///
+/// 基于 Unicode 范围统计字符比例：
+/// - CJK 汉字（U+4E00~U+9FFF）→ 中文字符
+/// - 拉丁字母（A-Z, a-z）→ 英文字符
+/// - 其他字符（空格/数字/标点）→ 忽略
+///
+/// 判定规则：若某语言占比 ≥ 60%，则为主语言；否则为 Mixed
+fn detect_language(s: &str) -> Language {
+    let mut cjk_count = 0usize;
+    let mut latin_count = 0usize;
+
+    for ch in s.chars() {
+        let code = ch as u32;
+        // CJK 统一汉字范围（常用 + 扩展 A 区起步）
+        if (0x4E00..=0x9FFF).contains(&code) || (0x3400..=0x4DBF).contains(&code) {
+            cjk_count += 1;
+        } else if ch.is_ascii_alphabetic() {
+            latin_count += 1;
+        }
+    }
+
+    let total = cjk_count + latin_count;
+    if total == 0 {
+        // 无可识别字符，默认按拉丁处理（数字/标点场景）
+        return Language::Latin;
+    }
+
+    let cjk_ratio = cjk_count as f64 / total as f64;
+    let latin_ratio = latin_count as f64 / total as f64;
+
+    if cjk_ratio >= 0.6 {
+        Language::Chinese
+    } else if latin_ratio >= 0.6 {
+        Language::Latin
+    } else {
+        Language::Mixed
+    }
+}
+
 /// 计算两个事实的相似度（0.0 ~ 1.0）
 ///
 /// 三级匹配：
 /// 1. 精确匹配（归一化后相等）→ 1.0
 /// 2. 包含匹配（短串是长串的子串）→ 0.9
-/// 3. Jaccard 相似度（字符 bigram 集合）→ 0.0 ~ 1.0
+/// 3. 语言感知 Jaccard 相似度 → 0.0 ~ 1.0
+///    - 中文：字符 bigram Jaccard（向后兼容）
+///    - 拉丁：词级 Jaccard + 字符 trigram Jaccard 加权（0.6 * 词级 + 0.4 * 字符级）
+///    - 混合：双算法结果加权融合
 fn similarity(a: &str, b: &str) -> f64 {
     let na = normalize(a);
     let nb = normalize(b);
@@ -253,13 +307,71 @@ fn similarity(a: &str, b: &str) -> f64 {
         return 0.9;
     }
 
-    // 3. Jaccard 相似度（字符 bigram）
-    let bigrams_a = char_bigrams(&na);
-    let bigrams_b = char_bigrams(&nb);
-    jaccard(&bigrams_a, &bigrams_b)
+    // 3. 语言感知 Jaccard
+    // 两串语言可能不同（如中文事实 vs 英文事实），按"较长串"的语言为主
+    let lang = if na.chars().count() >= nb.chars().count() {
+        detect_language(&na)
+    } else {
+        detect_language(&nb)
+    };
+
+    match lang {
+        Language::Chinese => {
+            // 中文：字符 bigram Jaccard（向后兼容）
+            let bigrams_a = char_bigrams(&na);
+            let bigrams_b = char_bigrams(&nb);
+            jaccard(&bigrams_a, &bigrams_b)
+        }
+        Language::Latin => {
+            // 拉丁：词级 Jaccard（主权重 0.6）+ 字符 trigram Jaccard（辅权重 0.4）
+            let words_a = word_tokens(&na);
+            let words_b = word_tokens(&nb);
+            let word_sim = jaccard(&words_a, &words_b);
+
+            let trigrams_a = char_trigrams(&na);
+            let trigrams_b = char_trigrams(&nb);
+            let char_sim = jaccard(&trigrams_a, &trigrams_b);
+
+            0.6 * word_sim + 0.4 * char_sim
+        }
+        Language::Mixed => {
+            // 混合：中文 bigram + 拉丁词级，合并后 Jaccard
+            let bg_a = char_bigrams(&na);
+            let bg_b = char_bigrams(&nb);
+            let cn_sim = jaccard(&bg_a, &bg_b);
+
+            let words_a = word_tokens(&na);
+            let words_b = word_tokens(&nb);
+            let word_sim = jaccard(&words_a, &words_b);
+
+            // 中文 bigram 与拉丁词级不可直接合并，取加权平均
+            // 权重根据各自语言字符比例动态调整
+            let cjk_ratio_a = cjk_ratio(&na);
+            let cjk_ratio_b = cjk_ratio(&nb);
+            let avg_cjk = (cjk_ratio_a + cjk_ratio_b) / 2.0;
+
+            avg_cjk * cn_sim + (1.0 - avg_cjk) * word_sim
+        }
+    }
 }
 
-/// 生成字符串的字符 bigram 集合
+/// 计算 CJK 字符在字符串中的占比（0.0 ~ 1.0）
+fn cjk_ratio(s: &str) -> f64 {
+    let total = s.chars().filter(|c| !c.is_whitespace()).count();
+    if total == 0 {
+        return 0.0;
+    }
+    let cjk = s
+        .chars()
+        .filter(|c| {
+            let code = *c as u32;
+            (0x4E00..=0x9FFF).contains(&code) || (0x3400..=0x4DBF).contains(&code)
+        })
+        .count();
+    cjk as f64 / total as f64
+}
+
+/// 生成字符串的字符 bigram 集合（中文场景使用）
 ///
 /// 例如 "abc" → {"ab", "bc"}
 fn char_bigrams(s: &str) -> HashSet<String> {
@@ -273,6 +385,33 @@ fn char_bigrams(s: &str) -> HashSet<String> {
     }
     (0..chars.len() - 1)
         .map(|i| format!("{}{}", chars[i], chars[i + 1]))
+        .collect()
+}
+
+/// 生成字符串的字符 trigram 集合（拉丁场景使用，捕捉词形变化）
+///
+/// 例如 "love" → {"lov", "ove"}
+fn char_trigrams(s: &str) -> HashSet<String> {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() < 3 {
+        let mut set = HashSet::new();
+        if !s.is_empty() {
+            set.insert(s.to_string());
+        }
+        return set;
+    }
+    (0..chars.len() - 2)
+        .map(|i| format!("{}{}{}", chars[i], chars[i + 1], chars[i + 2]))
+        .collect()
+}
+
+/// 拉丁字母词级分词（按空格 + 标点切分，转小写）
+///
+/// 例如 "I love coffee" → {"i", "love", "coffee"}
+fn word_tokens(s: &str) -> HashSet<String> {
+    s.split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(|w| w.to_lowercase())
         .collect()
 }
 
@@ -446,6 +585,142 @@ mod tests {
     fn test_jaccard_identical() {
         let a: HashSet<String> = ["ab", "cd"].iter().map(|s| s.to_string()).collect();
         assert_eq!(jaccard(&a, &a), 1.0);
+    }
+
+    // ------------------------------------------------------------------------
+    // v2.7 多语言相似度测试
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn test_detect_language_chinese() {
+        assert_eq!(detect_language("用户喜欢咖啡"), Language::Chinese);
+        assert_eq!(detect_language("今天天气不错"), Language::Chinese);
+    }
+
+    #[test]
+    fn test_detect_language_latin() {
+        assert_eq!(detect_language("I love coffee"), Language::Latin);
+        assert_eq!(detect_language("Hello World"), Language::Latin);
+    }
+
+    #[test]
+    fn test_detect_language_mixed() {
+        // 中英接近均衡，无明显主语言（cjk=3, latin=4, cjk_ratio=0.43 < 0.6, latin_ratio=0.57 < 0.6）
+        assert_eq!(detect_language("ab 咖啡 cd 茶"), Language::Mixed);
+    }
+
+    #[test]
+    fn test_detect_language_empty_and_numbers() {
+        // 无可识别字符 → 默认 Latin
+        assert_eq!(detect_language("123 456"), Language::Latin);
+        assert_eq!(detect_language(""), Language::Latin);
+    }
+
+    #[test]
+    fn test_word_tokens_basic() {
+        let tokens = word_tokens("I love coffee");
+        assert!(tokens.contains("i"));
+        assert!(tokens.contains("love"));
+        assert!(tokens.contains("coffee"));
+        assert_eq!(tokens.len(), 3);
+    }
+
+    #[test]
+    fn test_word_tokens_with_punctuation() {
+        let tokens = word_tokens("Hello, world! How are you?");
+        assert!(tokens.contains("hello"));
+        assert!(tokens.contains("world"));
+        assert!(tokens.contains("how"));
+        assert_eq!(tokens.len(), 5);
+    }
+
+    #[test]
+    fn test_char_trigrams_basic() {
+        let tg = char_trigrams("love");
+        assert!(tg.contains("lov"));
+        assert!(tg.contains("ove"));
+        assert_eq!(tg.len(), 2);
+    }
+
+    #[test]
+    fn test_char_trigrams_short() {
+        // 少于 3 字符 → 整串作为单个 gram
+        let tg = char_trigrams("ab");
+        assert_eq!(tg.len(), 1);
+        assert!(tg.contains("ab"));
+    }
+
+    #[test]
+    fn test_cjk_ratio_pure_chinese() {
+        assert!((cjk_ratio("用户喜欢咖啡") - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_cjk_ratio_pure_english() {
+        assert!((cjk_ratio("I love coffee") - 0.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_cjk_ratio_mixed() {
+        let r = cjk_ratio("love 咖啡");
+        // 6 非空字符中 2 个 CJK → 0.333
+        assert!((r - 0.333).abs() < 0.01, "cjk_ratio 应为 0.333，实际: {}", r);
+    }
+
+    // ------------------------------------------------------------------------
+    // 多语言相似度集成测试
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn test_similarity_english_word_level() {
+        // 英文：词级匹配应优于字符 bigram
+        // "love coffee" vs "like coffee"：词级 Jaccard = 1/3 ≈ 0.33
+        // 旧版字符 bigram 仅 0.2 左右，新版应更高
+        let sim = similarity("love coffee", "like coffee");
+        assert!(sim > 0.2, "英文词级相似度应 > 0.2，实际: {}", sim);
+    }
+
+    #[test]
+    fn test_similarity_english_exact_words() {
+        // 完全相同的英文词 → 高相似度
+        let sim = similarity("user loves coffee", "user loves coffee");
+        assert_eq!(sim, 1.0);
+    }
+
+    #[test]
+    fn test_similarity_english_shared_words() {
+        // 共享 2/3 词 → 词级 Jaccard = 0.67，加权后应 > 0.4
+        let sim = similarity("user loves coffee", "user hates coffee");
+        assert!(sim > 0.4, "共享词相似度应 > 0.4，实际: {}", sim);
+    }
+
+    #[test]
+    fn test_similarity_english_no_overlap() {
+        // 完全不相关 → 接近 0
+        let sim = similarity("hello world", "goodbye universe");
+        assert!(sim < 0.2, "不相关英文相似度应 < 0.2，实际: {}", sim);
+    }
+
+    #[test]
+    fn test_similarity_mixed_cn_en() {
+        // 混合场景：中文为主 → 走中文 bigram 路径
+        let sim = similarity("用户 love coffee", "用户 hate coffee");
+        // "用户" bigram 匹配 + 英文词不匹配 → 中等相似度
+        assert!(sim > 0.0 && sim < 0.9, "混合相似度应在 0~0.9，实际: {}", sim);
+    }
+
+    #[test]
+    fn test_similarity_chinese_backward_compat() {
+        // 中文场景行为应与旧版一致（字符 bigram Jaccard）
+        let sim = similarity("用户喜欢喝咖啡", "用户喜欢喝茶");
+        // 旧版 Jaccard 约 0.6（5 个 bigram 中 3 个相同）
+        assert!(sim > 0.4 && sim < 0.9, "中文相似度应保持 0.4~0.9，实际: {}", sim);
+    }
+
+    #[test]
+    fn test_similarity_case_insensitive_english() {
+        // 大小写归一化
+        assert_eq!(similarity("Hello World", "hello world"), 1.0);
     }
 
     // ------------------------------------------------------------------------
