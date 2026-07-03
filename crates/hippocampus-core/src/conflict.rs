@@ -35,7 +35,7 @@ use std::sync::Arc;
 // ============================================================================
 
 /// 冲突类型
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConflictKind {
     /// 自我矛盾：同一批 update 内 added 与 deprecated 包含相同/相似事实
@@ -192,7 +192,7 @@ impl ConflictDetector for NoopDetector {
 // HybridDetector（v2.11 串联检测器）
 // ============================================================================
 
-/// 混合冲突检测器（v2.11）
+/// 混合冲突检测器（v2.11，v2.12 去重优化）
 ///
 /// 串联两个检测器：先跑启发式（快速、无网络依赖），
 /// 再跑 LLM（语义级补充），合并两份报告。
@@ -201,7 +201,9 @@ impl ConflictDetector for NoopDetector {
 ///
 /// - **降级策略**：LLM 失败时返回空报告（与 `HttpLlmDetector` 行为一致），
 ///   启发式结果仍然保留
-/// - **去重**：直接合并，不去重（避免误合并相似但不同的冲突记录）
+/// - **去重（v2.12）**：基于 `(kind, new_fact)` 元组去重。启发式报告全部保留，
+///   LLM 报告中与启发式 `(kind, new_fact)` 完全相同的冲突不重复加入
+///   （避免同一冲突被两个检测器同时报告，但保留 LLM 发现的语义级新冲突）
 /// - **使用场景**：同时配置了启发式 + LLM 检测器时使用
 ///
 /// ## 示例
@@ -209,7 +211,7 @@ impl ConflictDetector for NoopDetector {
 /// ```rust,ignore
 /// use hippocampus_core::conflict::{ConflictDetector, HybridDetector};
 /// use hippocampus_core::heuristic::HeuristicDetector;
-/// // use hippocampus_server::HttpLlmDetector;
+/// // use hippocampus_llm::HttpLlmDetector;
 ///
 /// let heuristic = std::sync::Arc::new(HeuristicDetector::new());
 /// let llm = std::sync::Arc::new(HttpLlmDetector::new(config));
@@ -262,10 +264,21 @@ impl ConflictDetector for HybridDetector {
         // 2. 再跑 LLM（语义级补充，失败时返回空报告不阻塞）
         let llm_report = self.llm.detect(update, existing_memory).await;
 
-        // 3. 合并报告（不去重，保留所有检测到的冲突）
-        //    LLM 报告为空时（降级或无冲突）不影响启发式结果
+        // 3. 合并报告：基于 (kind, new_fact) 元组去重（v2.12 优化）
+        //    - 启发式报告全部保留
+        //    - LLM 报告中与启发式 (kind, new_fact) 完全相同的冲突不重复加入
+        //    - LLM 报告为空时（降级或无冲突）不影响启发式结果
+        let existing_keys: std::collections::HashSet<(ConflictKind, String)> = report
+            .conflicts
+            .iter()
+            .map(|c| (c.kind.clone(), c.new_fact.clone()))
+            .collect();
+
         for conflict in llm_report.conflicts {
-            report.push(conflict);
+            let key = (conflict.kind.clone(), conflict.new_fact.clone());
+            if !existing_keys.contains(&key) {
+                report.push(conflict);
+            }
         }
 
         report
@@ -595,5 +608,131 @@ mod tests {
         assert_eq!(report.count(), 1);
         assert!(report.has_critical());
         assert_eq!(report.by_severity(Severity::Critical).len(), 1);
+    }
+
+    // ========================================================================
+    // v2.12：去重优化测试
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_hybrid_detector_dedup_same_kind_new_fact() {
+        // v2.12：基于 (kind, new_fact) 元组去重
+        // heuristic 检测到 DirectContradict(new_fact="用户不喜欢咖啡")
+        // LLM 也报告 DirectContradict(new_fact="用户不喜欢咖啡") → 应去重，只保留 1 条
+        let heuristic: Arc<dyn ConflictDetector> =
+            Arc::new(crate::heuristic::HeuristicDetector::new());
+
+        // 构造 LLM mock，返回与 heuristic 相同 (kind, new_fact) 的冲突
+        let mut llm_report = ConflictReport::empty();
+        llm_report.push(ConflictRecord {
+            kind: ConflictKind::DirectContradict,
+            severity: Severity::Critical,
+            description: "LLM 也检测到直接矛盾".to_string(),
+            existing_fact: Some("用户喜欢咖啡".to_string()),
+            new_fact: "用户不喜欢咖啡".to_string(), // 与 heuristic 相同
+        });
+        let llm: Arc<dyn ConflictDetector> = Arc::new(MockDetector::new(llm_report));
+
+        let hybrid = HybridDetector::new(heuristic, llm);
+
+        let (update, memory) = make_heuristic_contradiction_case();
+        let report = hybrid.detect(&update, &memory).await;
+
+        // 去重后应只剩 heuristic 的 1 条（LLM 的重复条目被跳过）
+        assert_eq!(
+            report.count(),
+            1,
+            "相同 (kind, new_fact) 的冲突应去重，实际: {}",
+            report.count()
+        );
+        assert!(report.has_critical());
+    }
+
+    #[tokio::test]
+    async fn test_hybrid_detector_no_dedup_different_kind() {
+        // v2.12：kind 不同则不去重（即使 new_fact 相同）
+        // heuristic 检测到 DirectContradict(new_fact="用户不喜欢咖啡")
+        // LLM 报告 StanceReversal(new_fact="用户不喜欢咖啡") → kind 不同，不去重，保留 2 条
+        let heuristic: Arc<dyn ConflictDetector> =
+            Arc::new(crate::heuristic::HeuristicDetector::new());
+
+        let mut llm_report = ConflictReport::empty();
+        llm_report.push(ConflictRecord {
+            kind: ConflictKind::StanceReversal, // 不同 kind
+            severity: Severity::Warning,
+            description: "LLM 认为是立场反转".to_string(),
+            existing_fact: Some("用户喜欢咖啡".to_string()),
+            new_fact: "用户不喜欢咖啡".to_string(), // 相同 new_fact
+        });
+        let llm: Arc<dyn ConflictDetector> = Arc::new(MockDetector::new(llm_report));
+
+        let hybrid = HybridDetector::new(heuristic, llm);
+
+        let (update, memory) = make_heuristic_contradiction_case();
+        let report = hybrid.detect(&update, &memory).await;
+
+        assert_eq!(
+            report.count(),
+            2,
+            "kind 不同时不应去重，实际: {}",
+            report.count()
+        );
+        // 应同时存在 Critical（heuristic）和 Warning（LLM）
+        assert!(report.has_critical());
+        assert_eq!(report.by_severity(Severity::Warning).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_hybrid_detector_dedup_multiple_llm_duplicates() {
+        // v2.12：LLM 报告多条，部分与启发式重复，部分为新冲突
+        // heuristic 检测到 1 条 DirectContradict(new_fact="用户不喜欢咖啡")
+        // LLM 报告 3 条：
+        //   ① DirectContradict(new_fact="用户不喜欢咖啡") → 重复，去重
+        //   ② StanceReversal(new_fact="用户不喜欢咖啡") → kind 不同，保留
+        //   ③ DirectContradict(new_fact="用户讨厌咖啡") → new_fact 不同，保留
+        // 最终：heuristic 1 + LLM 2 = 3 条
+        let heuristic: Arc<dyn ConflictDetector> =
+            Arc::new(crate::heuristic::HeuristicDetector::new());
+
+        let mut llm_report = ConflictReport::empty();
+        // ① 与 heuristic 完全重复
+        llm_report.push(ConflictRecord {
+            kind: ConflictKind::DirectContradict,
+            severity: Severity::Critical,
+            description: "LLM 重复检测".to_string(),
+            existing_fact: Some("用户喜欢咖啡".to_string()),
+            new_fact: "用户不喜欢咖啡".to_string(),
+        });
+        // ② kind 不同
+        llm_report.push(ConflictRecord {
+            kind: ConflictKind::StanceReversal,
+            severity: Severity::Warning,
+            description: "LLM 立场反转".to_string(),
+            existing_fact: Some("用户喜欢咖啡".to_string()),
+            new_fact: "用户不喜欢咖啡".to_string(),
+        });
+        // ③ new_fact 不同
+        llm_report.push(ConflictRecord {
+            kind: ConflictKind::DirectContradict,
+            severity: Severity::Critical,
+            description: "LLM 另一处矛盾".to_string(),
+            existing_fact: Some("用户喜欢咖啡".to_string()),
+            new_fact: "用户讨厌咖啡".to_string(),
+        });
+        let llm: Arc<dyn ConflictDetector> = Arc::new(MockDetector::new(llm_report));
+
+        let hybrid = HybridDetector::new(heuristic, llm);
+
+        let (update, memory) = make_heuristic_contradiction_case();
+        let report = hybrid.detect(&update, &memory).await;
+
+        // heuristic 1 + LLM 保留 2（①去重，②③保留）= 3 条
+        assert_eq!(
+            report.count(),
+            3,
+            "应去重 1 条重复，保留 3 条，实际: {}",
+            report.count()
+        );
+        assert!(report.has_critical());
     }
 }

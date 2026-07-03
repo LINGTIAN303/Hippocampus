@@ -78,7 +78,7 @@ pub enum RetrievalSource {
 ///
 /// ## 实现
 ///
-/// - `HttpEmbedder`（server 层）：调用 OpenAI 兼容的 `/v1/embeddings` API
+/// - `HttpEmbedder`（llm 层）：调用 OpenAI 兼容的 `/v1/embeddings` API
 /// - 未来可扩展 `LocalEmbedder`（ort / candle 本地推理）
 ///
 /// ## 注意

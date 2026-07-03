@@ -192,7 +192,7 @@ pub trait AsyncScorer: Send + Sync {
 /// LLM 评分器配置
 ///
 /// 定义调用外部 LLM API 的参数。
-/// 具体实现（HttpLlmScorer）在 hippocampus-server crate 中。
+/// 具体实现（HttpLlmScorer）在 hippocampus-llm crate 中。
 ///
 /// **评分维度**：topic_relevance（主题相关性）
 /// **Prompt 策略**：将 MemoryFile 的摘要信息发送给 LLM，让其评估与当前主题的相关性

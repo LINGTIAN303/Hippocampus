@@ -6,7 +6,7 @@
 //! ## 架构定位
 //!
 //! - **core**：定义 `ConflictDetector` trait + `ConflictReport`（纯逻辑）
-//! - **server**：实现 `HttpLlmDetector`（HTTP IO，依赖 reqwest）
+//! - **llm**（本 crate）：实现 `HttpLlmDetector`（HTTP IO，依赖 reqwest）
 //!
 //! ## 检测流程
 //!

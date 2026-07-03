@@ -20,22 +20,16 @@
 //! | POST | `/api/v1/sessions/{sid}/compaction` | 周期任务 |
 
 mod error;
-/// v2.5 批次 7: HTTP Embedder 实现
-pub mod embedding;
 mod handlers;
-/// v2.4: LLM 评分器实现（HttpLlmScorer）
-pub mod llm;
-/// v2.10: LLM 冲突检测器实现（HttpLlmDetector）
-pub mod llm_detector;
 /// v2.5 批次 7: 搜索索引器（归档后自动索引到 BM25 + 向量索引）
 pub mod search;
 /// v2.8: Session 级索引隔离路由器
 pub mod session_search;
 
-pub use embedding::{EmbedderConfig, HttpEmbedder};
+// v2.12: LLM 客户端组件（HttpLlmDetector / HttpEmbedder / HttpLlmScorer）下沉到 hippocampus-llm crate
+// 这里 re-export 保持向后兼容，server 内部代码与外部消费者的 import 路径不变
+pub use hippocampus_llm::{EmbedderConfig, HttpEmbedder, HttpLlmDetector, HttpLlmScorer, LlmDetectorConfig};
 pub use error::AppError;
-pub use llm::HttpLlmScorer;
-pub use llm_detector::{HttpLlmDetector, LlmDetectorConfig};
 pub use search::SearchIndexer;
 pub use session_search::{SessionSearchRouter, SessionSearchRouterConfig};
 

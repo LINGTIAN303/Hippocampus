@@ -27,7 +27,7 @@ use std::sync::Arc;
 use hippocampus_core::conflict::{ConflictDetector, HybridDetector};
 use hippocampus_core::heuristic::HeuristicDetector;
 use hippocampus_mcp::HippocampusMcp;
-use hippocampus_server::{HttpLlmDetector, LlmDetectorConfig};
+use hippocampus_llm::{HttpLlmDetector, LlmDetectorConfig};
 use rmcp::ServiceExt;
 use rmcp::transport::stdio;
 

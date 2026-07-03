@@ -644,6 +644,12 @@ pub struct BatchUpdateItem {
     /// 失败时的错误信息
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// 检测到的冲突数量（v2.12：集成 conflict_detector 时有值）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conflicts: Option<usize>,
+    /// 是否存在 Critical 级别冲突（v2.12：集成 conflict_detector 时有值）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub has_critical: Option<bool>,
 }
 
 /// PATCH /api/v1/sessions/{sid}/memories/batch
@@ -661,9 +667,21 @@ pub async fn batch_update(
     let storage = create_storage(&state);
     let retriever = Retriever::new(storage.clone(), &sid, req.project_id);
 
-    // 1. 将 hook_id 转为 memory_id，构造 (memory_id, MemoryUpdate) 列表
-    let mut pairs: Vec<(String, hippocampus_core::model::MemoryUpdate, String, usize, usize, usize)> =
-        Vec::new();
+    // v2.12：用具名结构体替代 6 元组，支持冲突检测字段
+    struct UpdatePair {
+        memory_id: String,
+        hook_id: String,
+        update: hippocampus_core::model::MemoryUpdate,
+        added: usize,
+        revised: usize,
+        deprecated: usize,
+        conflicts_count: usize,
+        has_critical: bool,
+        result: Option<hippocampus_core::Result<()>>,
+    }
+
+    // 1. 将 hook_id 转为 memory_id，构造更新对
+    let mut pairs: Vec<UpdatePair> = Vec::new();
     for entry in &req.updates {
         let mid = retriever.find_memory_id_by_hook(&entry.hook_id).await;
         match mid {
@@ -671,87 +689,130 @@ pub async fn batch_update(
                 let added = entry.added_facts.len();
                 let revised = entry.revised_facts.len();
                 let deprecated = entry.deprecated_facts.len();
-                let updates = hippocampus_core::model::MemoryUpdate::new()
+                let update = hippocampus_core::model::MemoryUpdate::new()
                     .add_fact(entry.added_facts.join("\n"))
                     .revise_fact(entry.revised_facts.join("\n"))
                     .deprecate_fact(entry.deprecated_facts.join("\n"));
-                pairs.push((memory_id, updates, entry.hook_id.clone(), added, revised, deprecated));
+                pairs.push(UpdatePair {
+                    memory_id,
+                    hook_id: entry.hook_id.clone(),
+                    update,
+                    added,
+                    revised,
+                    deprecated,
+                    conflicts_count: 0,
+                    has_critical: false,
+                    result: None,
+                });
             }
             None => {
                 // hook_id 无效的条目稍后处理为失败
-                pairs.push((
-                    String::new(),
-                    hippocampus_core::model::MemoryUpdate::new(),
-                    entry.hook_id.clone(),
-                    0,
-                    0,
-                    0,
-                ));
+                pairs.push(UpdatePair {
+                    memory_id: String::new(),
+                    hook_id: entry.hook_id.clone(),
+                    update: hippocampus_core::model::MemoryUpdate::new(),
+                    added: 0,
+                    revised: 0,
+                    deprecated: 0,
+                    conflicts_count: 0,
+                    has_critical: false,
+                    result: None,
+                });
             }
         }
     }
 
-    // 2. 过滤出有效的更新对，调用批量更新
-    let valid_updates: Vec<(String, hippocampus_core::model::MemoryUpdate)> = pairs
-        .iter()
-        .filter(|(mid, _, _, _, _, _)| !mid.is_empty())
-        .map(|(mid, upd, _, _, _, _)| (mid.clone(), upd.clone()))
-        .collect();
-
-    let update_results = if !valid_updates.is_empty() {
-        storage.update_memories_batch(&valid_updates).await
+    // 2. 执行更新（v2.12：有检测器时逐条检测 + 持久化冲突，与 MCP 行为对齐）
+    if let Some(detector) = &state.conflict_detector {
+        // v2.12：有检测器时逐条检测 + 持久化冲突到 MemoryUpdateRecord.conflicts
+        for pair in &mut pairs {
+            if pair.memory_id.is_empty() {
+                continue;
+            }
+            let result = match storage.read_memory(&pair.memory_id).await {
+                Ok(existing) => {
+                    let report = detector.detect(&pair.update, &existing).await;
+                    pair.conflicts_count = report.count();
+                    pair.has_critical = report.has_critical();
+                    storage.update_memory_with_conflicts(
+                        &pair.memory_id,
+                        pair.update.clone(),
+                        report.conflicts,
+                    ).await
+                }
+                Err(e) => Err(e),
+            };
+            pair.result = Some(result);
+        }
     } else {
-        Vec::new()
-    };
+        // 无检测器：保持原有 batch 行为（向后兼容，v2.6 行为）
+        let valid_updates: Vec<(String, hippocampus_core::model::MemoryUpdate)> = pairs
+            .iter()
+            .filter(|p| !p.memory_id.is_empty())
+            .map(|p| (p.memory_id.clone(), p.update.clone()))
+            .collect();
 
-    // 3. 构建响应
-    let mut mid_to_result: std::collections::HashMap<String, &hippocampus_core::Result<()>> =
-        std::collections::HashMap::new();
-    let mut idx = 0;
-    for (mid, _, _, _, _, _) in &pairs {
-        if !mid.is_empty() && idx < update_results.len() {
-            mid_to_result.insert(mid.clone(), &update_results[idx]);
-            idx += 1;
+        let update_results = if !valid_updates.is_empty() {
+            storage.update_memories_batch(&valid_updates).await
+        } else {
+            Vec::new()
+        };
+
+        let mut idx = 0;
+        for pair in &mut pairs {
+            if !pair.memory_id.is_empty() && idx < update_results.len() {
+                pair.result = Some(update_results[idx].clone());
+                idx += 1;
+            }
         }
     }
 
+    // 3. 构建响应
     let results: Vec<BatchUpdateItem> = pairs
         .iter()
-        .map(|(mid, _, hook_id, added, revised, deprecated)| {
-            if mid.is_empty() {
+        .map(|p| {
+            if p.memory_id.is_empty() {
                 return BatchUpdateItem {
-                    hook_id: hook_id.clone(),
+                    hook_id: p.hook_id.clone(),
                     success: false,
                     added: None,
                     revised: None,
                     deprecated: None,
                     error: Some("未找到对应的 memory_id".to_string()),
+                    conflicts: None,
+                    has_critical: None,
                 };
             }
-            match mid_to_result.get(mid) {
+            match &p.result {
                 Some(Ok(())) => BatchUpdateItem {
-                    hook_id: hook_id.clone(),
+                    hook_id: p.hook_id.clone(),
                     success: true,
-                    added: Some(*added),
-                    revised: Some(*revised),
-                    deprecated: Some(*deprecated),
+                    added: Some(p.added),
+                    revised: Some(p.revised),
+                    deprecated: Some(p.deprecated),
                     error: None,
+                    conflicts: Some(p.conflicts_count),
+                    has_critical: Some(p.has_critical),
                 },
                 Some(Err(e)) => BatchUpdateItem {
-                    hook_id: hook_id.clone(),
+                    hook_id: p.hook_id.clone(),
                     success: false,
                     added: None,
                     revised: None,
                     deprecated: None,
                     error: Some(e.to_string()),
+                    conflicts: None,
+                    has_critical: None,
                 },
                 None => BatchUpdateItem {
-                    hook_id: hook_id.clone(),
+                    hook_id: p.hook_id.clone(),
                     success: false,
                     added: None,
                     revised: None,
                     deprecated: None,
                     error: Some("内部错误：结果缺失".to_string()),
+                    conflicts: None,
+                    has_critical: None,
                 },
             }
         })

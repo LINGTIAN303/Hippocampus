@@ -6,7 +6,7 @@
 //! ## 架构定位
 //!
 //! - **core**：定义 `AsyncScorer` trait + `LlmScorerConfig` 配置（纯逻辑）
-//! - **server**：实现 `HttpLlmScorer`（HTTP IO，依赖 reqwest）
+//! - **llm**（本 crate）：实现 `HttpLlmScorer`（HTTP IO，依赖 reqwest）
 //!
 //! ## 评分流程
 //!

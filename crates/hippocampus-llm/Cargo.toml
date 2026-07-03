@@ -1,0 +1,23 @@
+[package]
+name = "hippocampus-llm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Hippocampus LLM 客户端组件 - HTTP LLM 检测器/评分器/Embedder（隔离 reqwest 依赖）"
+
+[dependencies]
+hippocampus-core = { path = "../hippocampus-core", version = "0.1.0" }
+# v2.12：LLM HTTP 客户端（隔离 reqwest 依赖，避免 MCP 引入 axum/moka 重依赖）
+reqwest = { version = "0.12", features = ["json"] }
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { version = "1.0", features = ["rt", "macros"] }
+uuid = { workspace = true }
+chrono = { workspace = true }

@@ -18,8 +18,8 @@ path = "src/main.rs"
 
 [dependencies]
 hippocampus-core = { path = "../hippocampus-core" }
-# v2.11：复用 HttpLlmDetector + LlmDetectorConfig（LLM 冲突检测器）
-hippocampus-server = { path = "../hippocampus-server" }
+# v2.12：复用 HttpLlmDetector + LlmDetectorConfig（从 hippocampus-llm，避免引入 axum/moka 重依赖）
+hippocampus-llm = { path = "../hippocampus-llm" }
 rmcp = { workspace = true }
 tokio = { version = "1.0", features = ["full"] }
 serde = { workspace = true }
