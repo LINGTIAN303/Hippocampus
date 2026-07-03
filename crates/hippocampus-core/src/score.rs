@@ -202,7 +202,7 @@ pub struct LlmScorerConfig {
     pub api_url: String,
     /// API Key（Bearer token）
     pub api_key: String,
-    /// 模型名称（如 gpt-4o-mini / deepseek-chat）
+    /// 模型名称（如 gpt-5.5-instant / deepseek-chat）
     pub model: String,
     /// 评分主题描述（用于评估相关性，如 "Agent 记忆库开发"）
     pub topic: String,
@@ -217,7 +217,8 @@ impl Default for LlmScorerConfig {
         Self {
             api_url: String::new(),
             api_key: String::new(),
-            model: "gpt-4o-mini".into(),
+            // v2.13：默认值更新为 2026-06-24 发布的 gpt-5.5-instant（ChatGPT 默认模型）
+            model: "gpt-5.5-instant".into(),
             topic: String::new(),
             timeout_secs: 30,
             max_tokens: 100,

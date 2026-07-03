@@ -8,13 +8,13 @@
 //! - `HIPPOCAMPUS_ROOT`：存储根目录（默认 `./data`）
 //! - `RUST_LOG`：日志级别（默认 `info`）
 //!
-//! ## 冲突检测器配置（v2.11）
+//! ## 冲突检测器配置（v2.11，v2.13 默认值更新）
 //!
 //! | 环境变量 | 说明 | 默认值 |
 //! |---------|------|--------|
 //! | `HIPPOCAMPUS_DETECTOR_API_URL` | LLM API 地址（OpenAI 兼容 `/v1/chat/completions`） | 空（降级为 HeuristicDetector） |
 //! | `HIPPOCAMPUS_DETECTOR_API_KEY` | API Key | 空 |
-//! | `HIPPOCAMPUS_DETECTOR_MODEL` | 模型名 | `gpt-4o-mini` |
+//! | `HIPPOCAMPUS_DETECTOR_MODEL` | 模型名 | `gpt-5.5-instant` |
 //! | `HIPPOCAMPUS_DETECTOR_TIMEOUT` | 超时秒数 | `30` |
 //! | `HIPPOCAMPUS_DETECTOR_MAX_TOKENS` | LLM 最大输出 token | `500` |
 //!
@@ -31,35 +31,21 @@ use hippocampus_llm::{HttpLlmDetector, LlmDetectorConfig};
 use rmcp::ServiceExt;
 use rmcp::transport::stdio;
 
-/// 从环境变量构造冲突检测器（v2.11）
+/// 从环境变量构造冲突检测器（v2.11，v2.13 简化）
 ///
 /// - 配置了 `HIPPOCAMPUS_DETECTOR_API_URL` + `API_KEY`：
 ///   返回 `HybridDetector`（串联 Heuristic + LLM，合并两份报告）
 /// - 未配置：返回 `HeuristicDetector`（启发式纯算法，无 LLM 依赖）
 fn build_conflict_detector() -> Arc<dyn ConflictDetector> {
-    let api_url = std::env::var("HIPPOCAMPUS_DETECTOR_API_URL").unwrap_or_default();
-    let api_key = std::env::var("HIPPOCAMPUS_DETECTOR_API_KEY").unwrap_or_default();
-
-    if api_url.is_empty() || api_key.is_empty() {
-        tracing::info!(
-            "冲突检测器：未配置 LLM API，使用 HeuristicDetector（启发式纯算法，三维度检测）"
-        );
-        return Arc::new(HeuristicDetector::new());
-    }
-
-    let config = LlmDetectorConfig {
-        api_url,
-        api_key,
-        model: std::env::var("HIPPOCAMPUS_DETECTOR_MODEL")
-            .unwrap_or_else(|_| "gpt-4o-mini".to_string()),
-        timeout_secs: std::env::var("HIPPOCAMPUS_DETECTOR_TIMEOUT")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(30),
-        max_tokens: std::env::var("HIPPOCAMPUS_DETECTOR_MAX_TOKENS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(500),
+    // v2.13：使用 LlmDetectorConfig::from_env() 统一环境变量读取
+    let config = match LlmDetectorConfig::from_env() {
+        Some(config) => config,
+        None => {
+            tracing::info!(
+                "冲突检测器：未配置 LLM API，使用 HeuristicDetector（启发式纯算法，三维度检测）"
+            );
+            return Arc::new(HeuristicDetector::new());
+        }
     };
 
     tracing::info!(

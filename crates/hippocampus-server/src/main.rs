@@ -2,7 +2,7 @@
 //!
 //! 启动 Axum HTTP 服务，将 Core 的能力暴露为 REST API。
 //!
-//! ## 语义检索配置（v2.5 批次 7）
+//! ## 语义检索配置（v2.5 批次 7，v2.13 默认值更新）
 //!
 //! 通过环境变量配置 Embedder API 后，`/search` 端点和归档后自动索引生效：
 //!
@@ -10,19 +10,19 @@
 //! |---------|------|--------|
 //! | `HIPPOCAMPUS_EMBEDDER_API_URL` | Embedding API 地址（OpenAI 兼容 `/v1/embeddings`） | 空（降级为仅关键词） |
 //! | `HIPPOCAMPUS_EMBEDDER_API_KEY` | API Key | 空 |
-//! | `HIPPOCAMPUS_EMBEDDER_MODEL` | 模型名 | `text-embedding-3-small` |
-//! | `HIPPOCAMPUS_EMBEDDER_DIM` | 向量维度 | `1536` |
+//! | `HIPPOCAMPUS_EMBEDDER_MODEL` | 模型名 | `text-embedding-3-large` |
+//! | `HIPPOCAMPUS_EMBEDDER_DIM` | 向量维度 | `3072` |
 //! | `HIPPOCAMPUS_EMBEDDER_TIMEOUT` | 超时秒数 | `30` |
 //!
 //! 未配置 `API_URL` 时，自动降级为 `KeywordOnlyRetriever`（仅 BM25 关键词检索）。
 //!
-//! ## 冲突检测配置（v2.10）
+//! ## 冲突检测配置（v2.10，v2.13 默认值更新）
 //!
 //! | 环境变量 | 说明 | 默认值 |
 //! |---------|------|--------|
 //! | `HIPPOCAMPUS_DETECTOR_API_URL` | LLM API 地址（OpenAI 兼容 `/v1/chat/completions`） | 空（降级为 HeuristicDetector） |
 //! | `HIPPOCAMPUS_DETECTOR_API_KEY` | API Key | 空 |
-//! | `HIPPOCAMPUS_DETECTOR_MODEL` | 模型名 | `gpt-4o-mini` |
+//! | `HIPPOCAMPUS_DETECTOR_MODEL` | 模型名 | `gpt-5.5-instant` |
 //! | `HIPPOCAMPUS_DETECTOR_TIMEOUT` | 超时秒数 | `30` |
 //! | `HIPPOCAMPUS_DETECTOR_MAX_TOKENS` | LLM 最大输出 token | `500` |
 //!
@@ -35,6 +35,7 @@ use tower_http::trace::TraceLayer;
 /// 从环境变量读取 Embedder 配置并构造 SessionSearchRouter
 ///
 /// v2.8：替代 v2.5 的全局单例 build_search_components
+/// v2.13：使用 `EmbedderConfig::from_env()` 简化环境变量读取
 ///
 /// - 配置完整：每 session 独立 HybridRetriever（关键词 + 向量 + RRF 融合）
 /// - 未配置或失败：每 session 独立 KeywordOnlyRetriever（仅关键词，降级模式）
@@ -42,34 +43,17 @@ fn build_session_search() -> Option<Arc<hippocampus_server::SessionSearchRouter>
     use hippocampus_core::semantic::Embedder;
     use hippocampus_server::{EmbedderConfig, HttpEmbedder, SessionSearchRouter};
 
-    // 读取 Embedder 配置
-    let api_url = std::env::var("HIPPOCAMPUS_EMBEDDER_API_URL").unwrap_or_default();
-    let api_key = std::env::var("HIPPOCAMPUS_EMBEDDER_API_KEY").unwrap_or_default();
-
-    if api_url.is_empty() || api_key.is_empty() {
-        // 降级模式：仅关键词检索（每 session 独立）
-        tracing::info!("未配置 Embedder API，降级为仅关键词检索（KeywordOnlyRetriever，session 级隔离）");
-        return Some(Arc::new(SessionSearchRouter::new(None, 0)));
-    }
-
-    // 完整模式：构造 HttpEmbedder + SessionSearchRouter
-    let dim: usize = std::env::var("HIPPOCAMPUS_EMBEDDER_DIM")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(1536);
-
-    let embedder_config = EmbedderConfig {
-        api_url,
-        api_key,
-        model: std::env::var("HIPPOCAMPUS_EMBEDDER_MODEL")
-            .unwrap_or_else(|_| "text-embedding-3-small".to_string()),
-        dim,
-        timeout_secs: std::env::var("HIPPOCAMPUS_EMBEDDER_TIMEOUT")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(30),
+    // v2.13：使用 EmbedderConfig::from_env() 统一环境变量读取
+    let embedder_config = match EmbedderConfig::from_env() {
+        Some(config) => config,
+        None => {
+            // 降级模式：仅关键词检索（每 session 独立）
+            tracing::info!("未配置 Embedder API，降级为仅关键词检索（KeywordOnlyRetriever，session 级隔离）");
+            return Some(Arc::new(SessionSearchRouter::new(None, 0)));
+        }
     };
 
+    let dim = embedder_config.dim;
     tracing::info!(
         api_url = %embedder_config.api_url,
         model = %embedder_config.model,
@@ -81,36 +65,22 @@ fn build_session_search() -> Option<Arc<hippocampus_server::SessionSearchRouter>
     Some(Arc::new(SessionSearchRouter::new(Some(embedder), dim)))
 }
 
-/// 从环境变量构造冲突检测器（v2.10）
+/// 从环境变量构造冲突检测器（v2.10，v2.13 简化）
 ///
 /// - 配置了 `HIPPOCAMPUS_DETECTOR_API_URL` + `API_KEY`：返回 `HttpLlmDetector`（LLM 语义级检测）
 /// - 未配置：返回 `HeuristicDetector`（启发式纯算法，无 LLM 依赖）
 fn build_conflict_detector() -> std::sync::Arc<dyn hippocampus_core::conflict::ConflictDetector> {
     use hippocampus_server::{HttpLlmDetector, LlmDetectorConfig};
 
-    let api_url = std::env::var("HIPPOCAMPUS_DETECTOR_API_URL").unwrap_or_default();
-    let api_key = std::env::var("HIPPOCAMPUS_DETECTOR_API_KEY").unwrap_or_default();
-
-    if api_url.is_empty() || api_key.is_empty() {
-        tracing::info!(
-            "冲突检测器：未配置 LLM API，使用 HeuristicDetector（启发式纯算法，三维度检测）"
-        );
-        return std::sync::Arc::new(hippocampus_core::heuristic::HeuristicDetector::new());
-    }
-
-    let config = LlmDetectorConfig {
-        api_url,
-        api_key,
-        model: std::env::var("HIPPOCAMPUS_DETECTOR_MODEL")
-            .unwrap_or_else(|_| "gpt-4o-mini".to_string()),
-        timeout_secs: std::env::var("HIPPOCAMPUS_DETECTOR_TIMEOUT")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(30),
-        max_tokens: std::env::var("HIPPOCAMPUS_DETECTOR_MAX_TOKENS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(500),
+    // v2.13：使用 LlmDetectorConfig::from_env() 统一环境变量读取
+    let config = match LlmDetectorConfig::from_env() {
+        Some(config) => config,
+        None => {
+            tracing::info!(
+                "冲突检测器：未配置 LLM API，使用 HeuristicDetector（启发式纯算法，三维度检测）"
+            );
+            return std::sync::Arc::new(hippocampus_core::heuristic::HeuristicDetector::new());
+        }
     };
 
     tracing::info!(

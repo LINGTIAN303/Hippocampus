@@ -49,9 +49,9 @@ pub struct EmbedderConfig {
     pub api_url: String,
     /// API Key（Bearer token）
     pub api_key: String,
-    /// 模型名称（如 text-embedding-3-small / text-embedding-ada-002）
+    /// 模型名称（如 text-embedding-3-large / text-embedding-3-small）
     pub model: String,
-    /// 向量维度（如 1536 for text-embedding-3-small）
+    /// 向量维度（如 3072 for text-embedding-3-large）
     pub dim: usize,
     /// 请求超时（秒），默认 30
     pub timeout_secs: u64,
@@ -62,10 +62,56 @@ impl Default for EmbedderConfig {
         Self {
             api_url: String::new(),
             api_key: String::new(),
-            model: "text-embedding-3-small".into(),
-            dim: 1536,
+            // v2.13：默认值更新为 text-embedding-3-large（2026 年 RAG 架构首推，性能优于 3-small）
+            model: "text-embedding-3-large".into(),
+            dim: 3072,
             timeout_secs: 30,
         }
+    }
+}
+
+impl EmbedderConfig {
+    /// 环境变量前缀
+    pub const ENV_PREFIX: &'static str = "HIPPOCAMPUS_EMBEDDER";
+
+    /// 从环境变量构造配置（v2.13 新增）
+    ///
+    /// 读取以下环境变量（前缀 `HIPPOCAMPUS_EMBEDDER_`）：
+    ///
+    /// | 环境变量 | 字段 | 默认值 |
+    /// |---------|------|--------|
+    /// | `_API_URL` | `api_url` | 必填（缺失返回 None） |
+    /// | `_API_KEY` | `api_key` | 必填（缺失返回 None） |
+    /// | `_MODEL` | `model` | `text-embedding-3-large` |
+    /// | `_DIM` | `dim` | `3072` |
+    /// | `_TIMEOUT` | `timeout_secs` | `30` |
+    ///
+    /// ## 返回
+    ///
+    /// - `Some(config)`：`api_url` 和 `api_key` 均非空
+    /// - `None`：`api_url` 或 `api_key` 为空（调用方应降级为 KeywordOnlyRetriever）
+    pub fn from_env() -> Option<Self> {
+        let api_url = std::env::var(format!("{}_API_URL", Self::ENV_PREFIX)).ok()?;
+        let api_key = std::env::var(format!("{}_API_KEY", Self::ENV_PREFIX)).ok()?;
+        if api_url.is_empty() || api_key.is_empty() {
+            return None;
+        }
+
+        let config = Self {
+            api_url,
+            api_key,
+            model: std::env::var(format!("{}_MODEL", Self::ENV_PREFIX))
+                .unwrap_or_else(|_| Self::default().model),
+            dim: std::env::var(format!("{}_DIM", Self::ENV_PREFIX))
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(3072),
+            timeout_secs: std::env::var(format!("{}_TIMEOUT", Self::ENV_PREFIX))
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(30),
+        };
+        Some(config)
     }
 }
 
@@ -259,8 +305,9 @@ mod tests {
     #[test]
     fn test_embedder_config_default() {
         let config = EmbedderConfig::default();
-        assert_eq!(config.model, "text-embedding-3-small");
-        assert_eq!(config.dim, 1536);
+        // v2.13：默认值更新为 text-embedding-3-large + 3072 维
+        assert_eq!(config.model, "text-embedding-3-large");
+        assert_eq!(config.dim, 3072);
         assert_eq!(config.timeout_secs, 30);
         assert!(config.api_url.is_empty());
     }

@@ -55,7 +55,7 @@ use std::time::Duration;
 // 配置
 // ============================================================================
 
-/// LLM 冲突检测器配置（v2.10 新增）
+/// LLM 冲突检测器配置（v2.10 新增，v2.13 默认值更新）
 ///
 /// 与 `LlmScorerConfig` 独立，因为检测器的 prompt 和 token 需求不同。
 #[derive(Debug, Clone)]
@@ -64,7 +64,7 @@ pub struct LlmDetectorConfig {
     pub api_url: String,
     /// API Key（Bearer token）
     pub api_key: String,
-    /// 模型名称（如 gpt-4o-mini / deepseek-chat）
+    /// 模型名称（如 gpt-5.5-instant / deepseek-chat）
     pub model: String,
     /// 请求超时（秒），默认 30
     pub timeout_secs: u64,
@@ -77,10 +77,56 @@ impl Default for LlmDetectorConfig {
         Self {
             api_url: String::new(),
             api_key: String::new(),
-            model: "gpt-4o-mini".into(),
+            // v2.13：默认值更新为 2026-06-24 发布的 gpt-5.5-instant（ChatGPT 默认模型，幻觉降 52%）
+            model: "gpt-5.5-instant".into(),
             timeout_secs: 30,
             max_tokens: 500,
         }
+    }
+}
+
+impl LlmDetectorConfig {
+    /// 环境变量前缀
+    pub const ENV_PREFIX: &'static str = "HIPPOCAMPUS_DETECTOR";
+
+    /// 从环境变量构造配置（v2.13 新增）
+    ///
+    /// 读取以下环境变量（前缀 `HIPPOCAMPUS_DETECTOR_`）：
+    ///
+    /// | 环境变量 | 字段 | 默认值 |
+    /// |---------|------|--------|
+    /// | `_API_URL` | `api_url` | 必填（缺失返回 None） |
+    /// | `_API_KEY` | `api_key` | 必填（缺失返回 None） |
+    /// | `_MODEL` | `model` | `gpt-5.5-instant` |
+    /// | `_TIMEOUT` | `timeout_secs` | `30` |
+    /// | `_MAX_TOKENS` | `max_tokens` | `500` |
+    ///
+    /// ## 返回
+    ///
+    /// - `Some(config)`：`api_url` 和 `api_key` 均非空
+    /// - `None`：`api_url` 或 `api_key` 为空（调用方应降级为 HeuristicDetector）
+    pub fn from_env() -> Option<Self> {
+        let api_url = std::env::var(format!("{}_API_URL", Self::ENV_PREFIX)).ok()?;
+        let api_key = std::env::var(format!("{}_API_KEY", Self::ENV_PREFIX)).ok()?;
+        if api_url.is_empty() || api_key.is_empty() {
+            return None;
+        }
+
+        let config = Self {
+            api_url,
+            api_key,
+            model: std::env::var(format!("{}_MODEL", Self::ENV_PREFIX))
+                .unwrap_or_else(|_| Self::default().model),
+            timeout_secs: std::env::var(format!("{}_TIMEOUT", Self::ENV_PREFIX))
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(30),
+            max_tokens: std::env::var(format!("{}_MAX_TOKENS", Self::ENV_PREFIX))
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(500),
+        };
+        Some(config)
     }
 }
 
@@ -608,7 +654,8 @@ mod tests {
         let config = LlmDetectorConfig::default();
         assert!(config.api_url.is_empty());
         assert!(config.api_key.is_empty());
-        assert_eq!(config.model, "gpt-4o-mini");
+        // v2.13：默认值更新为 gpt-5.5-instant
+        assert_eq!(config.model, "gpt-5.5-instant");
         assert_eq!(config.timeout_secs, 30);
         assert_eq!(config.max_tokens, 500);
     }
