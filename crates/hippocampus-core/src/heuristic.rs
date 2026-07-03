@@ -28,48 +28,168 @@ use std::collections::HashSet;
 // 反义词词典
 // ============================================================================
 
-/// 中文反义词对（约 30 对）
+/// 反义词对（约 128 对：中文 96 + 英文 32）
 ///
-/// 每对 (a, b) 表示 a 与 b 语义相反。
-/// 检测时若 added_fact 含 a，existing_fact 含 b（或反之），则判定为直接矛盾。
+/// 每对 (pos, neg) 表示 pos 与 neg 语义相反。
+/// 检测时若 added_fact 含 pos，existing_fact 含 neg（或反之），则判定为直接矛盾。
+/// polarity() 优先匹配更长的 neg（如"不喜欢"优先于"喜欢"），避免子串误判。
 const ANTONYM_PAIRS: &[(&str, &str)] = &[
-    // 喜好
+    // ========================================================================
+    // 中文反义词（约 96 对）
+    // ========================================================================
+
+    // 喜好（7 对）
     ("喜欢", "不喜欢"),
     ("爱", "恨"),
     ("支持", "反对"),
     ("赞同", "反对"),
     ("赞成", "反对"),
     ("偏好", "排斥"),
-    // 是非
+    ("热爱", "憎恨"),
+    // 情感（8 对）
+    ("开心", "难过"),
+    ("高兴", "悲伤"),
+    ("满意", "失望"),
+    ("兴奋", "沮丧"),
+    ("感动", "冷漠"),
+    ("愉快", "痛苦"),
+    ("喜欢", "讨厌"),
+    ("期待", "绝望"),
+    // 评价（8 对）
+    ("好", "坏"),
+    ("优秀", "糟糕"),
+    ("美丽", "丑陋"),
+    ("聪明", "愚蠢"),
+    ("勤奋", "懒惰"),
+    ("勇敢", "懦弱"),
+    ("善良", "邪恶"),
+    ("诚实", "虚伪"),
+    // 是非（6 对）
     ("是", "不是"),
     ("对", "错"),
     ("正确", "错误"),
     ("真", "假"),
     ("有效", "无效"),
     ("合法", "非法"),
-    // 状态
+    // 状态（11 对）
     ("开", "关"),
     ("启用", "禁用"),
     ("启动", "停止"),
     ("开始", "结束"),
     ("运行", "停止"),
     ("连接", "断开"),
-    // 程度
+    ("活", "死"),
+    ("醒", "睡"),
+    ("通", "断"),
+    ("满", "空"),
+    ("动", "静"),
+    // 动作（10 对）
+    ("来", "去"),
+    ("进", "出"),
+    ("上", "下"),
+    ("前", "后"),
+    ("推", "拉"),
+    ("抓", "放"),
+    ("拿", "给"),
+    ("买", "卖"),
+    ("借", "还"),
+    ("收", "发"),
+    ("升", "降"),
+    // 程度（20 对）
     ("增加", "减少"),
     ("上升", "下降"),
     ("变大", "变小"),
     ("增强", "减弱"),
     ("加速", "减速"),
-    // 存在
+    ("多", "少"),
+    ("大", "小"),
+    ("高", "低"),
+    ("长", "短"),
+    ("深", "浅"),
+    ("厚", "薄"),
+    ("重", "轻"),
+    ("快", "慢"),
+    ("远", "近"),
+    ("宽", "窄"),
+    ("强", "弱"),
+    ("粗", "细"),
+    ("硬", "软"),
+    ("松", "紧"),
+    ("饱满", "干瘪"),
+    // 存在（3 对）
     ("有", "没有"),
     ("存在", "不存在"),
     ("包含", "不包含"),
-    // 其他
+    // 自然（7 对）
+    ("热", "冷"),
+    ("暖", "凉"),
+    ("亮", "暗"),
+    ("明", "暗"),
+    ("干", "湿"),
+    ("新", "旧"),
+    ("胜", "败"),
+    // 时间年龄（3 对）
+    ("早", "晚"),
+    ("老", "少"),
+    ("春", "秋"),
+    // 态度（5 对）
+    ("积极", "消极"),
+    ("主动", "被动"),
+    ("乐观", "悲观"),
+    ("自信", "自卑"),
+    ("谦虚", "傲慢"),
+    // 逻辑关系（3 对）
+    ("同", "异"),
+    ("统一", "对立"),
+    ("相同", "不同"),
+    // 其他（5 对）
     ("成功", "失败"),
     ("允许", "禁止"),
     ("接受", "拒绝"),
     ("同意", "拒绝"),
     ("肯定", "否定"),
+
+    // ========================================================================
+    // 英文反义词（约 32 对）
+    //
+    // 注意：polarity() 用 contains 子串匹配，对英文有已知限制：
+    // - 短词可能误匹配（如 "up" 在 "cup" 中）
+    // - 带前缀反义词（dis-/un-/in-）会误判，故避免使用
+    //   （如 "like/dislike" 不用，改用 "love/hate"）
+    // 英文反义词作为补充，主要场景仍为中文。
+    // ========================================================================
+    ("love", "hate"),
+    ("good", "bad"),
+    ("big", "small"),
+    ("fast", "slow"),
+    ("strong", "weak"),
+    ("brave", "cowardly"),
+    ("smart", "stupid"),
+    ("beautiful", "ugly"),
+    ("happy", "sad"),
+    ("hot", "cold"),
+    ("light", "dark"),
+    ("hard", "soft"),
+    ("loose", "tight"),
+    ("old", "new"),
+    ("empty", "full"),
+    ("busy", "idle"),
+    ("dry", "wet"),
+    ("long", "short"),
+    ("high", "low"),
+    ("up", "down"),
+    ("left", "right"),
+    ("forward", "backward"),
+    ("win", "lose"),
+    ("pass", "fail"),
+    ("alive", "dead"),
+    ("awake", "asleep"),
+    ("allow", "forbid"),
+    ("accept", "reject"),
+    ("agree", "refuse"),
+    ("yes", "no"),
+    ("true", "false"),
+    ("success", "failure"),
 ];
 
 // ============================================================================
@@ -971,5 +1091,118 @@ mod tests {
         assert!(facts.contains(&"事实C".to_string()));
         // revised_facts 不应被包含
         assert!(!facts.contains(&"修正D".to_string()));
+    }
+
+    // ------------------------------------------------------------------------
+    // v2.11: 扩展反义词词典测试
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn test_antonym_chinese_emotion() {
+        // 情感类
+        assert!(check_antonym("用户开心", "用户难过").is_some());
+        assert!(check_antonym("感到满意", "感到失望").is_some());
+        assert!(check_antonym("很兴奋", "很沮丧").is_some());
+        assert!(check_antonym("喜欢这个", "讨厌这个").is_some());
+    }
+
+    #[test]
+    fn test_antonym_chinese_evaluation() {
+        // 评价类
+        assert!(check_antonym("质量好", "质量坏").is_some());
+        assert!(check_antonym("表现优秀", "表现糟糕").is_some());
+        assert!(check_antonym("很聪明", "很愚蠢").is_some());
+        assert!(check_antonym("非常勇敢", "非常懦弱").is_some());
+    }
+
+    #[test]
+    fn test_antonym_chinese_action() {
+        // 动作类
+        assert!(check_antonym("向前进", "向后退").is_some());
+        assert!(check_antonym("向上走", "向下走").is_some());
+        assert!(check_antonym("推门", "拉门").is_some());
+        assert!(check_antonym("买入", "卖出").is_some());
+    }
+
+    #[test]
+    fn test_antonym_chinese_degree() {
+        // 程度类
+        assert!(check_antonym("数量多", "数量少").is_some());
+        assert!(check_antonym("速度快", "速度慢").is_some());
+        assert!(check_antonym("距离远", "距离近").is_some());
+        assert!(check_antonym("信号强", "信号弱").is_some());
+    }
+
+    #[test]
+    fn test_antonym_chinese_nature() {
+        // 自然类
+        assert!(check_antonym("天气热", "天气冷").is_some());
+        assert!(check_antonym("房间亮", "房间暗").is_some());
+        assert!(check_antonym("衣服干", "衣服湿").is_some());
+    }
+
+    #[test]
+    fn test_antonym_chinese_attitude() {
+        // 态度类
+        assert!(check_antonym("态度积极", "态度消极").is_some());
+        assert!(check_antonym("很主动", "很被动").is_some());
+        assert!(check_antonym("性格乐观", "性格悲观").is_some());
+    }
+
+    #[test]
+    fn test_antonym_english_basic() {
+        // 英文反义词
+        assert!(check_antonym("I love coffee", "I hate coffee").is_some());
+        assert!(check_antonym("good quality", "bad quality").is_some());
+        assert!(check_antonym("big size", "small size").is_some());
+        assert!(check_antonym("fast speed", "slow speed").is_some());
+    }
+
+    #[test]
+    fn test_antonym_english_extended() {
+        // 更多英文反义词
+        assert!(check_antonym("strong signal", "weak signal").is_some());
+        assert!(check_antonym("happy mood", "sad mood").is_some());
+        assert!(check_antonym("hot weather", "cold weather").is_some());
+        assert!(check_antonym("hard material", "soft material").is_some());
+        assert!(check_antonym("win the game", "lose the game").is_some());
+        assert!(check_antonym("accept offer", "reject offer").is_some());
+        assert!(check_antonym("yes answer", "no answer").is_some());
+        assert!(check_antonym("true statement", "false statement").is_some());
+    }
+
+    #[test]
+    fn test_antonym_no_false_positive_extended() {
+        // 确保新增反义词不引入误判
+        assert!(check_antonym("用户喜欢咖啡", "用户喜欢茶").is_none());
+        assert!(check_antonym("今天很热", "今天很暖").is_none(), "热和暖不是反义词");
+        assert!(check_antonym("质量很好", "质量很好").is_none(), "相同极性不应判定为对立");
+        assert!(check_antonym("I love coffee", "I love tea").is_none());
+        assert!(check_antonym("big and tall", "big and short").is_none(), "tall 和 short 不同反义词对，不应对 big 判定对立");
+    }
+
+    #[tokio::test]
+    async fn test_detect_direct_contradiction_extended() {
+        // v2.11: 测试新增反义词的端到端检测
+        let detector = HeuristicDetector::new();
+        let historical = MemoryUpdate::new().add_fact("用户性格乐观");
+        let memory = make_memory_with_updates(vec![historical]);
+
+        let update = MemoryUpdate::new().add_fact("用户性格悲观");
+        let report = detector.detect(&update, &memory).await;
+        assert!(report.has_critical(), "乐观 vs 悲悲应检测到直接矛盾");
+        assert_eq!(report.conflicts[0].kind, ConflictKind::DirectContradict);
+    }
+
+    #[tokio::test]
+    async fn test_detect_direct_contradiction_english() {
+        // v2.11: 英文反义词端到端检测
+        let detector = HeuristicDetector::new();
+        let historical = MemoryUpdate::new().add_fact("User loves coffee");
+        let memory = make_memory_with_updates(vec![historical]);
+
+        let update = MemoryUpdate::new().add_fact("User hates coffee");
+        let report = detector.detect(&update, &memory).await;
+        assert!(report.has_critical(), "love vs hate 应检测到直接矛盾");
     }
 }

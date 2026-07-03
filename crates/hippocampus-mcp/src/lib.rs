@@ -57,17 +57,59 @@ use hippocampus_core::storage::{LocalStorage, Storage};
 pub struct HippocampusMcp {
     /// 存储根目录
     storage_root: PathBuf,
+    /// 可注入的冲突检测器（v2.11）
+    ///
+    /// - `Some`：`detect_conflicts` 和 `batch_update` 使用注入的检测器
+    ///   （支持 `HeuristicDetector` / `HttpLlmDetector` / `HybridDetector`）
+    /// - `None`：`detect_conflicts` 降级为 `HeuristicDetector`（向后兼容）
+    ///   `batch_update` 不做冲突检测（保持 v2.6 行为）
+    conflict_detector: Option<Arc<dyn ConflictDetector>>,
 }
 
 impl HippocampusMcp {
-    /// 创建新的 MCP server 实例
+    /// 创建新的 MCP server 实例（无冲突检测器，向后兼容）
+    ///
+    /// 等价于 `with_conflict_detector(None)`。
     pub fn new(storage_root: PathBuf) -> Self {
-        Self { storage_root }
+        Self {
+            storage_root,
+            conflict_detector: None,
+        }
+    }
+
+    /// 创建带冲突检测器的 MCP server 实例（v2.11）
+    ///
+    /// ## 参数
+    ///
+    /// - `conflict_detector`：注入的检测器，支持：
+    ///   - `HeuristicDetector`：启发式纯算法（默认）
+    ///   - `HttpLlmDetector`：LLM 语义级检测
+    ///   - `HybridDetector`：串联启发式 + LLM
+    ///   - `None`：降级为 `HeuristicDetector`（仅 `detect_conflicts` 工具）
+    pub fn with_conflict_detector(
+        storage_root: PathBuf,
+        conflict_detector: Option<Arc<dyn ConflictDetector>>,
+    ) -> Self {
+        Self {
+            storage_root,
+            conflict_detector,
+        }
     }
 
     /// 创建 Storage 实例（每次 tool 调用创建，无状态）
     fn create_storage(&self) -> Arc<dyn Storage> {
         Arc::new(LocalStorage::new(self.storage_root.clone()))
+    }
+
+    /// 获取冲突检测器（v2.11）
+    ///
+    /// 若未注入检测器，降级为 `HeuristicDetector`（用于 `detect_conflicts` 工具）。
+    /// 返回 `Arc` clone（廉价引用计数）。
+    fn detector(&self) -> Arc<dyn ConflictDetector> {
+        match &self.conflict_detector {
+            Some(d) => Arc::clone(d),
+            None => Arc::new(hippocampus_core::heuristic::HeuristicDetector::new()),
+        }
     }
 }
 
@@ -522,83 +564,111 @@ impl HippocampusMcp {
         let storage = self.create_storage();
         let retriever = Retriever::new(storage.clone(), &params.session_id, params.project_id);
 
-        // hook_id → memory_id 转换 + 构造更新对
-        let mut pairs: Vec<(String, hippocampus_core::model::MemoryUpdate, String, usize, usize, usize)> =
-            Vec::new();
+        // v2.11：用具名结构体替代 6 元组，新增 conflicts_count + has_critical 字段
+        /// 单条更新条目（内部中间结构）
+        struct UpdatePair {
+            /// memory_id（空字符串表示 hook_id 未找到）
+            memory_id: String,
+            /// hook_id（响应用）
+            hook_id: String,
+            added: usize,
+            revised: usize,
+            deprecated: usize,
+            /// 检测到的冲突数（v2.11，0 表示无冲突或未检测）
+            conflicts_count: usize,
+            /// 是否存在 Critical 级别冲突（v2.11）
+            has_critical: bool,
+            /// 更新结果（None 表示未执行更新，Some(Ok) 成功，Some(Err) 失败）
+            result: Option<hippocampus_core::Result<()>>,
+        }
+
+        // hook_id → memory_id 转换 + 构造 UpdatePair
+        let mut pairs: Vec<UpdatePair> = Vec::with_capacity(entries.len());
         for entry in &entries {
             let mid = retriever.find_memory_id_by_hook(&entry.hook_id).await;
-            match mid {
-                Some(memory_id) => {
-                    let updates = hippocampus_core::model::MemoryUpdate::new()
-                        .add_fact(entry.added_facts.join("\n"))
-                        .revise_fact(entry.revised_facts.join("\n"))
-                        .deprecate_fact(entry.deprecated_facts.join("\n"));
-                    pairs.push((
-                        memory_id,
-                        updates,
-                        entry.hook_id.clone(),
-                        entry.added_facts.len(),
-                        entry.revised_facts.len(),
-                        entry.deprecated_facts.len(),
-                    ));
-                }
-                None => {
-                    pairs.push((
-                        String::new(),
-                        hippocampus_core::model::MemoryUpdate::new(),
-                        entry.hook_id.clone(),
-                        0, 0, 0,
-                    ));
-                }
-            }
+            let memory_id = mid.unwrap_or_default();
+            pairs.push(UpdatePair {
+                memory_id,
+                hook_id: entry.hook_id.clone(),
+                added: entry.added_facts.len(),
+                revised: entry.revised_facts.len(),
+                deprecated: entry.deprecated_facts.len(),
+                conflicts_count: 0,
+                has_critical: false,
+                result: None,
+            });
         }
 
-        // 批量更新
-        let valid_updates: Vec<(String, hippocampus_core::model::MemoryUpdate)> = pairs.iter()
-            .filter(|(mid, _, _, _, _, _)| !mid.is_empty())
-            .map(|(mid, upd, _, _, _, _)| (mid.clone(), upd.clone()))
-            .collect();
-        let update_results = if !valid_updates.is_empty() {
-            storage.update_memories_batch(&valid_updates).await
-        } else {
-            Vec::new()
-        };
-
-        // 构建响应
-        let mut mid_to_result: std::collections::HashMap<String, &hippocampus_core::Result<()>> =
-            std::collections::HashMap::new();
-        let mut idx = 0;
-        for (mid, _, _, _, _, _) in &pairs {
-            if !mid.is_empty() && idx < update_results.len() {
-                mid_to_result.insert(mid.clone(), &update_results[idx]);
-                idx += 1;
+        // v2.11：逐条更新（集成冲突检测）
+        // - 注入了 conflict_detector：read_memory + detect + update_memory_with_conflicts
+        // - 未注入：直接 update_memory（保持 v2.6 行为，无冲突检测）
+        // LocalStorage 的 update_memories_batch 默认实现就是循环 update_memory，
+        // 所以逐条调用不会降低性能。
+        for pair in &mut pairs {
+            // 跳过 hook_id 未找到的条目
+            if pair.memory_id.is_empty() {
+                continue;
             }
+
+            // 从 entries 找到对应的 entry 构造 MemoryUpdate
+            // （pairs 与 entries 顺序一致）
+            let entry = entries.iter().find(|e| e.hook_id == pair.hook_id).unwrap();
+            let update = hippocampus_core::model::MemoryUpdate::new()
+                .add_fact(entry.added_facts.join("\n"))
+                .revise_fact(entry.revised_facts.join("\n"))
+                .deprecate_fact(entry.deprecated_facts.join("\n"));
+
+            let result = if let Some(detector) = &self.conflict_detector {
+                // v2.11：检测冲突 + 持久化冲突记录
+                match storage.read_memory(&pair.memory_id).await {
+                    Ok(existing) => {
+                        let report = detector.detect(&update, &existing).await;
+                        pair.conflicts_count = report.count();
+                        pair.has_critical = report.has_critical();
+                        storage
+                            .update_memory_with_conflicts(
+                                &pair.memory_id,
+                                update,
+                                report.conflicts,
+                            )
+                            .await
+                    }
+                    Err(e) => Err(e),
+                }
+            } else {
+                // 未注入检测器：直接更新（保持 v2.6 行为，不检测冲突）
+                storage.update_memory(&pair.memory_id, update).await
+            };
+            pair.result = Some(result);
         }
 
+        // 构建响应（含 conflicts/has_critical 字段，v2.11）
         let items: Vec<_> = pairs.iter()
-            .map(|(mid, _, hook_id, added, revised, deprecated)| {
-                if mid.is_empty() {
+            .map(|pair| {
+                if pair.memory_id.is_empty() {
                     return serde_json::json!({
-                        "hook_id": hook_id,
+                        "hook_id": pair.hook_id,
                         "success": false,
                         "error": "未找到对应的 memory_id",
                     });
                 }
-                match mid_to_result.get(mid) {
+                match &pair.result {
                     Some(Ok(())) => serde_json::json!({
-                        "hook_id": hook_id,
+                        "hook_id": pair.hook_id,
                         "success": true,
-                        "added": added,
-                        "revised": revised,
-                        "deprecated": deprecated,
+                        "added": pair.added,
+                        "revised": pair.revised,
+                        "deprecated": pair.deprecated,
+                        "conflicts": pair.conflicts_count,
+                        "has_critical": pair.has_critical,
                     }),
                     Some(Err(e)) => serde_json::json!({
-                        "hook_id": hook_id,
+                        "hook_id": pair.hook_id,
                         "success": false,
                         "error": e.to_string(),
                     }),
                     None => serde_json::json!({
-                        "hook_id": hook_id,
+                        "hook_id": pair.hook_id,
                         "success": false,
                         "error": "内部错误：结果缺失",
                     }),
@@ -653,8 +723,9 @@ impl HippocampusMcp {
             .revise_fact(params.revised_facts.join("\n"))
             .deprecate_fact(params.deprecated_facts.join("\n"));
 
-        // 用 HeuristicDetector 检测
-        let detector = hippocampus_core::heuristic::HeuristicDetector::new();
+        // v2.11：使用注入的检测器（支持 HeuristicDetector / HttpLlmDetector / HybridDetector）
+        // 未注入时降级为 HeuristicDetector（向后兼容）
+        let detector = self.detector();
         let report = detector.detect(&update, &existing).await;
 
         let result = serde_json::json!({
@@ -732,6 +803,16 @@ mod tests {
     /// 创建一个绑定到临时目录的 MCP 实例
     fn make_mcp(tmpdir: &TempDir) -> HippocampusMcp {
         HippocampusMcp::new(tmpdir.path().to_path_buf())
+    }
+
+    /// 创建一个注入 HeuristicDetector 的 MCP 实例（v2.11 测试用）
+    fn make_mcp_with_detector(tmpdir: &TempDir) -> HippocampusMcp {
+        let detector: Arc<dyn ConflictDetector> =
+            Arc::new(hippocampus_core::heuristic::HeuristicDetector::new());
+        HippocampusMcp::with_conflict_detector(
+            tmpdir.path().to_path_buf(),
+            Some(detector),
+        )
     }
 
     /// 构造一个最小合法 MessageTurn JSON 字符串
@@ -1264,5 +1345,191 @@ mod tests {
         });
         let result = mcp.get_conflicts(get_params).await;
         assert!(result.is_err(), "不存在的 hook_id 应返回错误");
+    }
+
+    // ========================================================================
+    // v2.11：注入检测器后的 batch_update 集成测试
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_batch_update_with_detector_returns_conflicts_field() {
+        // 注入 HeuristicDetector：第一次 batch_update 添加"用户喜欢咖啡"（无冲突），
+        // 第二次 batch_update 添加"用户不喜欢咖啡"（与历史直接矛盾）→ 响应应含 conflicts>=1 + has_critical=true
+        let tmp = TempDir::new().unwrap();
+        let mcp = make_mcp_with_detector(&tmp);
+
+        // 1. 归档
+        let params = Parameters(ArchiveParams {
+            session_id: "sess-v211-a".to_string(),
+            turns_json: make_turns_json("用户消息", "LLM 回复", 100),
+            project_id: None,
+        });
+        let result = mcp.archive(params).await.unwrap();
+        let result: Value = serde_json::from_str(&result).unwrap();
+        let hook_id = result["hook_id"].as_str().unwrap().to_string();
+
+        // 2. 第一次 batch_update：添加"用户喜欢咖啡"（无历史 → 无冲突）
+        let updates_json = serde_json::json!([{
+            "hook_id": hook_id,
+            "added_facts": ["用户喜欢咖啡"],
+            "revised_facts": [],
+            "deprecated_facts": [],
+        }])
+        .to_string();
+        let params = Parameters(BatchUpdateParams {
+            session_id: "sess-v211-a".to_string(),
+            updates_json,
+            project_id: None,
+        });
+        let result = mcp.batch_update(params).await.unwrap();
+        let result: Value = serde_json::from_str(&result).unwrap();
+        // 第一次 update 无历史事实，无冲突
+        assert_eq!(result["items"][0]["success"], true);
+        assert_eq!(result["items"][0]["conflicts"], 0);
+        assert_eq!(result["items"][0]["has_critical"], false);
+
+        // 3. 第二次 batch_update：添加"用户不喜欢咖啡"（与历史"喜欢咖啡"直接矛盾）
+        let updates_json = serde_json::json!([{
+            "hook_id": hook_id,
+            "added_facts": ["用户不喜欢咖啡"],
+            "revised_facts": [],
+            "deprecated_facts": [],
+        }])
+        .to_string();
+        let params = Parameters(BatchUpdateParams {
+            session_id: "sess-v211-a".to_string(),
+            updates_json,
+            project_id: None,
+        });
+        let result = mcp.batch_update(params).await.unwrap();
+        let result: Value = serde_json::from_str(&result).unwrap();
+
+        // 应检测到至少 1 条 Critical 冲突（direct_contradict）
+        assert_eq!(result["items"][0]["success"], true);
+        let conflicts = result["items"][0]["conflicts"].as_u64().unwrap();
+        assert!(
+            conflicts >= 1,
+            "第二次 update 应检测到与历史'喜欢咖啡'的直接矛盾，实际 conflicts: {conflicts}"
+        );
+        assert_eq!(
+            result["items"][0]["has_critical"], true,
+            "直接矛盾应为 Critical 级别"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_batch_update_with_detector_persists_conflicts() {
+        // 注入 HeuristicDetector：batch_update 检测到的冲突应持久化到 MemoryUpdateRecord.conflicts，
+        // 后续 get_conflicts 能查到。
+        let tmp = TempDir::new().unwrap();
+        let mcp = make_mcp_with_detector(&tmp);
+
+        // 1. 归档
+        let params = Parameters(ArchiveParams {
+            session_id: "sess-v211-b".to_string(),
+            turns_json: make_turns_json("用户消息", "LLM 回复", 100),
+            project_id: None,
+        });
+        let result = mcp.archive(params).await.unwrap();
+        let result: Value = serde_json::from_str(&result).unwrap();
+        let hook_id = result["hook_id"].as_str().unwrap().to_string();
+
+        // 2. 第一次 batch_update：添加"用户喜欢咖啡"
+        let updates_json = serde_json::json!([{
+            "hook_id": hook_id,
+            "added_facts": ["用户喜欢咖啡"],
+        }])
+        .to_string();
+        let params = Parameters(BatchUpdateParams {
+            session_id: "sess-v211-b".to_string(),
+            updates_json,
+            project_id: None,
+        });
+        mcp.batch_update(params).await.unwrap();
+
+        // 3. 第二次 batch_update：添加"用户不喜欢咖啡"（触发冲突，应持久化）
+        let updates_json = serde_json::json!([{
+            "hook_id": hook_id,
+            "added_facts": ["用户不喜欢咖啡"],
+        }])
+        .to_string();
+        let params = Parameters(BatchUpdateParams {
+            session_id: "sess-v211-b".to_string(),
+            updates_json,
+            project_id: None,
+        });
+        mcp.batch_update(params).await.unwrap();
+
+        // 4. get_conflicts 查询持久化的冲突
+        let get_params = Parameters(GetConflictsParams {
+            session_id: "sess-v211-b".to_string(),
+            hook_id,
+            project_id: None,
+        });
+        let result = mcp.get_conflicts(get_params).await.unwrap();
+        let result: Value = serde_json::from_str(&result).unwrap();
+
+        // 应有 1 条持久化的 Critical 冲突
+        let total = result["total"].as_u64().unwrap();
+        assert!(
+            total >= 1,
+            "get_conflicts 应查到持久化的冲突，实际 total: {total}"
+        );
+        assert!(
+            result["critical_count"].as_u64().unwrap() >= 1,
+            "应至少有 1 条 Critical 冲突"
+        );
+
+        // 验证冲突类型为 direct_contradict
+        let conflicts = result["conflicts"].as_array().unwrap();
+        let has_direct = conflicts.iter().any(|c| c["kind"] == "direct_contradict");
+        assert!(has_direct, "应包含 direct_contradict 类型冲突");
+    }
+
+    #[tokio::test]
+    async fn test_batch_update_without_detector_no_conflicts_field_default() {
+        // 未注入检测器（HippocampusMcp::new）：batch_update 不检测冲突，
+        // 响应中 conflicts=0, has_critical=false（默认值）
+        let tmp = TempDir::new().unwrap();
+        let mcp = make_mcp(&tmp); // 无检测器
+
+        // 1. 归档
+        let params = Parameters(ArchiveParams {
+            session_id: "sess-v211-c".to_string(),
+            turns_json: make_turns_json("用户消息", "LLM 回复", 100),
+            project_id: None,
+        });
+        let result = mcp.archive(params).await.unwrap();
+        let result: Value = serde_json::from_str(&result).unwrap();
+        let hook_id = result["hook_id"].as_str().unwrap().to_string();
+
+        // 2. batch_update 添加事实（无检测器 → 不检测冲突）
+        let updates_json = serde_json::json!([{
+            "hook_id": hook_id,
+            "added_facts": ["用户喜欢咖啡"],
+        }])
+        .to_string();
+        let params = Parameters(BatchUpdateParams {
+            session_id: "sess-v211-c".to_string(),
+            updates_json,
+            project_id: None,
+        });
+        let result = mcp.batch_update(params).await.unwrap();
+        let result: Value = serde_json::from_str(&result).unwrap();
+
+        // 无检测器：conflicts=0, has_critical=false（向后兼容）
+        assert_eq!(result["items"][0]["success"], true);
+        assert_eq!(result["items"][0]["conflicts"], 0);
+        assert_eq!(result["items"][0]["has_critical"], false);
+
+        // 3. get_conflicts 查询（无持久化冲突）
+        let get_params = Parameters(GetConflictsParams {
+            session_id: "sess-v211-c".to_string(),
+            hook_id,
+            project_id: None,
+        });
+        let result = mcp.get_conflicts(get_params).await.unwrap();
+        let result: Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(result["total"], 0);
     }
 }

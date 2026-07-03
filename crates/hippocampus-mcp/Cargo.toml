@@ -18,6 +18,8 @@ path = "src/main.rs"
 
 [dependencies]
 hippocampus-core = { path = "../hippocampus-core" }
+# v2.11：复用 HttpLlmDetector + LlmDetectorConfig（LLM 冲突检测器）
+hippocampus-server = { path = "../hippocampus-server" }
 rmcp = { workspace = true }
 tokio = { version = "1.0", features = ["full"] }
 serde = { workspace = true }

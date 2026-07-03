@@ -28,6 +28,7 @@
 use crate::model::{MemoryFile, MemoryUpdate};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 // ============================================================================
 // 数据结构
@@ -188,6 +189,90 @@ impl ConflictDetector for NoopDetector {
 }
 
 // ============================================================================
+// HybridDetector（v2.11 串联检测器）
+// ============================================================================
+
+/// 混合冲突检测器（v2.11）
+///
+/// 串联两个检测器：先跑启发式（快速、无网络依赖），
+/// 再跑 LLM（语义级补充），合并两份报告。
+///
+/// ## 设计
+///
+/// - **降级策略**：LLM 失败时返回空报告（与 `HttpLlmDetector` 行为一致），
+///   启发式结果仍然保留
+/// - **去重**：直接合并，不去重（避免误合并相似但不同的冲突记录）
+/// - **使用场景**：同时配置了启发式 + LLM 检测器时使用
+///
+/// ## 示例
+///
+/// ```rust,ignore
+/// use hippocampus_core::conflict::{ConflictDetector, HybridDetector};
+/// use hippocampus_core::heuristic::HeuristicDetector;
+/// // use hippocampus_server::HttpLlmDetector;
+///
+/// let heuristic = std::sync::Arc::new(HeuristicDetector::new());
+/// let llm = std::sync::Arc::new(HttpLlmDetector::new(config));
+/// let hybrid = HybridDetector::new(heuristic, llm);
+/// let report = hybrid.detect(&update, &memory).await;
+/// ```
+#[derive(Clone)]
+pub struct HybridDetector {
+    /// 启发式检测器（通常为 `HeuristicDetector`）
+    heuristic: Arc<dyn ConflictDetector>,
+    /// LLM 检测器（通常为 `HttpLlmDetector`）
+    llm: Arc<dyn ConflictDetector>,
+}
+
+impl HybridDetector {
+    /// 创建混合检测器
+    ///
+    /// ## 参数
+    ///
+    /// - `heuristic`：启发式检测器（先执行，无网络依赖）
+    /// - `llm`：LLM 检测器（后执行，失败时返回空报告不阻塞）
+    pub fn new(
+        heuristic: Arc<dyn ConflictDetector>,
+        llm: Arc<dyn ConflictDetector>,
+    ) -> Self {
+        Self { heuristic, llm }
+    }
+
+    /// 启发式检测器引用（用于测试与诊断）
+    pub fn heuristic(&self) -> &Arc<dyn ConflictDetector> {
+        &self.heuristic
+    }
+
+    /// LLM 检测器引用（用于测试与诊断）
+    pub fn llm(&self) -> &Arc<dyn ConflictDetector> {
+        &self.llm
+    }
+}
+
+#[async_trait]
+impl ConflictDetector for HybridDetector {
+    async fn detect(
+        &self,
+        update: &MemoryUpdate,
+        existing_memory: &MemoryFile,
+    ) -> ConflictReport {
+        // 1. 先跑启发式（快速、无网络依赖）
+        let mut report = self.heuristic.detect(update, existing_memory).await;
+
+        // 2. 再跑 LLM（语义级补充，失败时返回空报告不阻塞）
+        let llm_report = self.llm.detect(update, existing_memory).await;
+
+        // 3. 合并报告（不去重，保留所有检测到的冲突）
+        //    LLM 报告为空时（降级或无冲突）不影响启发式结果
+        for conflict in llm_report.conflicts {
+            report.push(conflict);
+        }
+
+        report
+    }
+}
+
+// ============================================================================
 // 单元测试
 // ============================================================================
 
@@ -319,5 +404,196 @@ mod tests {
         let json = serde_json::to_string(&record).unwrap();
         // existing_fact 为 None 时应被跳过
         assert!(!json.contains("existing_fact"));
+    }
+
+    // ========================================================================
+    // v2.11：HybridDetector 测试
+    // ========================================================================
+
+    /// Mock 检测器：返回预设的 ConflictReport
+    ///
+    /// 用于模拟 LLM 检测器（成功/失败降级/返回特定冲突），
+    /// 避免在单元测试中发起真实 HTTP 请求。
+    struct MockDetector {
+        report: ConflictReport,
+    }
+
+    impl MockDetector {
+        fn new(report: ConflictReport) -> Self {
+            Self { report }
+        }
+
+        fn empty() -> Self {
+            Self::new(ConflictReport::empty())
+        }
+
+        fn single_critical() -> Self {
+            let mut report = ConflictReport::empty();
+            report.push(ConflictRecord {
+                kind: ConflictKind::DirectContradict,
+                severity: Severity::Critical,
+                description: "LLM 检测到语义矛盾".to_string(),
+                existing_fact: Some("旧事实".to_string()),
+                new_fact: "新事实".to_string(),
+            });
+            Self::new(report)
+        }
+
+        fn single_warning() -> Self {
+            let mut report = ConflictReport::empty();
+            report.push(ConflictRecord {
+                kind: ConflictKind::StanceReversal,
+                severity: Severity::Warning,
+                description: "LLM 检测到立场反转".to_string(),
+                existing_fact: Some("旧立场".to_string()),
+                new_fact: "新立场".to_string(),
+            });
+            Self::new(report)
+        }
+    }
+
+    #[async_trait]
+    impl ConflictDetector for MockDetector {
+        async fn detect(
+            &self,
+            _update: &MemoryUpdate,
+            _existing_memory: &MemoryFile,
+        ) -> ConflictReport {
+            // 克隆预设报告返回
+            self.report.clone()
+        }
+    }
+
+    /// 构造一个 Heuristic 检测到 1 条 Critical 冲突的 update + memory 组合
+    ///
+    /// 场景：历史已添加"用户喜欢咖啡"，本次 update 添加"用户不喜欢咖啡"
+    fn make_heuristic_contradiction_case() -> (MemoryUpdate, MemoryFile) {
+        let mut memory = make_test_memory();
+        // 历史已添加"用户喜欢咖啡"
+        memory.updates.push(crate::model::MemoryUpdateRecord {
+            updated_at: chrono::Utc::now(),
+            update: MemoryUpdate::new().add_fact("用户喜欢咖啡"),
+            conflicts: vec![],
+        });
+        // 本次 update 添加"用户不喜欢咖啡"（与历史直接矛盾）
+        let update = MemoryUpdate::new().add_fact("用户不喜欢咖啡");
+        (update, memory)
+    }
+
+    #[tokio::test]
+    async fn test_hybrid_detector_merges_both_reports() {
+        // heuristic 返回 1 条 Critical + LLM 返回 1 条 Warning → 合并后 2 条
+        let heuristic: Arc<dyn ConflictDetector> =
+            Arc::new(crate::heuristic::HeuristicDetector::new());
+        let llm: Arc<dyn ConflictDetector> =
+            Arc::new(MockDetector::single_warning());
+        let hybrid = HybridDetector::new(heuristic, llm);
+
+        let (update, memory) = make_heuristic_contradiction_case();
+        let report = hybrid.detect(&update, &memory).await;
+
+        // heuristic 检测到 1 条 DirectContradict（Critical）
+        // LLM 检测到 1 条 StanceReversal（Warning）
+        assert_eq!(
+            report.count(),
+            2,
+            "合并后应有 2 条冲突，实际: {}",
+            report.count()
+        );
+        assert!(
+            report.has_critical(),
+            "应存在 Critical 级别冲突（来自 heuristic）"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_hybrid_detector_llm_empty_keeps_heuristic() {
+        // 模拟 LLM 失败降级（返回空报告）→ 启发式结果仍保留
+        let heuristic: Arc<dyn ConflictDetector> =
+            Arc::new(crate::heuristic::HeuristicDetector::new());
+        let llm: Arc<dyn ConflictDetector> = Arc::new(MockDetector::empty());
+        let hybrid = HybridDetector::new(heuristic, llm);
+
+        let (update, memory) = make_heuristic_contradiction_case();
+        let report = hybrid.detect(&update, &memory).await;
+
+        // LLM 降级为空，只剩 heuristic 的 1 条 DirectContradict
+        assert_eq!(
+            report.count(),
+            1,
+            "LLM 降级为空时应保留 heuristic 的 1 条冲突"
+        );
+        assert!(report.has_critical());
+        // 唯一一条应是 DirectContradict（来自 heuristic）
+        assert_eq!(
+            report.conflicts[0].kind,
+            ConflictKind::DirectContradict
+        );
+    }
+
+    #[tokio::test]
+    async fn test_hybrid_detector_both_empty() {
+        // 两者都返回空 → 空报告
+        let heuristic: Arc<dyn ConflictDetector> =
+            Arc::new(crate::heuristic::HeuristicDetector::new());
+        let llm: Arc<dyn ConflictDetector> = Arc::new(MockDetector::empty());
+        let hybrid = HybridDetector::new(heuristic, llm);
+
+        // 无冲突的 update（添加一个无关事实）
+        let memory = make_test_memory();
+        let update = MemoryUpdate::new().add_fact("用户住在上海");
+        let report = hybrid.detect(&update, &memory).await;
+
+        assert!(report.is_clean(), "无冲突场景应返回空报告");
+        assert!(!report.has_critical());
+    }
+
+    #[tokio::test]
+    async fn test_hybrid_detector_both_noop() {
+        // 两个 NoopDetector 串联 → 永远空报告
+        let heuristic: Arc<dyn ConflictDetector> = Arc::new(NoopDetector::new());
+        let llm: Arc<dyn ConflictDetector> = Arc::new(NoopDetector::new());
+        let hybrid = HybridDetector::new(heuristic, llm);
+
+        let (update, memory) = make_heuristic_contradiction_case();
+        let report = hybrid.detect(&update, &memory).await;
+
+        assert!(report.is_clean());
+    }
+
+    #[tokio::test]
+    async fn test_hybrid_detector_accessor_methods() {
+        // 验证 heuristic() / llm() 访问器
+        let heuristic: Arc<dyn ConflictDetector> =
+            Arc::new(crate::heuristic::HeuristicDetector::new());
+        let llm: Arc<dyn ConflictDetector> = Arc::new(MockDetector::single_critical());
+        let hybrid = HybridDetector::new(heuristic, llm);
+
+        // 通过访问器获取引用并调用 detect
+        let memory = make_test_memory();
+        let update = MemoryUpdate::new().add_fact("测试");
+        let h_report = hybrid.heuristic().detect(&update, &memory).await;
+        let l_report = hybrid.llm().detect(&update, &memory).await;
+
+        // heuristic 对此场景应无冲突，Mock single_critical 应有 1 条
+        assert!(h_report.is_clean());
+        assert_eq!(l_report.count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_hybrid_detector_preserves_severity_ordering() {
+        // heuristic 检测到 Warning + LLM 检测到 Critical → 合并后 has_critical=true
+        // 使用 NoopDetector 作为 heuristic（不产生冲突），LLM 提供 Critical
+        let heuristic: Arc<dyn ConflictDetector> = Arc::new(NoopDetector::new());
+        let llm: Arc<dyn ConflictDetector> = Arc::new(MockDetector::single_critical());
+        let hybrid = HybridDetector::new(heuristic, llm);
+
+        let memory = make_test_memory();
+        let update = MemoryUpdate::new().add_fact("测试");
+        let report = hybrid.detect(&update, &memory).await;
+
+        assert_eq!(report.count(), 1);
+        assert!(report.has_critical());
+        assert_eq!(report.by_severity(Severity::Critical).len(), 1);
     }
 }
