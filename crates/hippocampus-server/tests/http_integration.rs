@@ -29,10 +29,29 @@ struct TestServer {
 impl TestServer {
     /// 启动一个新的测试服务（随机端口 + 独立临时目录）
     async fn start() -> Self {
+        Self::start_with_retriever(None).await
+    }
+
+    /// 启动带语义检索器的测试服务（v2.5 批次 7）
+    async fn start_with_retriever(
+        retriever: Option<std::sync::Arc<dyn hippocampus_core::semantic::SemanticRetriever>>,
+    ) -> Self {
+        Self::start_with_search(None, retriever).await
+    }
+
+    /// 启动带搜索索引器 + 语义检索器的测试服务（v2.5 批次 7 端到端）
+    async fn start_with_search(
+        search_indexer: Option<std::sync::Arc<hippocampus_server::SearchIndexer>>,
+        retriever: Option<std::sync::Arc<dyn hippocampus_core::semantic::SemanticRetriever>>,
+    ) -> Self {
         let tmpdir = TempDir::new().expect("创建临时目录失败");
         let storage_root: PathBuf = tmpdir.path().to_path_buf();
 
-        let state = AppState { storage_root };
+        let state = AppState {
+            storage_root,
+            retriever,
+            search_indexer,
+        };
         let app = create_router(state);
 
         // 绑定到随机端口，避免测试间冲突
@@ -685,4 +704,754 @@ async fn test_update_memory_nonexistent_hook_returns_404() {
     assert_eq!(resp.status(), 404);
     let err: Value = resp.json().await.expect("解析错误失败");
     assert_eq!(err["error"]["code"].as_str().unwrap(), "NOT_FOUND");
+}
+
+// ============================================================================
+// 批量操作端点测试（v2.5 批次 6）
+// ============================================================================
+
+/// 辅助：归档并返回 hook_id
+async fn archive_and_get_hook(server: &TestServer, client: &reqwest::Client, sid: &str) -> String {
+    let body = json!({
+        "turns": make_turns_json(2, 100),
+        "project_id": null
+    });
+    let resp = client
+        .post(server.url(&format!("/api/v1/sessions/{}/archive", sid)))
+        .json(&body)
+        .send()
+        .await
+        .expect("归档失败");
+    let summary: Value = resp.json().await.expect("解析摘要失败");
+    summary["hook_id"].as_str().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn test_batch_retrieve_success() {
+    let server = TestServer::start().await;
+    let client = reqwest::Client::new();
+
+    // 归档 3 次获取 3 个 hook_id
+    let h1 = archive_and_get_hook(&server, &client, "sess-br").await;
+    let h2 = archive_and_get_hook(&server, &client, "sess-br").await;
+    let h3 = archive_and_get_hook(&server, &client, "sess-br").await;
+
+    // 批量检索
+    let body = json!({
+        "hook_ids": [h1, h2, h3],
+        "project_id": null
+    });
+    let resp = client
+        .post(server.url("/api/v1/sessions/sess-br/memories/batch-retrieve"))
+        .json(&body)
+        .send()
+        .await
+        .expect("请求失败");
+
+    assert_eq!(resp.status(), 200);
+    let results: Value = resp.json().await.expect("解析响应失败");
+    let arr = results.as_array().expect("应为数组");
+    assert_eq!(arr.len(), 3, "应返回 3 条结果");
+    for item in arr {
+        assert_eq!(item["success"], true, "全部应成功");
+        assert!(
+            item["data"]["turns"].as_array().is_some(),
+            "应有 data.turns 字段"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_batch_retrieve_partial_failure() {
+    let server = TestServer::start().await;
+    let client = reqwest::Client::new();
+
+    let good = archive_and_get_hook(&server, &client, "sess-brpf").await;
+    let bad = uuid::Uuid::new_v4().to_string();
+
+    let body = json!({
+        "hook_ids": [good.clone(), bad, good.clone()],
+        "project_id": null
+    });
+    let resp = client
+        .post(server.url("/api/v1/sessions/sess-brpf/memories/batch-retrieve"))
+        .json(&body)
+        .send()
+        .await
+        .expect("请求失败");
+
+    assert_eq!(resp.status(), 200);
+    let results: Value = resp.json().await.expect("解析响应失败");
+    let arr = results.as_array().unwrap();
+    assert_eq!(arr.len(), 3);
+    assert_eq!(arr[0]["success"], true, "第 1 个应成功");
+    assert_eq!(arr[1]["success"], false, "第 2 个应失败");
+    assert!(
+        arr[1]["error"].as_str().is_some(),
+        "失败项应有 error 字段"
+    );
+    assert_eq!(arr[2]["success"], true, "第 3 个应成功（不受前一个影响）");
+}
+
+#[tokio::test]
+async fn test_batch_retrieve_empty_returns_400() {
+    let server = TestServer::start().await;
+    let client = reqwest::Client::new();
+
+    let body = json!({
+        "hook_ids": [],
+        "project_id": null
+    });
+    let resp = client
+        .post(server.url("/api/v1/sessions/sess-x/memories/batch-retrieve"))
+        .json(&body)
+        .send()
+        .await
+        .expect("请求失败");
+
+    assert_eq!(resp.status(), 400);
+    let err: Value = resp.json().await.expect("解析错误失败");
+    assert_eq!(err["error"]["code"].as_str().unwrap(), "BAD_REQUEST");
+}
+
+#[tokio::test]
+async fn test_batch_delete_success() {
+    let server = TestServer::start().await;
+    let client = reqwest::Client::new();
+
+    let h1 = archive_and_get_hook(&server, &client, "sess-bd").await;
+    let h2 = archive_and_get_hook(&server, &client, "sess-bd").await;
+    let h3 = archive_and_get_hook(&server, &client, "sess-bd").await;
+
+    // 批量删除前 2 个
+    let body = json!({
+        "hook_ids": [h1, h2],
+        "project_id": null
+    });
+    let resp = client
+        .post(server.url("/api/v1/sessions/sess-bd/memories/batch-delete"))
+        .json(&body)
+        .send()
+        .await
+        .expect("请求失败");
+
+    assert_eq!(resp.status(), 200);
+    let results: Value = resp.json().await.expect("解析响应失败");
+    let arr = results.as_array().unwrap();
+    assert_eq!(arr.len(), 2);
+    assert!(arr.iter().all(|i| i["success"] == true));
+
+    // 验证 h3 仍然可检索（不受删除影响）
+    let resp = client
+        .get(server.url(&format!(
+            "/api/v1/sessions/sess-bd/memories/{}",
+            h3
+        )))
+        .send()
+        .await
+        .expect("请求失败");
+    assert_eq!(resp.status(), 200, "h3 应仍可检索");
+
+    // 验证 h1 已删除
+    let resp = client
+        .get(server.url(&format!(
+            "/api/v1/sessions/sess-bd/memories/{}",
+            h1
+        )))
+        .send()
+        .await
+        .expect("请求失败");
+    assert_eq!(resp.status(), 404, "h1 应已被删除");
+}
+
+#[tokio::test]
+async fn test_batch_delete_partial_failure() {
+    let server = TestServer::start().await;
+    let client = reqwest::Client::new();
+
+    let good = archive_and_get_hook(&server, &client, "sess-bdpf").await;
+    let bad = uuid::Uuid::new_v4().to_string();
+
+    let body = json!({
+        "hook_ids": [good.clone(), bad],
+        "project_id": null
+    });
+    let resp = client
+        .post(server.url("/api/v1/sessions/sess-bdpf/memories/batch-delete"))
+        .json(&body)
+        .send()
+        .await
+        .expect("请求失败");
+
+    assert_eq!(resp.status(), 200);
+    let results: Value = resp.json().await.expect("解析响应失败");
+    let arr = results.as_array().unwrap();
+    assert_eq!(arr.len(), 2);
+    assert_eq!(arr[0]["success"], true, "存在的应删除成功");
+    assert_eq!(arr[1]["success"], false, "不存在的应返回错误");
+}
+
+#[tokio::test]
+async fn test_batch_update_success() {
+    let server = TestServer::start().await;
+    let client = reqwest::Client::new();
+
+    let h1 = archive_and_get_hook(&server, &client, "sess-bu").await;
+    let h2 = archive_and_get_hook(&server, &client, "sess-bu").await;
+
+    let body = json!({
+        "updates": [
+            {
+                "hook_id": h1,
+                "added_facts": ["事实 A"],
+                "revised_facts": [],
+                "deprecated_facts": []
+            },
+            {
+                "hook_id": h2,
+                "added_facts": ["事实 B"],
+                "revised_facts": ["修正 X"],
+                "deprecated_facts": ["废弃 Y"]
+            }
+        ],
+        "project_id": null
+    });
+    let resp = client
+        .post(server.url("/api/v1/sessions/sess-bu/memories/batch-update"))
+        .json(&body)
+        .send()
+        .await
+        .expect("请求失败");
+
+    assert_eq!(resp.status(), 200);
+    let results: Value = resp.json().await.expect("解析响应失败");
+    let arr = results.as_array().unwrap();
+    assert_eq!(arr.len(), 2);
+    assert_eq!(arr[0]["success"], true);
+    assert_eq!(arr[0]["added"], 1);
+    assert_eq!(arr[1]["success"], true);
+    assert_eq!(arr[1]["added"], 1);
+    assert_eq!(arr[1]["revised"], 1);
+    assert_eq!(arr[1]["deprecated"], 1);
+
+    // 验证 h1 的更新已应用
+    let resp = client
+        .get(server.url(&format!(
+            "/api/v1/sessions/sess-bu/memories/{}",
+            h1
+        )))
+        .send()
+        .await
+        .expect("请求失败");
+    let memory: Value = resp.json().await.expect("解析失败");
+    let updates = memory["updates"].as_array().unwrap();
+    assert_eq!(updates.len(), 1);
+    assert_eq!(updates[0]["added_facts"][0], "事实 A");
+}
+
+#[tokio::test]
+async fn test_batch_update_partial_failure() {
+    let server = TestServer::start().await;
+    let client = reqwest::Client::new();
+
+    let good = archive_and_get_hook(&server, &client, "sess-bupf").await;
+    let bad = uuid::Uuid::new_v4().to_string();
+
+    let body = json!({
+        "updates": [
+            {
+                "hook_id": good,
+                "added_facts": ["OK"],
+                "revised_facts": [],
+                "deprecated_facts": []
+            },
+            {
+                "hook_id": bad,
+                "added_facts": ["FAIL"],
+                "revised_facts": [],
+                "deprecated_facts": []
+            }
+        ],
+        "project_id": null
+    });
+    let resp = client
+        .post(server.url("/api/v1/sessions/sess-bupf/memories/batch-update"))
+        .json(&body)
+        .send()
+        .await
+        .expect("请求失败");
+
+    assert_eq!(resp.status(), 200);
+    let results: Value = resp.json().await.expect("解析响应失败");
+    let arr = results.as_array().unwrap();
+    assert_eq!(arr.len(), 2);
+    assert_eq!(arr[0]["success"], true, "存在的应更新成功");
+    assert_eq!(arr[1]["success"], false, "不存在的应返回错误");
+}
+
+#[tokio::test]
+async fn test_batch_update_empty_returns_400() {
+    let server = TestServer::start().await;
+    let client = reqwest::Client::new();
+
+    let body = json!({
+        "updates": [],
+        "project_id": null
+    });
+    let resp = client
+        .post(server.url("/api/v1/sessions/sess-x/memories/batch-update"))
+        .json(&body)
+        .send()
+        .await
+        .expect("请求失败");
+
+    assert_eq!(resp.status(), 400);
+    let err: Value = resp.json().await.expect("解析错误失败");
+    assert_eq!(err["error"]["code"].as_str().unwrap(), "BAD_REQUEST");
+}
+
+// ============================================================================
+// 语义检索端点测试（v2.5 批次 7）
+// ============================================================================
+
+#[tokio::test]
+async fn test_search_without_retriever_returns_501() {
+    // 默认 TestServer 未配置 retriever
+    let server = TestServer::start().await;
+    let client = reqwest::Client::new();
+
+    let body = json!({ "query": "Rust 编程", "top_k": 5 });
+    let resp = client
+        .post(server.url("/api/v1/sessions/sess-s1/search"))
+        .json(&body)
+        .send()
+        .await
+        .expect("请求失败");
+
+    assert_eq!(resp.status(), 501);
+    let err: Value = resp.json().await.expect("解析错误失败");
+    assert_eq!(err["error"]["code"].as_str().unwrap(), "NOT_IMPLEMENTED");
+    assert!(err["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("语义检索未配置"));
+}
+
+#[tokio::test]
+async fn test_search_empty_query_returns_400() {
+    let server = TestServer::start().await;
+    let client = reqwest::Client::new();
+
+    // 空字符串
+    let body = json!({ "query": "", "top_k": 5 });
+    let resp = client
+        .post(server.url("/api/v1/sessions/sess-s2/search"))
+        .json(&body)
+        .send()
+        .await
+        .expect("请求失败");
+    assert_eq!(resp.status(), 400);
+
+    // 纯空白
+    let body = json!({ "query": "   ", "top_k": 5 });
+    let resp = client
+        .post(server.url("/api/v1/sessions/sess-s2/search"))
+        .json(&body)
+        .send()
+        .await
+        .expect("请求失败");
+    assert_eq!(resp.status(), 400);
+
+    let err: Value = resp.json().await.expect("解析错误失败");
+    assert_eq!(err["error"]["code"].as_str().unwrap(), "BAD_REQUEST");
+    assert!(err["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("query 不能为空"));
+}
+
+#[tokio::test]
+async fn test_search_with_keyword_only_retriever() {
+    use hippocampus_core::bm25::Bm25Searcher;
+    use hippocampus_core::hybrid::KeywordOnlyRetriever;
+    use hippocampus_core::semantic::{KeywordSearcher, SemanticRetriever};
+    use std::sync::Arc;
+
+    // 构造 Bm25Searcher + KeywordOnlyRetriever
+    let keyword = Arc::new(Bm25Searcher::new());
+    // 索引 3 个文档（模拟已归档的记忆摘要）
+    keyword.index("hook-1", "mem-1", "Rust 是一门系统编程语言，强调安全性和性能");
+    keyword.index("hook-2", "mem-2", "Python 是动态语言，适合数据分析和机器学习");
+    keyword.index("hook-3", "mem-3", "Rust 的所有权机制保证内存安全");
+
+    let retriever: Arc<dyn SemanticRetriever> =
+        Arc::new(KeywordOnlyRetriever::new(keyword));
+
+    let server = TestServer::start_with_retriever(Some(retriever)).await;
+    let client = reqwest::Client::new();
+
+    // 搜索 "Rust"（应命中 hook-1 和 hook-3）
+    let body = json!({ "query": "Rust", "top_k": 5 });
+    let resp = client
+        .post(server.url("/api/v1/sessions/sess-s3/search"))
+        .json(&body)
+        .send()
+        .await
+        .expect("请求失败");
+
+    assert_eq!(resp.status(), 200);
+    let result: Value = resp.json().await.expect("解析响应失败");
+
+    let results = result["results"]
+        .as_array()
+        .expect("results 应为数组");
+    assert!(!results.is_empty(), "应返回非空结果");
+
+    // mode 应为 "keyword"（KeywordOnlyRetriever 的结果 source 为 Keyword）
+    assert_eq!(result["mode"].as_str().unwrap(), "keyword");
+
+    // 验证命中的 hook_id 包含 hook-1 或 hook-3
+    let hook_ids: Vec<&str> = results
+        .iter()
+        .map(|r| r["hook_id"].as_str().unwrap())
+        .collect();
+    assert!(
+        hook_ids.contains(&"hook-1") || hook_ids.contains(&"hook-3"),
+        "应命中含 Rust 的文档，实际命中: {:?}",
+        hook_ids
+    );
+
+    // 验证 source 字段为 "keyword"
+    for r in results {
+        assert_eq!(r["source"].as_str().unwrap(), "keyword");
+    }
+}
+
+#[tokio::test]
+async fn test_search_no_match_returns_empty_results() {
+    use hippocampus_core::bm25::Bm25Searcher;
+    use hippocampus_core::hybrid::KeywordOnlyRetriever;
+    use hippocampus_core::semantic::{KeywordSearcher, SemanticRetriever};
+    use std::sync::Arc;
+
+    let keyword = Arc::new(Bm25Searcher::new());
+    keyword.index("h1", "m1", "Rust 编程语言");
+
+    let retriever: Arc<dyn SemanticRetriever> =
+        Arc::new(KeywordOnlyRetriever::new(keyword));
+
+    let server = TestServer::start_with_retriever(Some(retriever)).await;
+    let client = reqwest::Client::new();
+
+    // 搜索一个不存在的关键词
+    let body = json!({ "query": "量子物理xyz不存在的词", "top_k": 5 });
+    let resp = client
+        .post(server.url("/api/v1/sessions/sess-s4/search"))
+        .json(&body)
+        .send()
+        .await
+        .expect("请求失败");
+
+    assert_eq!(resp.status(), 200);
+    let result: Value = resp.json().await.expect("解析响应失败");
+    let results = result["results"]
+        .as_array()
+        .expect("results 应为数组");
+    assert!(results.is_empty(), "无匹配时应返回空数组");
+    assert_eq!(result["mode"].as_str().unwrap(), "empty");
+}
+
+#[tokio::test]
+async fn test_search_top_k_limit() {
+    use hippocampus_core::bm25::Bm25Searcher;
+    use hippocampus_core::hybrid::KeywordOnlyRetriever;
+    use hippocampus_core::semantic::{KeywordSearcher, SemanticRetriever};
+    use std::sync::Arc;
+
+    let keyword = Arc::new(Bm25Searcher::new());
+    // 索引 5 个含 "Rust" 的文档
+    for i in 1..=5 {
+        keyword.index(
+            &format!("hook-{}", i),
+            &format!("mem-{}", i),
+            &format!("Rust 文档编号 {}", i),
+        );
+    }
+
+    let retriever: Arc<dyn SemanticRetriever> =
+        Arc::new(KeywordOnlyRetriever::new(keyword));
+
+    let server = TestServer::start_with_retriever(Some(retriever)).await;
+    let client = reqwest::Client::new();
+
+    // top_k = 2，应只返回 2 条
+    let body = json!({ "query": "Rust", "top_k": 2 });
+    let resp = client
+        .post(server.url("/api/v1/sessions/sess-s5/search"))
+        .json(&body)
+        .send()
+        .await
+        .expect("请求失败");
+
+    assert_eq!(resp.status(), 200);
+    let result: Value = resp.json().await.expect("解析响应失败");
+    let results = result["results"]
+        .as_array()
+        .unwrap();
+    assert_eq!(results.len(), 2, "top_k=2 应只返回 2 条");
+}
+
+#[tokio::test]
+async fn test_search_default_top_k() {
+    use hippocampus_core::bm25::Bm25Searcher;
+    use hippocampus_core::hybrid::KeywordOnlyRetriever;
+    use hippocampus_core::semantic::{KeywordSearcher, SemanticRetriever};
+    use std::sync::Arc;
+
+    let keyword = Arc::new(Bm25Searcher::new());
+    // 索引 10 个文档
+    for i in 1..=10 {
+        keyword.index(
+            &format!("hook-{}", i),
+            &format!("mem-{}", i),
+            &format!("Rust 文档 {}", i),
+        );
+    }
+
+    let retriever: Arc<dyn SemanticRetriever> =
+        Arc::new(KeywordOnlyRetriever::new(keyword));
+
+    let server = TestServer::start_with_retriever(Some(retriever)).await;
+    let client = reqwest::Client::new();
+
+    // 不传 top_k，应使用默认值 5
+    let body = json!({ "query": "Rust" });
+    let resp = client
+        .post(server.url("/api/v1/sessions/sess-s6/search"))
+        .json(&body)
+        .send()
+        .await
+        .expect("请求失败");
+
+    assert_eq!(resp.status(), 200);
+    let result: Value = resp.json().await.expect("解析响应失败");
+    let results = result["results"]
+        .as_array()
+        .unwrap();
+    assert_eq!(results.len(), 5, "默认 top_k 应为 5");
+}
+
+// ============================================================================
+// 端到端测试：archive → search 完整流程（v2.5 批次 7 风险点 2+3）
+// ============================================================================
+
+#[tokio::test]
+async fn test_archive_then_search_e2e() {
+    use hippocampus_core::bm25::Bm25Searcher;
+    use hippocampus_core::hybrid::KeywordOnlyRetriever;
+    use hippocampus_core::semantic::{KeywordSearcher, SemanticRetriever};
+    use hippocampus_server::SearchIndexer;
+    use std::sync::Arc;
+
+    // 构造共享的 Bm25Searcher + SearchIndexer + KeywordOnlyRetriever
+    let keyword: Arc<dyn KeywordSearcher> = Arc::new(Bm25Searcher::new());
+    let indexer = Arc::new(SearchIndexer::new(keyword.clone(), None, None));
+    let retriever: Arc<dyn SemanticRetriever> =
+        Arc::new(KeywordOnlyRetriever::new(keyword));
+
+    let server = TestServer::start_with_search(Some(indexer), Some(retriever)).await;
+    let client = reqwest::Client::new();
+
+    // 1. 归档一批 turns（含 "Rust 编程" 关键词）
+    let body = json!({
+        "turns": [{
+            "id": uuid::Uuid::new_v4().to_string(),
+            "user_message": {
+                "text": "请介绍 Rust 编程语言的安全性",
+                "attachments": [],
+                "tool_calls": [],
+                "thinking": null
+            },
+            "llm_message": {
+                "text": "Rust 通过所有权机制保证内存安全",
+                "attachments": [],
+                "tool_calls": [],
+                "thinking": null
+            },
+            "tags": [{"kind": "Text"}],
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+            "token_count": 50
+        }],
+        "project_id": null
+    });
+    let resp = client
+        .post(server.url("/api/v1/sessions/sess-e2e/archive"))
+        .json(&body)
+        .send()
+        .await
+        .expect("归档失败");
+    assert_eq!(resp.status(), 200);
+    let summary: Value = resp.json().await.expect("解析摘要失败");
+    let hook_id = summary["hook_id"].as_str().unwrap().to_string();
+
+    // 2. 通过 /search 搜索 "Rust"（应命中刚归档的记忆）
+    let body = json!({ "query": "Rust", "top_k": 5 });
+    let resp = client
+        .post(server.url("/api/v1/sessions/sess-e2e/search"))
+        .json(&body)
+        .send()
+        .await
+        .expect("搜索失败");
+
+    assert_eq!(resp.status(), 200);
+    let result: Value = resp.json().await.expect("解析响应失败");
+    let results = result["results"]
+        .as_array()
+        .expect("results 应为数组");
+    assert!(!results.is_empty(), "archive 后 search 应能命中");
+
+    // 验证命中的 hook_id 与归档生成的一致
+    let hit_hook_ids: Vec<&str> = results
+        .iter()
+        .map(|r| r["hook_id"].as_str().unwrap())
+        .collect();
+    assert!(
+        hit_hook_ids.contains(&hook_id.as_str()),
+        "应命中刚归档的 hook_id={}, 实际命中={:?}",
+        hook_id,
+        hit_hook_ids
+    );
+
+    // mode 应为 "keyword"（KeywordOnlyRetriever）
+    assert_eq!(result["mode"].as_str().unwrap(), "keyword");
+}
+
+#[tokio::test]
+async fn test_archive_multiple_then_search() {
+    use hippocampus_core::bm25::Bm25Searcher;
+    use hippocampus_core::hybrid::KeywordOnlyRetriever;
+    use hippocampus_core::semantic::{KeywordSearcher, SemanticRetriever};
+    use hippocampus_server::SearchIndexer;
+    use std::sync::Arc;
+
+    let keyword: Arc<dyn KeywordSearcher> = Arc::new(Bm25Searcher::new());
+    let indexer = Arc::new(SearchIndexer::new(keyword.clone(), None, None));
+    let retriever: Arc<dyn SemanticRetriever> =
+        Arc::new(KeywordOnlyRetriever::new(keyword));
+
+    let server = TestServer::start_with_search(Some(indexer), Some(retriever)).await;
+    let client = reqwest::Client::new();
+
+    // 1. 归档 3 次（不同主题）
+    let topics = [
+        ("Rust 编程语言的安全性", "Rust 通过所有权机制保证内存安全"),
+        ("Python 数据分析", "Python 适合数据分析和机器学习"),
+        ("Rust 与 C++ 性能对比", "Rust 性能接近 C++ 但更安全"),
+    ];
+
+    let mut hook_ids = Vec::new();
+    for (user_text, llm_text) in &topics {
+        let body = json!({
+            "turns": [{
+                "id": uuid::Uuid::new_v4().to_string(),
+                "user_message": { "text": user_text, "attachments": [], "tool_calls": [], "thinking": null },
+                "llm_message": { "text": llm_text, "attachments": [], "tool_calls": [], "thinking": null },
+                "tags": [{"kind": "Text"}],
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+                "token_count": 50
+            }],
+            "project_id": null
+        });
+        let resp = client
+            .post(server.url("/api/v1/sessions/sess-e2e-multi/archive"))
+            .json(&body)
+            .send()
+            .await
+            .expect("归档失败");
+        assert_eq!(resp.status(), 200);
+        let summary: Value = resp.json().await.expect("解析摘要失败");
+        hook_ids.push(summary["hook_id"].as_str().unwrap().to_string());
+    }
+
+    // 2. 搜索 "Rust"（应命中第 1 和第 3 个归档）
+    let body = json!({ "query": "Rust", "top_k": 5 });
+    let resp = client
+        .post(server.url("/api/v1/sessions/sess-e2e-multi/search"))
+        .json(&body)
+        .send()
+        .await
+        .expect("搜索失败");
+
+    assert_eq!(resp.status(), 200);
+    let result: Value = resp.json().await.expect("解析响应失败");
+    let results = result["results"]
+        .as_array()
+        .unwrap();
+    assert!(!results.is_empty());
+
+    // 验证命中的 hook_id 是 hook_ids[0] 或 hook_ids[2]
+    let hit_hook_ids: Vec<&str> = results
+        .iter()
+        .map(|r| r["hook_id"].as_str().unwrap())
+        .collect();
+    assert!(
+        hit_hook_ids.contains(&hook_ids[0].as_str())
+            || hit_hook_ids.contains(&hook_ids[2].as_str()),
+        "应命中含 Rust 的归档"
+    );
+    // 不应命中 Python 的归档
+    assert!(
+        !hit_hook_ids.contains(&hook_ids[1].as_str()),
+        "不应命中 Python 的归档"
+    );
+}
+
+#[tokio::test]
+async fn test_search_without_indexer_still_works() {
+    // 仅配置 retriever（无 search_indexer），archive 不触发索引但 /search 仍可用
+    use hippocampus_core::bm25::Bm25Searcher;
+    use hippocampus_core::hybrid::KeywordOnlyRetriever;
+    use hippocampus_core::semantic::{KeywordSearcher, SemanticRetriever};
+    use std::sync::Arc;
+
+    let keyword: Arc<dyn KeywordSearcher> = Arc::new(Bm25Searcher::new());
+    // 手动索引一个文档
+    keyword.index("manual-hook", "manual-mem", "手动索引的 Rust 文档");
+
+    let retriever: Arc<dyn SemanticRetriever> =
+        Arc::new(KeywordOnlyRetriever::new(keyword));
+
+    // 注意：search_indexer = None，archive 不会触发索引
+    let server = TestServer::start_with_search(None, Some(retriever)).await;
+    let client = reqwest::Client::new();
+
+    // 归档（不会触发索引）
+    let body = json!({
+        "turns": make_turns_json(1, 50),
+        "project_id": null
+    });
+    let resp = client
+        .post(server.url("/api/v1/sessions/sess-no-idx/archive"))
+        .json(&body)
+        .send()
+        .await
+        .expect("归档失败");
+    assert_eq!(resp.status(), 200);
+
+    // 搜索 "手动" 应命中手动索引的文档（而非刚归档的）
+    let body = json!({ "query": "手动", "top_k": 5 });
+    let resp = client
+        .post(server.url("/api/v1/sessions/sess-no-idx/search"))
+        .json(&body)
+        .send()
+        .await
+        .expect("搜索失败");
+
+    assert_eq!(resp.status(), 200);
+    let result: Value = resp.json().await.expect("解析响应失败");
+    let results = result["results"]
+        .as_array()
+        .unwrap();
+    assert!(!results.is_empty());
+    assert_eq!(results[0]["hook_id"].as_str().unwrap(), "manual-hook");
 }

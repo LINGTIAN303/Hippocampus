@@ -13,6 +13,7 @@
 //! - [`sqlite`]：SQLite 存储后端（rusqlite + r2d2 连接池 + WAL 模式）
 //! - [`serialization`]：序列化格式（JSON / MessagePack 双格式支持）
 //! - [`migrator`]：Schema 版本迁移
+//! - [`cache`]：缓存装饰器（CachedStorage<T>，moka LRU + TTL）
 //!
 //! ## 索引管理职责分配
 //!
@@ -33,7 +34,15 @@
 #![warn(missing_docs, rust_2018_idioms)]
 
 pub mod archive;
+/// BM25 关键词检索（jieba-rs 中文分词 + 倒排索引）
+pub mod bm25;
+/// 缓存装饰器（CachedStorage<T>，moka LRU + TTL）
+pub mod cache;
 pub mod compact;
+/// 混合检索器（HybridRetriever + RRF 融合 + 降级策略）
+pub mod hybrid;
+/// 语义检索（Embedder / KeywordSearcher / VectorIndex / SemanticRetriever trait + RRF 融合）
+pub mod semantic;
 /// 序列化格式（JSON / MessagePack 双格式支持）
 pub mod serialization;
 pub mod migrator;
@@ -42,10 +51,14 @@ pub mod retrieve;
 pub mod score;
 /// SQLite 存储后端（rusqlite + r2d2 连接池 + WAL 模式）
 pub mod sqlite;
+/// SQLite 向量索引（BLOB 持久化 + InMemoryVectorIndex 缓存）
+pub mod sqlite_vector;
 pub mod storage;
+/// 向量索引（InMemoryVectorIndex + cosine_similarity）
+pub mod vector;
 
 /// Crate 级错误类型
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum Error {
     /// 存储错误
     #[error("存储错误: {0}")]

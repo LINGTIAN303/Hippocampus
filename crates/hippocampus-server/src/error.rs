@@ -14,6 +14,8 @@ pub enum AppError {
     BadRequest(String),
     /// 资源未找到（404）
     NotFound(String),
+    /// 功能未实现（501）
+    NotImplemented(String),
     /// 内部错误（500）
     Internal(String),
 }
@@ -35,6 +37,9 @@ impl IntoResponse for AppError {
         let (status, code, message) = match self {
             AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, "BAD_REQUEST", msg),
             AppError::NotFound(msg) => (StatusCode::NOT_FOUND, "NOT_FOUND", msg),
+            AppError::NotImplemented(msg) => {
+                (StatusCode::NOT_IMPLEMENTED, "NOT_IMPLEMENTED", msg)
+            }
             AppError::Internal(msg) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", msg)
             }
@@ -55,6 +60,13 @@ impl From<hippocampus_core::Error> for AppError {
         match e {
             // 索引错误中含「未找到」视为 404
             hippocampus_core::Error::Index(msg) if msg.contains("未找到") => {
+                AppError::NotFound(msg)
+            }
+            // 存储错误中含「不存在」或「读取记忆文件失败」视为 404
+            // （如 memory 已删除但 hook 仍在 index 中，read_memory 找不到文件）
+            hippocampus_core::Error::Storage(msg)
+                if msg.contains("不存在") || msg.contains("读取记忆文件失败") =>
+            {
                 AppError::NotFound(msg)
             }
             // 序列化错误视为 400（客户端传了非法 JSON）

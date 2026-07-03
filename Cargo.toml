@@ -50,6 +50,8 @@ r2d2 = "0.8"
 r2d2_sqlite = "0.25"
 # 细粒度并发锁（per session/project）
 dashmap = "6.1"
+# 中文分词（BM25 关键词检索用，纯 Rust 无外部依赖）
+jieba-rs = "0.7"
 # HTTP 框架（v2 服务层）
 axum = "0.8"
 tower-http = { version = "0.7", features = ["trace", "cors", "compression-gzip"] }
@@ -62,6 +64,8 @@ rmcp = { version = "1.7", features = ["schemars", "transport-io"] }
 criterion = { version = "0.5", features = ["async_tokio"] }
 # 临时目录（测试/基准测试用）
 tempfile = "3.0"
+# 高性能缓存（v2.5 批次 5 CachedStorage）
+moka = { version = "0.12", features = ["future"] }
 
 [profile.release]
 opt-level = 3

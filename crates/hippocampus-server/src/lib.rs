@@ -20,12 +20,18 @@
 //! | POST | `/api/v1/sessions/{sid}/compaction` | 周期任务 |
 
 mod error;
+/// v2.5 批次 7: HTTP Embedder 实现
+pub mod embedding;
 mod handlers;
 /// v2.4: LLM 评分器实现（HttpLlmScorer）
 pub mod llm;
+/// v2.5 批次 7: 搜索索引器（归档后自动索引到 BM25 + 向量索引）
+pub mod search;
 
+pub use embedding::{EmbedderConfig, HttpEmbedder};
 pub use error::AppError;
 pub use llm::HttpLlmScorer;
+pub use search::SearchIndexer;
 
 use std::path::PathBuf;
 
@@ -60,6 +66,23 @@ impl Default for Config {
 pub struct AppState {
     /// 存储根目录（每次请求创建 LocalStorage 时使用）
     pub storage_root: PathBuf,
+    /// 可选的语义检索器（未配置时 /search 返回 501 Not Implemented）
+    pub retriever: Option<std::sync::Arc<dyn hippocampus_core::semantic::SemanticRetriever>>,
+    /// 可选的搜索索引器（归档后自动索引到 BM25 + 向量索引）
+    ///
+    /// 与 `retriever` 共享同一组 `Arc<dyn KeywordSearcher>` 和 `Arc<dyn VectorIndex>`，
+    /// 确保归档后索引的数据能被检索器立即访问。
+    pub search_indexer: Option<std::sync::Arc<SearchIndexer>>,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self {
+            storage_root: PathBuf::from("./data"),
+            retriever: None,
+            search_indexer: None,
+        }
+    }
 }
 
 /// 创建路由
@@ -87,6 +110,24 @@ pub fn create_router(state: AppState) -> axum::Router {
         .route(
             "/api/v1/sessions/{sid}/compaction",
             post(handlers::run_compaction),
+        )
+        // v2.5 批次 6：批量操作端点
+        .route(
+            "/api/v1/sessions/{sid}/memories/batch-retrieve",
+            post(handlers::batch_retrieve),
+        )
+        .route(
+            "/api/v1/sessions/{sid}/memories/batch-delete",
+            post(handlers::batch_delete),
+        )
+        .route(
+            "/api/v1/sessions/{sid}/memories/batch-update",
+            post(handlers::batch_update),
+        )
+        // v2.5 批次 7：语义检索端点
+        .route(
+            "/api/v1/sessions/{sid}/search",
+            post(handlers::search),
         )
         .with_state(state)
 }

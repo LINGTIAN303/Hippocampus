@@ -299,11 +299,18 @@ impl Storage for SqliteStorage {
         let memory_id = memory_id.to_string();
 
         self.with_conn(move |conn| {
-            conn.execute(
-                "DELETE FROM memories WHERE memory_id = ?1",
-                rusqlite::params![&memory_id],
-            )
-            .map_err(|e| crate::Error::Storage(format!("删除 memories 失败: {}", e)))?;
+            let affected = conn
+                .execute(
+                    "DELETE FROM memories WHERE memory_id = ?1",
+                    rusqlite::params![&memory_id],
+                )
+                .map_err(|e| crate::Error::Storage(format!("删除 memories 失败: {}", e)))?;
+            if affected == 0 {
+                return Err(crate::Error::Storage(format!(
+                    "记忆文件不存在: {}",
+                    memory_id
+                )));
+            }
             Ok(())
         })
         .await
@@ -724,6 +731,165 @@ impl Storage for SqliteStorage {
         })
         .await
     }
+
+    // ========================================================================
+    // 批量操作（v2.5 批次 6：单连接优化，减少连接池获取次数）
+    // ========================================================================
+
+    /// 批量读取记忆文件（单连接优化）
+    ///
+    /// 在一个 `with_conn` 闭包内循环 SELECT，只获取 1 次连接池连接。
+    /// 单个失败不影响其他条目（逐个返回 Result）。
+    async fn read_memories_batch(
+        &self,
+        memory_ids: &[String],
+    ) -> Vec<crate::Result<MemoryFile>> {
+        let format = self.format;
+        let ids: Vec<String> = memory_ids.to_vec();
+        let count = ids.len();
+        self.with_conn(move |conn| {
+            let mut results = Vec::with_capacity(ids.len());
+            for id in &ids {
+                let r = (|| -> crate::Result<MemoryFile> {
+                    let content: Vec<u8> = conn.query_row(
+                        "SELECT content FROM memories WHERE memory_id = ?1",
+                        rusqlite::params![id],
+                        |row| row.get(0),
+                    ).map_err(|e| match e {
+                        rusqlite::Error::QueryReturnedNoRows => {
+                            crate::Error::Storage(format!("记忆文件不存在: {}", id))
+                        }
+                        other => crate::Error::Storage(format!("查询失败: {}", other)),
+                    })?;
+                    format.deserialize_memory(&content)
+                })();
+                results.push(r);
+            }
+            Ok(results)
+        })
+        .await
+        .unwrap_or_else(|e| (0..count).map(|_| Err(e.clone())).collect())
+    }
+
+    /// 批量删除记忆文件（单连接优化）
+    ///
+    /// 每条独立事务（BEGIN IMMEDIATE），单个失败不影响其他。
+    /// 检查 affected_rows，不存在的 ID 返回错误（与 LocalStorage 行为一致）。
+    async fn delete_memories_batch(
+        &self,
+        memory_ids: &[String],
+    ) -> Vec<crate::Result<()>> {
+        let ids: Vec<String> = memory_ids.to_vec();
+        let count = ids.len();
+        self.with_conn(move |conn| {
+            let mut results = Vec::with_capacity(ids.len());
+            for id in &ids {
+                let r = (|| -> crate::Result<()> {
+                    conn.execute_batch("BEGIN IMMEDIATE")
+                        .map_err(|e| crate::Error::Storage(format!("BEGIN 失败: {}", e)))?;
+                    match conn.execute(
+                        "DELETE FROM memories WHERE memory_id = ?1",
+                        rusqlite::params![id],
+                    ) {
+                        Ok(affected) => {
+                            if affected == 0 {
+                                let _ = conn.execute_batch("ROLLBACK");
+                                return Err(crate::Error::Storage(format!(
+                                    "记忆文件不存在: {}",
+                                    id
+                                )));
+                            }
+                            conn.execute_batch("COMMIT")
+                                .map_err(|e| crate::Error::Storage(format!("COMMIT 失败: {}", e)))?;
+                            Ok(())
+                        }
+                        Err(e) => {
+                            let _ = conn.execute_batch("ROLLBACK");
+                            Err(crate::Error::Storage(format!("删除失败: {}", e)))
+                        }
+                    }
+                })();
+                results.push(r);
+            }
+            Ok(results)
+        })
+        .await
+        .unwrap_or_else(|e| (0..count).map(|_| Err(e.clone())).collect())
+    }
+
+    /// 批量更新记忆文件（单连接优化）
+    ///
+    /// 在一个 `with_conn` 闭包内循环更新，只获取 1 次连接池连接。
+    /// 每个更新独立事务（BEGIN IMMEDIATE），单个失败不影响其他。
+    async fn update_memories_batch(
+        &self,
+        updates: &[(String, crate::model::MemoryUpdate)],
+    ) -> Vec<crate::Result<()>> {
+        let format = self.format;
+        let updates: Vec<(String, crate::model::MemoryUpdate)> = updates.to_vec();
+        let count = updates.len();
+        self.with_conn(move |conn| {
+            let mut results = Vec::with_capacity(updates.len());
+            for (memory_id, upd) in &updates {
+                if upd.is_empty() {
+                    results.push(Ok(()));
+                    continue;
+                }
+                let r = (|| -> crate::Result<()> {
+                    let update_record = crate::model::MemoryUpdateRecord {
+                        updated_at: chrono::Utc::now(),
+                        update: upd.clone(),
+                    };
+                    conn.execute_batch("BEGIN IMMEDIATE")
+                        .map_err(|e| crate::Error::Storage(format!("BEGIN 失败: {}", e)))?;
+                    let content: Vec<u8> = match conn.query_row(
+                        "SELECT content FROM memories WHERE memory_id = ?1",
+                        rusqlite::params![memory_id],
+                        |row| row.get(0),
+                    ) {
+                        Ok(c) => c,
+                        Err(rusqlite::Error::QueryReturnedNoRows) => {
+                            let _ = conn.execute_batch("ROLLBACK");
+                            return Err(crate::Error::Storage(format!("记忆文件不存在: {}", memory_id)));
+                        }
+                        Err(other) => {
+                            let _ = conn.execute_batch("ROLLBACK");
+                            return Err(crate::Error::Storage(format!("查询失败: {}", other)));
+                        }
+                    };
+                    let mut file = match format.deserialize_memory(&content) {
+                        Ok(f) => f,
+                        Err(e) => {
+                            let _ = conn.execute_batch("ROLLBACK");
+                            return Err(e);
+                        }
+                    };
+                    file.updates.push(update_record);
+                    let new_content = match format.serialize_memory(&file) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            let _ = conn.execute_batch("ROLLBACK");
+                            return Err(e);
+                        }
+                    };
+                    if let Err(e) = conn.execute(
+                        "UPDATE memories SET content = ?1 WHERE memory_id = ?2",
+                        rusqlite::params![&new_content, memory_id],
+                    ) {
+                        let _ = conn.execute_batch("ROLLBACK");
+                        return Err(crate::Error::Storage(format!("更新失败: {}", e)));
+                    }
+                    conn.execute_batch("COMMIT")
+                        .map_err(|e| crate::Error::Storage(format!("COMMIT 失败: {}", e)))?;
+                    Ok(())
+                })();
+                results.push(r);
+            }
+            Ok(results)
+        })
+        .await
+        .unwrap_or_else(|e| (0..count).map(|_| Err(e.clone())).collect())
+    }
 }
 
 // ============================================================================
@@ -735,7 +901,7 @@ mod tests {
     use super::*;
     use crate::model::{
         ArchiveConfig, ArchivePeriod, IndexDocument, IndexHook, MemoryFile, MessageContent,
-        MessageTurn, Tag,
+        MessageTurn, MemoryUpdate, Tag,
     };
     use chrono::Utc;
     use std::sync::Arc;
@@ -1233,5 +1399,209 @@ mod tests {
         assert_eq!(a_ids.len(), 1);
         assert_eq!(b_ids.len(), 1);
         assert_ne!(a_ids[0], b_ids[0]);
+    }
+
+    // ========================================================================
+    // 批量操作测试（v2.5 批次 6：SqliteStorage 优化版验证）
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_sqlite_batch_read_memories() {
+        // 验证 SqliteStorage batch 优化实现：单连接批量查询
+        let tmp = TempDir::new().unwrap();
+        let storage = SqliteStorage::new(tmp.path(), Some("proj-batch-r".into())).unwrap();
+
+        // 写入 3 个记忆文件
+        let mut ids = Vec::new();
+        for i in 0..3 {
+            let mut f = make_memory("sess-batch-r", Some("proj-batch-r"), ArchivePeriod::Daily);
+            f.total_tokens = 100 + i;
+            ids.push(storage.write_memory(&f).await.unwrap());
+        }
+
+        // 批量读取
+        let results = storage.read_memories_batch(&ids).await;
+        assert_eq!(results.len(), 3, "应返回 3 个结果");
+        for r in &results {
+            assert!(r.is_ok(), "全部应成功");
+        }
+        assert_eq!(results[0].as_ref().unwrap().total_tokens, 100);
+        assert_eq!(results[1].as_ref().unwrap().total_tokens, 101);
+        assert_eq!(results[2].as_ref().unwrap().total_tokens, 102);
+    }
+
+    #[tokio::test]
+    async fn test_sqlite_batch_read_partial_failure() {
+        // 验证：单个失败不影响其他条目（SQLite 优化版）
+        let tmp = TempDir::new().unwrap();
+        let storage = SqliteStorage::new(tmp.path(), None).unwrap();
+
+        let file = make_memory("sess-batch-pf", None, ArchivePeriod::Daily);
+        let good_id = storage.write_memory(&file).await.unwrap();
+        let bad_id = Uuid::new_v4().to_string(); // 不存在的 UUID
+
+        let results = storage
+            .read_memories_batch(&[good_id.clone(), bad_id, good_id.clone()])
+            .await;
+        assert_eq!(results.len(), 3);
+        assert!(results[0].is_ok(), "第 1 个应成功");
+        assert!(results[1].is_err(), "第 2 个应失败（不存在）");
+        assert!(results[2].is_ok(), "第 3 个应成功（不受前一个失败影响）");
+    }
+
+    #[tokio::test]
+    async fn test_sqlite_batch_delete_memories() {
+        let tmp = TempDir::new().unwrap();
+        let storage = SqliteStorage::new(tmp.path(), None).unwrap();
+
+        // 写入 3 个记忆
+        let mut ids = Vec::new();
+        for _ in 0..3 {
+            let f = make_memory("sess-batch-d", None, ArchivePeriod::Daily);
+            ids.push(storage.write_memory(&f).await.unwrap());
+        }
+
+        // 批量删除前 2 个
+        let results = storage.delete_memories_batch(&ids[..2]).await;
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|r| r.is_ok()));
+
+        // 验证已删除
+        let remaining = storage
+            .list_memories("sess-batch-d", None, ArchivePeriod::Daily)
+            .await
+            .unwrap();
+        assert_eq!(remaining.len(), 1, "应剩 1 个");
+        assert_eq!(remaining[0], ids[2], "剩余应为第 3 个");
+    }
+
+    #[tokio::test]
+    async fn test_sqlite_batch_delete_mixed() {
+        // 混合存在/不存在的 ID
+        let tmp = TempDir::new().unwrap();
+        let storage = SqliteStorage::new(tmp.path(), None).unwrap();
+
+        let f = make_memory("sess-batch-dm", None, ArchivePeriod::Daily);
+        let good_id = storage.write_memory(&f).await.unwrap();
+        let bad_id = Uuid::new_v4().to_string();
+
+        let results = storage
+            .delete_memories_batch(&[good_id.clone(), bad_id])
+            .await;
+        assert_eq!(results.len(), 2);
+        assert!(results[0].is_ok(), "存在的应删除成功");
+        assert!(results[1].is_err(), "不存在的应返回错误（不影响其他）");
+
+        // 验证 good_id 确实被删除
+        let r = storage.read_memory(&good_id).await;
+        assert!(r.is_err(), "good_id 应已被删除");
+    }
+
+    #[tokio::test]
+    async fn test_sqlite_batch_update_memories() {
+        let tmp = TempDir::new().unwrap();
+        let storage = SqliteStorage::new(tmp.path(), None).unwrap();
+
+        // 写入 2 个记忆
+        let mut ids = Vec::new();
+        for _ in 0..2 {
+            let f = make_memory("sess-batch-u", None, ArchivePeriod::Daily);
+            ids.push(storage.write_memory(&f).await.unwrap());
+        }
+
+        // 批量更新
+        let updates: Vec<(String, MemoryUpdate)> = vec![
+            (ids[0].clone(), MemoryUpdate::new().add_fact("事实 A")),
+            (
+                ids[1].clone(),
+                MemoryUpdate::new().add_fact("事实 B").revise_fact("修正 X"),
+            ),
+        ];
+
+        let results = storage.update_memories_batch(&updates).await;
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|r| r.is_ok()));
+
+        // 验证更新已应用
+        let m0 = storage.read_memory(&ids[0]).await.unwrap();
+        assert_eq!(m0.updates.len(), 1);
+        assert_eq!(m0.updates[0].update.added_facts, vec!["事实 A"]);
+
+        let m1 = storage.read_memory(&ids[1]).await.unwrap();
+        assert_eq!(m1.updates.len(), 1);
+        assert_eq!(m1.updates[0].update.added_facts, vec!["事实 B"]);
+        assert_eq!(m1.updates[0].update.revised_facts, vec!["修正 X"]);
+    }
+
+    #[tokio::test]
+    async fn test_sqlite_batch_update_partial_failure() {
+        let tmp = TempDir::new().unwrap();
+        let storage = SqliteStorage::new(tmp.path(), None).unwrap();
+
+        let f = make_memory("sess-batch-upf", None, ArchivePeriod::Daily);
+        let good_id = storage.write_memory(&f).await.unwrap();
+        let bad_id = Uuid::new_v4().to_string(); // 不存在
+
+        let updates: Vec<(String, MemoryUpdate)> = vec![
+            (good_id.clone(), MemoryUpdate::new().add_fact("OK")),
+            (bad_id, MemoryUpdate::new().add_fact("FAIL")),
+        ];
+
+        let results = storage.update_memories_batch(&updates).await;
+        assert_eq!(results.len(), 2);
+        assert!(results[0].is_ok(), "存在的应更新成功");
+        assert!(results[1].is_err(), "不存在的应返回错误");
+
+        // 验证成功的那条确实更新了
+        let m = storage.read_memory(&good_id).await.unwrap();
+        assert_eq!(m.updates.len(), 1);
+        assert_eq!(m.updates[0].update.added_facts, vec!["OK"]);
+    }
+
+    #[tokio::test]
+    async fn test_sqlite_batch_empty_input() {
+        // 空 slice 应返回空 Vec
+        let tmp = TempDir::new().unwrap();
+        let storage = SqliteStorage::new(tmp.path(), None).unwrap();
+
+        let r1 = storage.read_memories_batch(&[]).await;
+        assert!(r1.is_empty());
+
+        let r2 = storage.delete_memories_batch(&[]).await;
+        assert!(r2.is_empty());
+
+        let r3 = storage.update_memories_batch(&[]).await;
+        assert!(r3.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_sqlite_batch_read_consistency_with_single() {
+        // 验证：batch 读取的结果与单条读取一致
+        let tmp = TempDir::new().unwrap();
+        let storage = SqliteStorage::new(tmp.path(), None).unwrap();
+
+        let mut ids = Vec::new();
+        for i in 0..5 {
+            let mut f = make_memory("sess-batch-c", None, ArchivePeriod::Daily);
+            f.total_tokens = 200 + i;
+            ids.push(storage.write_memory(&f).await.unwrap());
+        }
+
+        // 单条读取（顺序调用）
+        let mut single: Vec<MemoryFile> = Vec::with_capacity(ids.len());
+        for id in &ids {
+            single.push(storage.read_memory(id).await.unwrap());
+        }
+
+        // 批量读取
+        let batch = storage.read_memories_batch(&ids).await;
+        assert_eq!(batch.len(), single.len());
+        for (b, s) in batch.iter().zip(single.iter()) {
+            assert!(b.is_ok());
+            let b = b.as_ref().unwrap();
+            assert_eq!(b.id, s.id);
+            assert_eq!(b.total_tokens, s.total_tokens);
+            assert_eq!(b.turns.len(), s.turns.len());
+        }
     }
 }

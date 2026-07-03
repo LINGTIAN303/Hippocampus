@@ -176,6 +176,58 @@ pub trait Storage: Send + Sync {
             "update_memory 未实现: 后端不支持记忆迭代更新".into(),
         ))
     }
+
+    // ========================================================================
+    // 批量操作（v2.5 批次 6 新增，带默认实现：循环调用单个方法）
+    // ========================================================================
+
+    /// 批量读取记忆文件
+    ///
+    /// 按传入的 `memory_ids` 顺序返回结果，单个失败不影响其他条目。
+    ///
+    /// **默认实现**：循环调用 `read_memory`。后端可覆写为单事务批量查询以优化性能。
+    async fn read_memories_batch(
+        &self,
+        memory_ids: &[String],
+    ) -> Vec<crate::Result<MemoryFile>> {
+        let mut results = Vec::with_capacity(memory_ids.len());
+        for id in memory_ids {
+            results.push(self.read_memory(id).await);
+        }
+        results
+    }
+
+    /// 批量删除记忆文件
+    ///
+    /// 按传入的 `memory_ids` 顺序返回结果，单个失败不影响其他条目。
+    ///
+    /// **默认实现**：循环调用 `delete_memory`。后端可覆写为单事务批量删除以优化性能。
+    async fn delete_memories_batch(
+        &self,
+        memory_ids: &[String],
+    ) -> Vec<crate::Result<()>> {
+        let mut results = Vec::with_capacity(memory_ids.len());
+        for id in memory_ids {
+            results.push(self.delete_memory(id).await);
+        }
+        results
+    }
+
+    /// 批量更新记忆文件（added/revised/deprecated facts）
+    ///
+    /// 按传入的 `(memory_id, updates)` 顺序返回结果，单个失败不影响其他条目。
+    ///
+    /// **默认实现**：循环调用 `update_memory`。后端可覆写为单事务批量更新以优化性能。
+    async fn update_memories_batch(
+        &self,
+        updates: &[(String, crate::model::MemoryUpdate)],
+    ) -> Vec<crate::Result<()>> {
+        let mut results = Vec::with_capacity(updates.len());
+        for (id, upd) in updates {
+            results.push(self.update_memory(id, upd.clone()).await);
+        }
+        results
+    }
 }
 
 /// 本地文件树存储后端
@@ -1338,5 +1390,187 @@ mod tests {
         assert_eq!(restored.updates.len(), 2, "应有 2 条独立更新记录");
         assert_eq!(restored.updates[0].update.added_facts, vec!["事实 A"]);
         assert_eq!(restored.updates[1].update.added_facts, vec!["事实 B"]);
+    }
+
+    // ========================================================================
+    // 批量操作测试（v2.5 批次 6：默认实现验证）
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_batch_read_memories_default_impl() {
+        // 验证 Storage trait 的默认 batch 实现：循环调用 read_memory
+        let tmp = TempDir::new().unwrap();
+        let storage = LocalStorage::new(tmp.path());
+
+        // 写入 3 个记忆文件
+        let mut ids = Vec::new();
+        for i in 0..3 {
+            let mut f = make_test_memory(ArchivePeriod::Daily, "sess-batch-r");
+            f.total_tokens = 100 + i;
+            // 加延迟避免时间戳冲突
+            tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+            let id = storage.write_memory(&f).await.unwrap();
+            ids.push(id);
+        }
+
+        // 批量读取
+        let results = storage.read_memories_batch(&ids).await;
+        assert_eq!(results.len(), 3, "应返回 3 个结果");
+        for r in &results {
+            assert!(r.is_ok(), "全部应成功");
+        }
+        assert_eq!(results[0].as_ref().unwrap().total_tokens, 100);
+        assert_eq!(results[1].as_ref().unwrap().total_tokens, 101);
+        assert_eq!(results[2].as_ref().unwrap().total_tokens, 102);
+    }
+
+    #[tokio::test]
+    async fn test_batch_read_memories_partial_failure() {
+        // 验证：单个失败不影响其他条目
+        let tmp = TempDir::new().unwrap();
+        let storage = LocalStorage::new(tmp.path());
+
+        let file = make_test_memory(ArchivePeriod::Daily, "sess-batch-pf");
+        let good_id = storage.write_memory(&file).await.unwrap();
+        let bad_id = "nonexistent.json".to_string();
+
+        let results = storage
+            .read_memories_batch(&[good_id.clone(), bad_id, good_id.clone()])
+            .await;
+        assert_eq!(results.len(), 3);
+        assert!(results[0].is_ok(), "第 1 个应成功");
+        assert!(results[1].is_err(), "第 2 个应失败（不存在）");
+        assert!(results[2].is_ok(), "第 3 个应成功（不受前一个失败影响）");
+    }
+
+    #[tokio::test]
+    async fn test_batch_delete_memories_default_impl() {
+        let tmp = TempDir::new().unwrap();
+        let storage = LocalStorage::new(tmp.path());
+
+        // 写入 3 个记忆
+        let mut ids = Vec::new();
+        for _ in 0..3 {
+            let f = make_test_memory(ArchivePeriod::Daily, "sess-batch-d");
+            tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+            ids.push(storage.write_memory(&f).await.unwrap());
+        }
+
+        // 批量删除前 2 个
+        let results = storage.delete_memories_batch(&ids[..2]).await;
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|r| r.is_ok()));
+
+        // 验证已删除
+        let remaining = storage
+            .list_memories("sess-batch-d", None, ArchivePeriod::Daily)
+            .await
+            .unwrap();
+        assert_eq!(remaining.len(), 1, "应剩 1 个");
+        assert_eq!(remaining[0], ids[2], "剩余应为第 3 个");
+    }
+
+    #[tokio::test]
+    async fn test_batch_delete_memories_mixed() {
+        // 混合存在/不存在的 ID
+        let tmp = TempDir::new().unwrap();
+        let storage = LocalStorage::new(tmp.path());
+
+        let f = make_test_memory(ArchivePeriod::Daily, "sess-batch-dm");
+        let good_id = storage.write_memory(&f).await.unwrap();
+        let bad_id = "does-not-exist.json".to_string();
+
+        let results = storage
+            .delete_memories_batch(&[good_id.clone(), bad_id])
+            .await;
+        assert_eq!(results.len(), 2);
+        assert!(results[0].is_ok(), "存在的应删除成功");
+        assert!(
+            results[1].is_err(),
+            "不存在的应返回错误（但不影响其他条目）"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_batch_update_memories_default_impl() {
+        let tmp = TempDir::new().unwrap();
+        let storage = LocalStorage::new(tmp.path());
+
+        // 写入 2 个记忆
+        let mut ids = Vec::new();
+        for _ in 0..2 {
+            let f = make_test_memory(ArchivePeriod::Daily, "sess-batch-u");
+            tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+            ids.push(storage.write_memory(&f).await.unwrap());
+        }
+
+        // 批量更新
+        let updates: Vec<(String, crate::model::MemoryUpdate)> = vec![
+            (
+                ids[0].clone(),
+                crate::model::MemoryUpdate::new().add_fact("事实 A"),
+            ),
+            (
+                ids[1].clone(),
+                crate::model::MemoryUpdate::new()
+                    .add_fact("事实 B")
+                    .revise_fact("修正 X"),
+            ),
+        ];
+
+        let results = storage.update_memories_batch(&updates).await;
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|r| r.is_ok()));
+
+        // 验证更新已应用
+        let m0 = storage.read_memory(&ids[0]).await.unwrap();
+        assert_eq!(m0.updates.len(), 1);
+        assert_eq!(m0.updates[0].update.added_facts, vec!["事实 A"]);
+
+        let m1 = storage.read_memory(&ids[1]).await.unwrap();
+        assert_eq!(m1.updates.len(), 1);
+        assert_eq!(m1.updates[0].update.added_facts, vec!["事实 B"]);
+        assert_eq!(m1.updates[0].update.revised_facts, vec!["修正 X"]);
+    }
+
+    #[tokio::test]
+    async fn test_batch_update_memories_partial_failure() {
+        let tmp = TempDir::new().unwrap();
+        let storage = LocalStorage::new(tmp.path());
+
+        let f = make_test_memory(ArchivePeriod::Daily, "sess-batch-upf");
+        let good_id = storage.write_memory(&f).await.unwrap();
+        let bad_id = "nonexistent-update.json".to_string();
+
+        let updates: Vec<(String, crate::model::MemoryUpdate)> = vec![
+            (good_id.clone(), crate::model::MemoryUpdate::new().add_fact("OK")),
+            (bad_id, crate::model::MemoryUpdate::new().add_fact("FAIL")),
+        ];
+
+        let results = storage.update_memories_batch(&updates).await;
+        assert_eq!(results.len(), 2);
+        assert!(results[0].is_ok(), "存在的应更新成功");
+        assert!(results[1].is_err(), "不存在的应返回错误");
+
+        // 验证成功的那条确实更新了
+        let m = storage.read_memory(&good_id).await.unwrap();
+        assert_eq!(m.updates.len(), 1);
+        assert_eq!(m.updates[0].update.added_facts, vec!["OK"]);
+    }
+
+    #[tokio::test]
+    async fn test_batch_empty_input() {
+        // 空 slice 应返回空 Vec（不报错）
+        let tmp = TempDir::new().unwrap();
+        let storage = LocalStorage::new(tmp.path());
+
+        let r1 = storage.read_memories_batch(&[]).await;
+        assert!(r1.is_empty());
+
+        let r2 = storage.delete_memories_batch(&[]).await;
+        assert!(r2.is_empty());
+
+        let r3 = storage.update_memories_batch(&[]).await;
+        assert!(r3.is_empty());
     }
 }

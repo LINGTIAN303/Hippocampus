@@ -139,6 +139,52 @@ struct CompactionParams {
 }
 
 // ============================================================================
+// v2.5 批次 6：批量操作 tool 参数
+// ============================================================================
+
+/// batch_retrieve tool 参数
+#[derive(Deserialize, schemars::JsonSchema)]
+struct BatchRetrieveParams {
+    /// 会话 ID
+    #[schemars(description = "会话 ID")]
+    session_id: String,
+    /// hook_id 列表（JSON 字符串）
+    #[schemars(description = "要检索的 hook_id 列表（JSON 字符串数组，如 [\"uuid1\",\"uuid2\"]）")]
+    hook_ids_json: String,
+    /// 项目 ID（可选）
+    #[schemars(description = "项目 ID（可选）")]
+    project_id: Option<String>,
+}
+
+/// batch_delete tool 参数
+#[derive(Deserialize, schemars::JsonSchema)]
+struct BatchDeleteParams {
+    /// 会话 ID
+    #[schemars(description = "会话 ID")]
+    session_id: String,
+    /// hook_id 列表（JSON 字符串）
+    #[schemars(description = "要删除的 hook_id 列表（JSON 字符串数组）")]
+    hook_ids_json: String,
+    /// 项目 ID（可选）
+    #[schemars(description = "项目 ID（可选）")]
+    project_id: Option<String>,
+}
+
+/// batch_update tool 参数
+#[derive(Deserialize, schemars::JsonSchema)]
+struct BatchUpdateParams {
+    /// 会话 ID
+    #[schemars(description = "会话 ID")]
+    session_id: String,
+    /// 更新条目列表（JSON 字符串）
+    #[schemars(description = "更新条目列表 JSON 字符串，每条含 hook_id/added_facts/revised_facts/deprecated_facts")]
+    updates_json: String,
+    /// 项目 ID（可选）
+    #[schemars(description = "项目 ID（可选）")]
+    project_id: Option<String>,
+}
+
+// ============================================================================
 // MCP Tools 实现
 // ============================================================================
 
@@ -273,6 +319,258 @@ impl HippocampusMcp {
         .to_string();
 
         Ok(result)
+    }
+
+    // ========================================================================
+    // v2.5 批次 6：批量操作 tools
+    // ========================================================================
+
+    /// 批量按 hook_id 列表检索记忆文件。
+    #[tool(description = "批量检索多个记忆文件。传入 hook_id 列表，返回每个记忆的完整内容。单个失败不影响其他。用于一次性获取多个历史记忆，减少多次调用 retrieve 的开销。")]
+    async fn batch_retrieve(
+        &self,
+        Parameters(params): Parameters<BatchRetrieveParams>,
+    ) -> Result<String, McpError> {
+        let hook_ids: Vec<String> = serde_json::from_str(&params.hook_ids_json)
+            .map_err(|e| McpError::invalid_params(
+                format!("hook_ids_json 解析失败: {e}"),
+                None,
+            ))?;
+
+        if hook_ids.is_empty() {
+            return Err(McpError::invalid_params("hook_ids 不能为空", None));
+        }
+
+        let storage = self.create_storage();
+        let retriever = Retriever::new(storage, &params.session_id, params.project_id);
+
+        let mut results = Vec::with_capacity(hook_ids.len());
+        for hook_id in &hook_ids {
+            match retriever.retrieve_memory(hook_id).await {
+                Ok(memory) => results.push(serde_json::json!({
+                    "hook_id": hook_id,
+                    "success": true,
+                    "data": memory,
+                })),
+                Err(e) => results.push(serde_json::json!({
+                    "hook_id": hook_id,
+                    "success": false,
+                    "error": e.to_string(),
+                })),
+            }
+        }
+
+        let result = serde_json::json!({
+            "total": results.len(),
+            "success_count": results.iter().filter(|r| r["success"].as_bool().unwrap_or(false)).count(),
+            "items": results,
+        });
+        Ok(result.to_string())
+    }
+
+    /// 批量按 hook_id 列表删除记忆文件。
+    #[tool(description = "批量删除多个记忆文件。传入 hook_id 列表，逐个删除。单个失败不影响其他。用于清理过期或不需要的记忆。")]
+    async fn batch_delete(
+        &self,
+        Parameters(params): Parameters<BatchDeleteParams>,
+    ) -> Result<String, McpError> {
+        let hook_ids: Vec<String> = serde_json::from_str(&params.hook_ids_json)
+            .map_err(|e| McpError::invalid_params(
+                format!("hook_ids_json 解析失败: {e}"),
+                None,
+            ))?;
+
+        if hook_ids.is_empty() {
+            return Err(McpError::invalid_params("hook_ids 不能为空", None));
+        }
+
+        let storage = self.create_storage();
+        let retriever = Retriever::new(storage.clone(), &params.session_id, params.project_id);
+
+        // hook_id → memory_id 转换
+        let mut memory_ids: Vec<(String, Option<String>)> = Vec::with_capacity(hook_ids.len());
+        for hook_id in &hook_ids {
+            let mid = retriever.find_memory_id_by_hook(hook_id).await;
+            memory_ids.push((hook_id.clone(), mid));
+        }
+
+        // 批量删除
+        let valid: Vec<String> = memory_ids.iter()
+            .filter_map(|(_, mid)| mid.clone())
+            .collect();
+        let delete_results = if !valid.is_empty() {
+            storage.delete_memories_batch(&valid).await
+        } else {
+            Vec::new()
+        };
+
+        // 构建响应
+        let mut mid_to_result: std::collections::HashMap<String, &hippocampus_core::Result<()>> =
+            std::collections::HashMap::new();
+        let mut idx = 0;
+        for (_, mid_opt) in &memory_ids {
+            if let Some(mid) = mid_opt {
+                if idx < delete_results.len() {
+                    mid_to_result.insert(mid.clone(), &delete_results[idx]);
+                    idx += 1;
+                }
+            }
+        }
+
+        let items: Vec<_> = memory_ids.iter()
+            .map(|(hook_id, mid_opt)| match mid_opt {
+                None => serde_json::json!({
+                    "hook_id": hook_id,
+                    "success": false,
+                    "error": "未找到对应的 memory_id",
+                }),
+                Some(mid) => match mid_to_result.get(mid) {
+                    Some(Ok(())) => serde_json::json!({
+                        "hook_id": hook_id,
+                        "success": true,
+                    }),
+                    Some(Err(e)) => serde_json::json!({
+                        "hook_id": hook_id,
+                        "success": false,
+                        "error": e.to_string(),
+                    }),
+                    None => serde_json::json!({
+                        "hook_id": hook_id,
+                        "success": false,
+                        "error": "内部错误：结果缺失",
+                    }),
+                },
+            })
+            .collect();
+
+        let result = serde_json::json!({
+            "total": items.len(),
+            "success_count": items.iter().filter(|r| r["success"].as_bool().unwrap_or(false)).count(),
+            "items": items,
+        });
+        Ok(result.to_string())
+    }
+
+    /// 批量按 hook_id 列表更新记忆文件。
+    #[tool(description = "批量更新多个记忆文件。传入更新条目列表（每条含 hook_id + added/revised/deprecated facts），逐个更新。单个失败不影响其他。用于批量迭代更新记忆。")]
+    async fn batch_update(
+        &self,
+        Parameters(params): Parameters<BatchUpdateParams>,
+    ) -> Result<String, McpError> {
+        #[derive(Deserialize)]
+        struct UpdateEntry {
+            hook_id: String,
+            #[serde(default)]
+            added_facts: Vec<String>,
+            #[serde(default)]
+            revised_facts: Vec<String>,
+            #[serde(default)]
+            deprecated_facts: Vec<String>,
+        }
+
+        let entries: Vec<UpdateEntry> = serde_json::from_str(&params.updates_json)
+            .map_err(|e| McpError::invalid_params(
+                format!("updates_json 解析失败: {e}"),
+                None,
+            ))?;
+
+        if entries.is_empty() {
+            return Err(McpError::invalid_params("updates 不能为空", None));
+        }
+
+        let storage = self.create_storage();
+        let retriever = Retriever::new(storage.clone(), &params.session_id, params.project_id);
+
+        // hook_id → memory_id 转换 + 构造更新对
+        let mut pairs: Vec<(String, hippocampus_core::model::MemoryUpdate, String, usize, usize, usize)> =
+            Vec::new();
+        for entry in &entries {
+            let mid = retriever.find_memory_id_by_hook(&entry.hook_id).await;
+            match mid {
+                Some(memory_id) => {
+                    let updates = hippocampus_core::model::MemoryUpdate::new()
+                        .add_fact(entry.added_facts.join("\n"))
+                        .revise_fact(entry.revised_facts.join("\n"))
+                        .deprecate_fact(entry.deprecated_facts.join("\n"));
+                    pairs.push((
+                        memory_id,
+                        updates,
+                        entry.hook_id.clone(),
+                        entry.added_facts.len(),
+                        entry.revised_facts.len(),
+                        entry.deprecated_facts.len(),
+                    ));
+                }
+                None => {
+                    pairs.push((
+                        String::new(),
+                        hippocampus_core::model::MemoryUpdate::new(),
+                        entry.hook_id.clone(),
+                        0, 0, 0,
+                    ));
+                }
+            }
+        }
+
+        // 批量更新
+        let valid_updates: Vec<(String, hippocampus_core::model::MemoryUpdate)> = pairs.iter()
+            .filter(|(mid, _, _, _, _, _)| !mid.is_empty())
+            .map(|(mid, upd, _, _, _, _)| (mid.clone(), upd.clone()))
+            .collect();
+        let update_results = if !valid_updates.is_empty() {
+            storage.update_memories_batch(&valid_updates).await
+        } else {
+            Vec::new()
+        };
+
+        // 构建响应
+        let mut mid_to_result: std::collections::HashMap<String, &hippocampus_core::Result<()>> =
+            std::collections::HashMap::new();
+        let mut idx = 0;
+        for (mid, _, _, _, _, _) in &pairs {
+            if !mid.is_empty() && idx < update_results.len() {
+                mid_to_result.insert(mid.clone(), &update_results[idx]);
+                idx += 1;
+            }
+        }
+
+        let items: Vec<_> = pairs.iter()
+            .map(|(mid, _, hook_id, added, revised, deprecated)| {
+                if mid.is_empty() {
+                    return serde_json::json!({
+                        "hook_id": hook_id,
+                        "success": false,
+                        "error": "未找到对应的 memory_id",
+                    });
+                }
+                match mid_to_result.get(mid) {
+                    Some(Ok(())) => serde_json::json!({
+                        "hook_id": hook_id,
+                        "success": true,
+                        "added": added,
+                        "revised": revised,
+                        "deprecated": deprecated,
+                    }),
+                    Some(Err(e)) => serde_json::json!({
+                        "hook_id": hook_id,
+                        "success": false,
+                        "error": e.to_string(),
+                    }),
+                    None => serde_json::json!({
+                        "hook_id": hook_id,
+                        "success": false,
+                        "error": "内部错误：结果缺失",
+                    }),
+                }
+            })
+            .collect();
+
+        let result = serde_json::json!({
+            "total": items.len(),
+            "success_count": items.iter().filter(|r| r["success"].as_bool().unwrap_or(false)).count(),
+            "items": items,
+        });
+        Ok(result.to_string())
     }
 }
 
