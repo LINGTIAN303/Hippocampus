@@ -1,0 +1,30 @@
+# hippocampus-search
+# 搜索索引层 - Session 级索引隔离路由器 + 搜索索引器
+# v2.18 批次2：从 hippocampus-server 下沉，隔离 axum 重依赖
+
+[package]
+name = "hippocampus-search"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Hippocampus 搜索层 - SessionSearchRouter + SearchIndexer，不依赖 HTTP 框架"
+
+[dependencies]
+hippocampus-core = { path = "../hippocampus-core", version = "0.1.0" }
+# v2.9: SessionSearchRouter 用 moka 做 LRU + TTL 内存管理（替代 v2.8 的 dashmap）
+moka.workspace = true
+# v2.14: SessionSearchRouter StrictLRU 模式（严格 LRU 淘汰）
+lru.workspace = true
+tokio = { workspace = true }
+tracing.workspace = true
+async-trait.workspace = true
+
+[dev-dependencies]
+tempfile = "3.0"
+tokio = { version = "1.0", features = ["rt", "macros", "time"] }
+uuid = { workspace = true }
+chrono = { workspace = true }
+serde_json = { workspace = true }

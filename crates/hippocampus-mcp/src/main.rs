@@ -88,9 +88,10 @@ fn build_conflict_detector() -> Arc<dyn ConflictDetector> {
 /// - 配置了 `HIPPOCAMPUS_EMBEDDER_API_URL` + `API_KEY`：
 ///   返回注入了 HttpEmbedder 的 SessionSearchRouter（混合检索）
 /// - 未配置：返回仅关键词模式的 SessionSearchRouter（降级，但仍带 storage 懒重建）
-fn build_session_search(storage_root: &Path) -> Option<Arc<hippocampus_server::SessionSearchRouter>> {
+fn build_session_search(storage_root: &Path) -> Option<Arc<hippocampus_search::SessionSearchRouter>> {
     use hippocampus_core::semantic::Embedder;
-    use hippocampus_server::{EmbedderConfig, HttpEmbedder, SessionSearchRouter};
+    use hippocampus_llm::{EmbedderConfig, HttpEmbedder};
+    use hippocampus_search::SessionSearchRouter;
 
     // 构造 storage 后端（供 SessionSearchRouter 重建索引用）
     let storage: Arc<dyn Storage> = Arc::new(LocalStorage::new(storage_root.to_path_buf()));

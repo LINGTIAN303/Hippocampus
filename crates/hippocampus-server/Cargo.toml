@@ -15,6 +15,8 @@ description = "Hippocampus HTTP 服务 - Axum REST API，供所有语言通过 H
 hippocampus-core = { path = "../hippocampus-core", version = "0.1.0" }
 # v2.12: LLM 客户端组件（HttpLlmDetector / HttpEmbedder / HttpLlmScorer）下沉到独立 crate
 hippocampus-llm = { path = "../hippocampus-llm", version = "0.1.0" }
+# v2.18 批次2: 搜索模块（SessionSearchRouter + SearchIndexer）下沉到独立 crate
+hippocampus-search = { path = "../hippocampus-search", version = "0.1.0" }
 axum.workspace = true
 tokio = { version = "1.0", features = ["full"] }
 tower-http.workspace = true
@@ -23,10 +25,6 @@ tracing-subscriber.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 async-trait.workspace = true
-# v2.9: SessionSearchRouter 用 moka 做 LRU + TTL 内存管理（替代 v2.8 的 dashmap）
-moka.workspace = true
-# v2.14: SessionSearchRouter StrictLRU 模式（严格 LRU 淘汰）
-lru.workspace = true
 
 [dev-dependencies]
 tempfile = "3.0"

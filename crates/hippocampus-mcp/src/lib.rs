@@ -51,8 +51,8 @@ use hippocampus_core::model::{ArchiveConfig, MessageTurn};
 use hippocampus_core::retrieve::{Retriever, SummaryView};
 use hippocampus_core::score::DefaultScorer;
 use hippocampus_core::storage::{LocalStorage, Storage};
-// v2.18：复用 hippocampus-server 的 SessionSearchRouter（批次2 可下沉到独立 crate 减少二进制体积）
-use hippocampus_server::SessionSearchRouter;
+// v2.18 批次2：复用 hippocampus-search 的 SessionSearchRouter（不引入 axum 重依赖）
+use hippocampus_search::SessionSearchRouter;
 
 /// MCP server 主结构体
 #[derive(Clone)]
@@ -967,7 +967,7 @@ mod tests {
     /// SessionSearchRouter 仅关键词模式（无 Embedder）+ 注入 storage 懒重建。
     /// archive 写入 storage 后，semantic_search 首次调用会触发 rebuild。
     fn make_mcp_with_session_search(tmpdir: &TempDir) -> HippocampusMcp {
-        use hippocampus_server::SessionSearchRouter;
+        use hippocampus_search::SessionSearchRouter;
         let storage: Arc<dyn hippocampus_core::storage::Storage> =
             Arc::new(hippocampus_core::storage::LocalStorage::new(
                 tmpdir.path().to_path_buf(),

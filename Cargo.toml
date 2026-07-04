@@ -8,6 +8,7 @@ members = [
     "crates/hippocampus-core",
     "crates/hippocampus-ffi",
     "crates/hippocampus-llm",
+    "crates/hippocampus-search",
     "crates/hippocampus-server",
     "crates/hippocampus-python",
     "crates/hippocampus-node",

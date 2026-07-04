@@ -21,17 +21,17 @@
 
 mod error;
 mod handlers;
-/// v2.5 批次 7: 搜索索引器（归档后自动索引到 BM25 + 向量索引）
-pub mod search;
-/// v2.8: Session 级索引隔离路由器
-pub mod session_search;
+
+// v2.18 批次2：搜索模块下沉到 hippocampus-search crate
+// v2.5 批次 7: SearchIndexer（归档后自动索引）
+// v2.8: SessionSearchRouter（session 级索引隔离）
+// 这里 re-export 保持向后兼容，server 内部代码与外部消费者的 import 路径不变
+pub use hippocampus_search::{SearchIndexer, SessionSearchRouter, SessionSearchRouterConfig};
 
 // v2.12: LLM 客户端组件（HttpLlmDetector / HttpEmbedder / HttpLlmScorer）下沉到 hippocampus-llm crate
 // 这里 re-export 保持向后兼容，server 内部代码与外部消费者的 import 路径不变
 pub use hippocampus_llm::{EmbedderConfig, HttpEmbedder, HttpLlmDetector, HttpLlmScorer, LlmDetectorConfig};
 pub use error::AppError;
-pub use search::SearchIndexer;
-pub use session_search::{SessionSearchRouter, SessionSearchRouterConfig};
 
 use std::path::PathBuf;
 
