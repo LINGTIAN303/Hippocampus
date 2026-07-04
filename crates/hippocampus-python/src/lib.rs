@@ -60,9 +60,34 @@ mod hippocampus_python {
         vec!["archive", "retrieve", "summaries", "prompt", "compaction"]
     }
 
+    /// 模块级函数：返回支持的 Agent family 列表（v2.21 批次 8d）
+    ///
+    /// 用于 with_agent() 的可选值参考（不含 Custom 兜底）。
+    #[pyfunction]
+    fn supported_agents() -> Vec<&'static str> {
+        vec![
+            "Claude Code", "Cursor", "Trae", "Codex", "Zcode", "OpenCode",
+            "Qoder", "WorkBuddy", "CatPaw", "OpenClaw", "Marvis",
+        ]
+    }
+
+    /// 模块级函数：返回支持的 Scenario 列表（v2.21 批次 8d）
+    ///
+    /// 用于 with_scenario() 的可选值参考（不含 Custom 兜底）。
+    #[pyfunction]
+    fn supported_scenarios() -> Vec<&'static str> {
+        vec![
+            "coding", "writing", "research", "daily",
+            "finance", "design", "officework",
+        ]
+    }
+
     // 导出 Hippocampus 类
     #[pymodule_export]
     use super::Hippocampus;
+    // v2.21 批次 8d：导出 PresetBuilder 类
+    #[pymodule_export]
+    use super::PyPresetBuilder;
 }
 
 // ============================================================================
@@ -359,5 +384,243 @@ impl Hippocampus {
     fn close(&mut self) {
         // runtime 会在 drop 时自动释放，这里无需特殊处理
         // 保留方法供显式调用（API 兼容性）
+    }
+}
+
+// ============================================================================
+// PresetBuilder 类（v2.21 批次 8d）
+// ============================================================================
+
+/// 字符串解析为 Scenario 枚举（大小写不敏感）
+///
+/// 支持的值：Coding/Writing/Research/Daily/Finance/Design/OfficeWork
+/// （大小写不敏感）；其他字符串返回 Custom(s)。
+fn scenario_from_str(s: &str) -> hippocampus_scenarios::Scenario {
+    use hippocampus_scenarios::Scenario;
+    let lower = s.to_lowercase();
+    match lower.as_str() {
+        "coding" => Scenario::Coding,
+        "writing" => Scenario::Writing,
+        "research" => Scenario::Research,
+        "daily" => Scenario::Daily,
+        "finance" => Scenario::Finance,
+        "design" => Scenario::Design,
+        "officework" | "office" | "work" => Scenario::OfficeWork,
+        _ => Scenario::Custom(s.to_string()),
+    }
+}
+
+/// 预设构造器
+///
+/// 链式收集 5 个可选 Profile + 用户覆盖参数，build() 后返回最终配置 dict。
+///
+/// Python 用法：
+/// ```python
+/// from hippocampus_python import PresetBuilder
+///
+/// preset = (PresetBuilder()
+///     .with_agent("Claude Code")
+///     .with_scenario("coding")
+///     .with_user_archive_threshold(450_000)
+///     .build())
+///
+/// print(preset["archive_threshold"])    # 450000
+/// print(preset["session_prefix"])       # "claude-code"
+/// print(preset["archive_to_hippocampus"])  # True
+/// ```
+#[pyclass(name = "PresetBuilder")]
+struct PyPresetBuilder {
+    inner: hippocampus_presets::PresetBuilder,
+}
+
+#[pymethods]
+impl PyPresetBuilder {
+    /// 创建空的构造器
+    #[new]
+    fn new() -> Self {
+        Self {
+            inner: hippocampus_presets::PresetBuilder::new(),
+        }
+    }
+
+    /// 设置 Agent（字符串，对应 AgentFamily::display_name）
+    ///
+    /// 支持的值（大小写敏感，与 display_name 一致）：
+    /// "Claude Code" / "Cursor" / "Trae" / "Codex" / "Zcode" / "OpenCode"
+    /// / "Qoder" / "WorkBuddy" / "CatPaw" / "OpenClaw" / "Marvis"
+    ///
+    /// 其他字符串将作为 Custom Agent 处理。
+    ///
+    /// 设置后若未显式 with_window，会触发联动推导 Window。
+    fn with_agent(&mut self, agent: String) {
+        let family = hippocampus_agents::AgentFamily::from_str(&agent)
+            .unwrap_or_else(|| hippocampus_agents::AgentFamily::Custom(agent.clone()));
+        let profile = hippocampus_agents::AgentProfile::from_family(family);
+        self.inner = self.inner.clone().with_agent(profile);
+    }
+
+    /// 设置场景（字符串，大小写不敏感）
+    ///
+    /// 支持的值：coding/writing/research/daily/finance/design/officework
+    /// 其他字符串将作为 Custom 场景处理。
+    fn with_scenario(&mut self, scenario: String) {
+        let sc = scenario_from_str(&scenario);
+        let profile = hippocampus_scenarios::ScenarioProfile::from_scenario(sc);
+        self.inner = self.inner.clone().with_scenario(profile);
+    }
+
+    /// 用户覆盖：归档阈值（token 数，最高优先级）
+    ///
+    /// 优先级：用户 > scenario > model > 默认 400K
+    fn with_user_archive_threshold(&mut self, threshold: usize) {
+        self.inner = self.inner.clone().with_user_archive_threshold(threshold);
+    }
+
+    /// 用户覆盖：摘要模板（最高优先级）
+    ///
+    /// 模板需包含 `{conversation}` 占位符。
+    fn with_user_summary_template(&mut self, template: String) {
+        self.inner = self.inner.clone().with_user_summary_template(template);
+    }
+
+    /// 构建最终配置
+    ///
+    /// 返回 dict，含字段：
+    /// - archive_threshold: int（归档阈值，token 数）
+    /// - summary_template: str（摘要模板，含 {conversation} 占位符）
+    /// - session_prefix: str | None（session ID 前缀，来自 Agent）
+    /// - archive_to_hippocampus: bool（是否归档到 Hippocampus）
+    /// - has_agent: bool（是否设置了 Agent）
+    /// - has_scenario: bool（是否设置了 Scenario）
+    /// - has_window: bool（是否设置了 Window，含联动推导）
+    /// - has_model: bool（是否设置了 Model）
+    /// - skills_count: int（技能数量）
+    ///
+    /// 失败时抛出 ValueError（Profile 校验失败）。
+    fn build(&self) -> PyResult<Py<PyAny>> {
+        let combined = self.inner.clone().build().map_err(|e| {
+            PyValueError::new_err(format!("PresetBuilder 构建失败: {}", e))
+        })?;
+
+        // 序列化为精简 dict（只暴露最终生效值 + 标志位，不暴露完整 Profile 内部结构）
+        let result = serde_json::json!({
+            "archive_threshold": combined.archive_threshold(),
+            "summary_template": combined.summary_template(),
+            "session_prefix": combined.session_prefix(),
+            "archive_to_hippocampus": combined.archive_to_hippocampus(),
+            "has_agent": combined.agent.is_some(),
+            "has_scenario": combined.scenario.is_some(),
+            "has_window": combined.window.is_some(),
+            "has_model": combined.model.is_some(),
+            "skills_count": combined.skills.len(),
+        });
+        let result_json = result.to_string();
+
+        Python::attach(|py| json_string_to_py(py, &result_json).map(|b| b.into()))
+    }
+
+    /// 友好的字符串表示
+    fn __repr__(&self) -> String {
+        "PresetBuilder()".to_string()
+    }
+}
+
+// ============================================================================
+// 单元测试（v2.21 批次 8d）
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 验证 scenario_from_str 大小写不敏感解析
+    #[test]
+    fn test_scenario_from_str_case_insensitive() {
+        use hippocampus_scenarios::Scenario;
+
+        assert_eq!(scenario_from_str("coding"), Scenario::Coding);
+        assert_eq!(scenario_from_str("Coding"), Scenario::Coding);
+        assert_eq!(scenario_from_str("CODING"), Scenario::Coding);
+        assert_eq!(scenario_from_str("writing"), Scenario::Writing);
+        assert_eq!(scenario_from_str("research"), Scenario::Research);
+        assert_eq!(scenario_from_str("daily"), Scenario::Daily);
+        assert_eq!(scenario_from_str("finance"), Scenario::Finance);
+        assert_eq!(scenario_from_str("design"), Scenario::Design);
+    }
+
+    /// 验证 OfficeWork 别名（office/work/officework）
+    #[test]
+    fn test_scenario_from_str_office_aliases() {
+        use hippocampus_scenarios::Scenario;
+
+        assert_eq!(scenario_from_str("officework"), Scenario::OfficeWork);
+        assert_eq!(scenario_from_str("office"), Scenario::OfficeWork);
+        assert_eq!(scenario_from_str("work"), Scenario::OfficeWork);
+        assert_eq!(scenario_from_str("Office"), Scenario::OfficeWork);
+        assert_eq!(scenario_from_str("WORK"), Scenario::OfficeWork);
+    }
+
+    /// 验证未知字符串回退到 Custom
+    #[test]
+    fn test_scenario_from_str_custom_fallback() {
+        use hippocampus_scenarios::Scenario;
+
+        match scenario_from_str("游戏场景") {
+            Scenario::Custom(s) => assert_eq!(s, "游戏场景"),
+            other => panic!("期望 Custom，实际 {:?}", other),
+        }
+
+        match scenario_from_str("unknown") {
+            Scenario::Custom(s) => assert_eq!(s, "unknown"),
+            other => panic!("期望 Custom，实际 {:?}", other),
+        }
+    }
+
+    /// 验证 supported_agents 返回 11 个内置 Agent
+    #[test]
+    fn test_supported_agents_count() {
+        // 模块函数在 Rust 侧无法直接调用（#[pyfunction]），但可通过 AgentFamily::all_builtin 验证
+        assert_eq!(hippocampus_agents::AgentFamily::all_builtin().len(), 11);
+    }
+
+    /// 验证 supported_scenarios 返回 7 个内置场景
+    #[test]
+    fn test_supported_scenarios_count() {
+        assert_eq!(hippocampus_scenarios::Scenario::all_builtin().len(), 7);
+    }
+
+    /// 验证 PresetBuilder 链式构造（不经过 PyO3，直接调用 Rust inner）
+    #[test]
+    fn test_preset_builder_rust_side() {
+        // 验证 Rust 侧 PresetBuilder 能正常工作（Python 侧由 PyO3 桥接）
+        let builder = hippocampus_presets::PresetBuilder::new()
+            .with_agent(hippocampus_agents::AgentProfile::claude_code())
+            .with_scenario(hippocampus_scenarios::ScenarioProfile::from_scenario(
+                hippocampus_scenarios::Scenario::Coding,
+            ))
+            .with_user_archive_threshold(450_000);
+
+        let combined = builder.build().expect("PresetBuilder 构建失败");
+
+        assert_eq!(combined.archive_threshold(), 450_000); // 用户覆盖优先
+        assert_eq!(combined.session_prefix(), Some("claude-code"));
+        assert!(combined.archive_to_hippocampus());
+        assert!(combined.agent.is_some());
+        assert!(combined.scenario.is_some());
+    }
+
+    /// 验证空 PresetBuilder 也能构建（全 None，使用默认值）
+    #[test]
+    fn test_preset_builder_empty_uses_defaults() {
+        let combined = hippocampus_presets::PresetBuilder::new()
+            .build()
+            .expect("空 PresetBuilder 构建失败");
+
+        assert_eq!(combined.archive_threshold(), 400_000); // 默认阈值
+        assert!(combined.agent.is_none());
+        assert!(combined.scenario.is_none());
+        assert!(combined.window.is_none());
+        assert!(combined.model.is_none());
+        assert_eq!(combined.skills.len(), 0);
     }
 }
