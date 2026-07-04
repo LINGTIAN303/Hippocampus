@@ -9,6 +9,7 @@ members = [
     "crates/hippocampus-models",
     "crates/hippocampus-scenarios",
     "crates/hippocampus-windows",
+    "crates/hippocampus-agents",
     "crates/hippocampus-ffi",
     "crates/hippocampus-llm",
     "crates/hippocampus-search",
