@@ -28,6 +28,22 @@
 //!
 //! - 未配置 `API_URL`：使用 `HeuristicDetector`（启发式纯算法，三维度检测）
 //! - 配置完整：使用 `HybridDetector`（串联 Heuristic + LLM，合并两份报告，v2.14 语义去重默认阈值 0.7）
+//!
+//! ## 摘要生成器配置（v2.21 批次 8b）
+//!
+//! 通过环境变量配置 LLM API 后，归档时自动生成结构化摘要填入 IndexHook：
+//!
+//! | 环境变量 | 说明 | 默认值 |
+//! |---------|------|--------|
+//! | `HIPPOCAMPUS_GENERATOR_API_URL` | LLM API 地址（OpenAI 兼容 `/v1/chat/completions`） | 空（降级为启发式） |
+//! | `HIPPOCAMPUS_GENERATOR_API_KEY` | API Key | 空 |
+//! | `HIPPOCAMPUS_GENERATOR_MODEL` | 模型名 | `gpt-5.5-instant` |
+//! | `HIPPOCAMPUS_GENERATOR_TIMEOUT` | 超时秒数 | `60` |
+//! | `HIPPOCAMPUS_GENERATOR_MAX_TOKENS` | LLM 最大输出 token | `500` |
+//!
+//! - 未配置 `API_URL`：使用启发式 `Summary::from_title`（首条消息前 80 字符）
+//! - 配置完整：使用 `HttpSummaryGenerator`（LLM 生成 title + abstract + key_facts + key_entities）
+//! - LLM 调用失败：降级为启发式，归档主流程不中断
 
 use hippocampus_server::{create_router, AppState, Config};
 use std::sync::Arc;
@@ -112,6 +128,44 @@ fn build_conflict_detector() -> std::sync::Arc<dyn hippocampus_core::conflict::C
     std::sync::Arc::new(hybrid)
 }
 
+/// 从环境变量构造 LLM 摘要生成器（v2.21 批次 8b）
+///
+/// 复用 `LlmGeneratorConfig::from_env()`（环境变量前缀 `HIPPOCAMPUS_GENERATOR_`）：
+///
+/// | 环境变量 | 说明 | 默认值 |
+/// |---------|------|--------|
+/// | `HIPPOCAMPUS_GENERATOR_API_URL` | LLM API 地址（OpenAI 兼容 `/v1/chat/completions`） | 空（降级为启发式） |
+/// | `HIPPOCAMPUS_GENERATOR_API_KEY` | API Key | 空 |
+/// | `HIPPOCAMPUS_GENERATOR_MODEL` | 模型名 | `gpt-5.5-instant` |
+/// | `HIPPOCAMPUS_GENERATOR_TIMEOUT` | 超时秒数 | `60` |
+/// | `HIPPOCAMPUS_GENERATOR_MAX_TOKENS` | LLM 最大输出 token | `500` |
+///
+/// - 未配置 `API_URL`：返回 None（使用启发式 `Summary::from_title`）
+/// - 配置完整：返回 `HttpSummaryGenerator`（归档时生成结构化摘要）
+fn build_summary_generator() -> Option<std::sync::Arc<dyn hippocampus_core::generate::SummaryGenerator>> {
+    use hippocampus_core::generate::LlmGeneratorConfig;
+    use hippocampus_server::HttpSummaryGenerator;
+
+    let config = match LlmGeneratorConfig::from_env() {
+        Some(config) => config,
+        None => {
+            tracing::info!(
+                "摘要生成器：未配置 LLM API（HIPPOCAMPUS_GENERATOR_API_URL），使用启发式 Summary::from_title"
+            );
+            return None;
+        }
+    };
+
+    tracing::info!(
+        api_url = %config.api_url,
+        model = %config.model,
+        max_tokens = config.max_tokens,
+        "摘要生成器：LLM API 已配置，启用 HttpSummaryGenerator（归档时生成结构化摘要）"
+    );
+
+    Some(std::sync::Arc::new(HttpSummaryGenerator::new(config)))
+}
+
 #[tokio::main]
 async fn main() {
     // 初始化日志
@@ -133,12 +187,16 @@ async fn main() {
     // v2.10：构造冲突检测器（环境变量驱动：LLM 优先，降级为 HeuristicDetector）
     let conflict_detector = Some(build_conflict_detector());
 
+    // v2.21 批次 8b：构造 LLM 摘要生成器（环境变量驱动：未配置时返回 None，使用启发式）
+    let summary_generator = build_summary_generator();
+
     let state = AppState {
         storage_root: config.storage_root.clone(),
         retriever: None,            // v2.8 起由 session_search 替代
         search_indexer: None,       // v2.8 起由 session_search 替代
         session_search,
         conflict_detector,
+        summary_generator,
     };
 
     let app = create_router(state).layer(TraceLayer::new_for_http());

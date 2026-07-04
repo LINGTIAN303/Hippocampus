@@ -65,6 +65,7 @@ impl TestServer {
             search_indexer,
             session_search: None,
             conflict_detector,
+            summary_generator: None,
         };
         let app = create_router(state);
 
@@ -100,6 +101,7 @@ impl TestServer {
             search_indexer: None,
             session_search,
             conflict_detector,
+            summary_generator: None,
         };
         let app = create_router(state);
 

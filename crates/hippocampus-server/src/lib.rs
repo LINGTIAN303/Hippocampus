@@ -29,8 +29,12 @@ mod handlers;
 pub use hippocampus_search::{SearchIndexer, SessionSearchRouter, SessionSearchRouterConfig};
 
 // v2.12: LLM 客户端组件（HttpLlmDetector / HttpEmbedder / HttpLlmScorer）下沉到 hippocampus-llm crate
+// v2.21 批次 8b: 新增 HttpSummaryGenerator re-export
 // 这里 re-export 保持向后兼容，server 内部代码与外部消费者的 import 路径不变
-pub use hippocampus_llm::{EmbedderConfig, HttpEmbedder, HttpLlmDetector, HttpLlmScorer, LlmDetectorConfig};
+pub use hippocampus_llm::{
+    EmbedderConfig, HttpEmbedder, HttpLlmDetector, HttpLlmScorer, HttpSummaryGenerator,
+    LlmDetectorConfig,
+};
 pub use error::AppError;
 
 use std::path::PathBuf;
@@ -89,6 +93,12 @@ pub struct AppState {
     /// 检测结果随 MemoryUpdateRecord 一起持久化。
     pub conflict_detector:
         Option<std::sync::Arc<dyn hippocampus_core::conflict::ConflictDetector>>,
+    /// 可选的 LLM 摘要生成器（v2.21 批次 8b）
+    ///
+    /// 注入后 archive() 时调用 LLM 生成结构化摘要填入 IndexHook。
+    /// 未配置时使用启发式 Summary::from_title（首条消息前 80 字符）。
+    pub summary_generator:
+        Option<std::sync::Arc<dyn hippocampus_core::generate::SummaryGenerator>>,
 }
 
 impl Default for AppState {
@@ -99,6 +109,7 @@ impl Default for AppState {
             search_indexer: None,
             session_search: None,
             conflict_detector: None,
+            summary_generator: None,
         }
     }
 }

@@ -89,6 +89,12 @@ pub async fn archive(
     let config = ArchiveConfig::default();
     let mut archiver = Archiver::new(config, storage, &sid, req.project_id);
 
+    // v2.21 批次 8b: 若注入了 summary_generator，注入到 Archiver
+    // 注入后 archive() 时调用 LLM 生成结构化摘要，失败时降级为启发式
+    if let Some(gen) = &state.summary_generator {
+        archiver = archiver.with_summary_generator(gen.clone());
+    }
+
     for turn in req.turns {
         archiver.push_turn(turn);
     }
