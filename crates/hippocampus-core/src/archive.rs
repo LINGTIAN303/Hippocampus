@@ -21,6 +21,7 @@
 //!    f. 重置 token 计数器，返回 `(MemoryFile, IndexHook)`
 //! 4. 调用方从 LLM 上下文丢弃该批次（前端渲染可保留供查看）
 
+use crate::generate::SummaryGenerator;
 use crate::model::{ArchiveConfig, ArchivePeriod, IndexHook, MemoryFile, MessageTurn};
 use crate::storage::Storage;
 use std::sync::Arc;
@@ -58,6 +59,11 @@ pub struct Archiver {
     session_id: String,
     /// 项目 ID（可选）
     project_id: Option<String>,
+    /// 可选的 LLM 摘要生成器（v2.21 批次 8a）
+    ///
+    /// 注入后 `archive()` 时调用 `generate_summary()` 生成结构化摘要填入 IndexHook。
+    /// 未注入或调用失败时降级为 `Summary::from_title`（启发式，向后兼容）。
+    summary_generator: Option<Arc<dyn SummaryGenerator>>,
 }
 
 impl Archiver {
@@ -80,7 +86,23 @@ impl Archiver {
             storage,
             session_id: session_id.into(),
             project_id,
+            summary_generator: None,
         }
+    }
+
+    /// 注入 LLM 摘要生成器（v2.21 批次 8a）
+    ///
+    /// 注入后 `archive()` 时自动调用 LLM 生成结构化摘要
+    /// （title + abstract + key_facts + key_entities）填入 IndexHook。
+    /// 未注入时使用启发式 `Summary::from_title`（首条消息前 80 字符）。
+    ///
+    /// ## 降级策略
+    ///
+    /// - LLM 调用失败：降级为 `Summary::from_title`，归档主流程不中断
+    /// - 未注入：使用 `Summary::from_title`（向后兼容）
+    pub fn with_summary_generator(mut self, gen: Arc<dyn SummaryGenerator>) -> Self {
+        self.summary_generator = Some(gen);
+        self
     }
 
     /// 追加一轮消息，返回是否达到归档阈值
@@ -168,8 +190,32 @@ impl Archiver {
         // 4. 写入 Storage
         let memory_path = self.storage.write_memory(&memory_file).await?;
 
-        // 5. 生成 IndexHook
-        let hook = IndexHook::from_memory_file(&memory_file, memory_path);
+        // 5. 生成 IndexHook（默认启发式摘要：首条消息前 80 字符）
+        let mut hook = IndexHook::from_memory_file(&memory_file, memory_path);
+
+        // 5.1 v2.21 批次 8a: 若注入了 LLM 摘要生成器，尝试生成结构化摘要替换启发式
+        //
+        // 降级策略：LLM 调用失败时保留启发式摘要，归档主流程不中断
+        if let Some(gen) = &self.summary_generator {
+            match gen.generate_summary(&memory_file).await {
+                Ok(llm_summary) => {
+                    tracing::info!(
+                        title = %llm_summary.title,
+                        facts_count = llm_summary.key_facts.len(),
+                        entities_count = llm_summary.key_entities.len(),
+                        "LLM 摘要生成成功，替换启发式摘要"
+                    );
+                    hook.summary = llm_summary;
+                }
+                Err(e) => {
+                    // 降级：保留启发式摘要，归档主流程不中断
+                    tracing::warn!(
+                        error = %e,
+                        "LLM 摘要生成失败，降级为启发式 Summary::from_title"
+                    );
+                }
+            }
+        }
 
         // 6. 追加钩子到 daily 索引文档（session 级）
         self.storage
@@ -389,5 +435,122 @@ mod tests {
         // 空归档应失败
         let result = archiver.archive().await;
         assert!(result.is_err());
+    }
+
+    // ========================================================================
+    // v2.21 批次 8a: SummaryGenerator 注入测试
+    // ========================================================================
+
+    use crate::model::Summary;
+
+    /// Mock 摘要生成器（测试用）
+    ///
+    /// - `fail = true`：模拟 LLM 调用失败，返回 Err
+    /// - `fail = false`：返回固定的结构化 Summary
+    struct MockSummaryGenerator {
+        fail: bool,
+        title: String,
+    }
+
+    impl MockSummaryGenerator {
+        fn new(title: impl Into<String>) -> Self {
+            Self {
+                fail: false,
+                title: title.into(),
+            }
+        }
+        fn failing() -> Self {
+            Self {
+                fail: true,
+                title: String::new(),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SummaryGenerator for MockSummaryGenerator {
+        async fn generate_summary(&self, _file: &MemoryFile) -> crate::Result<Summary> {
+            if self.fail {
+                return Err(crate::Error::Storage("Mock 摘要生成失败".into()));
+            }
+            Ok(Summary {
+                title: self.title.clone(),
+                abstract_text: Some("Mock 摘要内容".into()),
+                key_facts: vec!["事实1".into(), "事实2".into()],
+                key_entities: vec!["实体A".into()],
+                clue_anchors: Vec::new(),
+            })
+        }
+    }
+
+    /// 注入 SummaryGenerator 后，archive() 应使用 LLM 生成的摘要
+    #[tokio::test]
+    async fn test_archive_with_summary_generator() {
+        let tmp = TempDir::new().unwrap();
+        let storage: Arc<dyn Storage> = Arc::new(LocalStorage::new(tmp.path()));
+        let config = ArchiveConfig {
+            token_threshold: 100,
+            force_truncate_limit: 150,
+            wait_for_turn_completion: true,
+        };
+        let gen: Arc<dyn SummaryGenerator> =
+            Arc::new(MockSummaryGenerator::new("LLM 生成的标题"));
+        let mut archiver = Archiver::new(config, storage, "sess-gen-001", None)
+            .with_summary_generator(gen);
+
+        archiver.push_turn(make_turn(110));
+        let (_memory, hook) = archiver.archive().await.unwrap();
+
+        // 验证 IndexHook 的 summary 是 LLM 生成的，而非启发式
+        assert_eq!(hook.summary.title, "LLM 生成的标题");
+        assert!(hook.summary.abstract_text.is_some());
+        assert_eq!(hook.summary.key_facts.len(), 2);
+        assert_eq!(hook.summary.key_entities.len(), 1);
+    }
+
+    /// LLM 摘要生成失败时，降级为启发式 Summary::from_title
+    #[tokio::test]
+    async fn test_archive_summary_generator_failure_degrades() {
+        let tmp = TempDir::new().unwrap();
+        let storage: Arc<dyn Storage> = Arc::new(LocalStorage::new(tmp.path()));
+        let config = ArchiveConfig {
+            token_threshold: 100,
+            force_truncate_limit: 150,
+            wait_for_turn_completion: true,
+        };
+        let gen: Arc<dyn SummaryGenerator> = Arc::new(MockSummaryGenerator::failing());
+        let mut archiver = Archiver::new(config, storage, "sess-gen-002", None)
+            .with_summary_generator(gen);
+
+        archiver.push_turn(make_turn(110));
+        let (_memory, hook) = archiver.archive().await.unwrap();
+
+        // LLM 失败，降级为启发式（首条消息前 80 字符 + "..."）
+        assert!(hook.summary.title.contains("测试用户消息"));
+        assert!(hook.summary.title.ends_with("..."));
+        // 启发式无 abstract/key_facts/key_entities
+        assert!(hook.summary.abstract_text.is_none());
+        assert!(hook.summary.key_facts.is_empty());
+    }
+
+    /// 未注入 SummaryGenerator 时，使用启发式摘要（向后兼容）
+    #[tokio::test]
+    async fn test_archive_without_summary_generator_uses_heuristic() {
+        let tmp = TempDir::new().unwrap();
+        let storage: Arc<dyn Storage> = Arc::new(LocalStorage::new(tmp.path()));
+        let config = ArchiveConfig {
+            token_threshold: 100,
+            force_truncate_limit: 150,
+            wait_for_turn_completion: true,
+        };
+        // 不注入 summary_generator
+        let mut archiver = Archiver::new(config, storage, "sess-gen-003", None);
+
+        archiver.push_turn(make_turn(110));
+        let (_memory, hook) = archiver.archive().await.unwrap();
+
+        // 启发式摘要：首条消息前 80 字符 + "..."
+        assert!(hook.summary.title.contains("测试用户消息"));
+        assert!(hook.summary.title.ends_with("..."));
     }
 }
