@@ -286,7 +286,12 @@ fn build_combined_profile() -> Option<CombinedProfile> {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // 初始化日志
+    // v2.30 修复：tracing 必须输出到 stderr（MCP 协议要求 stdout 只能输出 JSON-RPC）
+    // tracing_subscriber::fmt() 默认输出到 stdout，会污染 JSON-RPC 流
+    use tracing_subscriber::fmt::writer::MakeWriterExt;
+    let stderr = std::io::stderr.with_max_level(tracing::Level::TRACE);
     tracing_subscriber::fmt()
+        .with_writer(stderr)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "hippocampus_mcp=info".into()),
