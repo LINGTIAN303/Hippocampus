@@ -7,6 +7,34 @@
 ### 计划中
 - v2.4：WASM 组件（待生态成熟）+ Node/Go/Java 绑定
 
+### v2.28 - HybridDetector 字段级 merge 替代二选一丢弃（2026-07-05）
+
+#### 背景
+v2.27.1 标记的风险点：HybridDetector 合并 LLM 与启发式报告时，遇到 `(kind, new_fact)` 相同的冲突会直接丢弃 LLM 版本，可能丢失 LLM 在 `severity` / `description` / `existing_fact` 上的增量信息。本版本通过字段级 merge 解决。
+
+#### 变更
+- **`HybridDetector::detect`**（`crates/hippocampus-core/src/conflict.rs`）
+  - 从「LLM 与启发式报告二选一丢弃 LLM」升级为「字段级 merge」
+  - 当 LLM 与启发式检测到同一冲突（`kind` 相同 + `new_fact` 精确匹配或语义相似度 >= `dedup_threshold`）时
+  - 字段级合并而非丢弃 LLM 版本：
+    - `severity`：取更严重的（`Severity` derive `Ord`，Critical > Warning > Info）
+    - `description`：优先 LLM（非空且更长时替换，避免空字符串覆盖）
+    - `existing_fact`：优先 LLM（`Some` 时替换，`None` 不覆盖）
+    - `kind` / `new_fact`：保持原值不变
+
+#### 新增方法
+- **`find_duplicate_index`**：返回重复冲突的索引（`Option<usize>`），替代原 `is_semantically_duplicate` 的布尔判断
+  - 判定规则：`kind` 相同 + `new_fact` 精确匹配 或 语义相似度 >= `dedup_threshold`
+- **`merge_conflict_fields`**：字段级合并两条冲突记录（按上述规则）
+
+#### 测试
+- 新增 9 个单元测试（`v2_28_merge_tests` 模块）：
+  - 精确匹配触发 merge / 语义相似触发 merge / 不同 kind 不合并
+  - severity 取 max / description 优先 LLM / existing_fact 优先 LLM
+  - 空列表 / LLM 报告为空 / 启发式报告为空
+- 50 个 conflict 模块测试全部通过，无回归
+- `is_semantically_duplicate` 保留为公共 API（不再被 detect 调用，有 dead_code 警告可忽略）
+
 ### v2.27.1 - batch_update/update_memory key_facts 注入统一（2026-07-05）
 
 #### 修复
@@ -19,11 +47,11 @@
   - 与 `detect_conflicts` / `update_memory` 行为对齐
   - 解决批量更新时 `historical_facts` 为空导致检测失效的问题
 
-#### 风险点（未修复，待决策）
+#### 风险点（v2.28 已解决）
 - **HybridDetector 去重逻辑**：合并 LLM 与启发式报告时只比较 `(kind, new_fact)`
   - 可能丢失 LLM 在 `severity` / `description` / `existing_fact` 上的增量信息
   - 启发式优先级高于 LLM，LLM 版本可能被丢弃
-  - 代码无 bug，属于设计取舍，是否调整待用户决策
+  - 代码无 bug，属于设计取舍 —— **v2.28 通过字段级 merge 已解决**
 
 ### v2.27 - 服务器端 detect_conflicts HTTP 端点（2026-07-05）
 
