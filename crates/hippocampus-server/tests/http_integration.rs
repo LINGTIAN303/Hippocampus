@@ -47,6 +47,7 @@ impl TestServer {
             session_search,
             conflict_detector,
             summary_generator: None,
+            scenario_detector: None,
         };
         let app = create_router(state);
 

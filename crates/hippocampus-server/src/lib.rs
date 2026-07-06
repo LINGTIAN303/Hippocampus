@@ -88,6 +88,15 @@ pub struct AppState {
     /// 未配置时使用启发式 Summary::from_title（首条消息前 80 字符）。
     pub summary_generator:
         Option<std::sync::Arc<dyn hippocampus_core::generate::SummaryGenerator>>,
+    /// 可选的场景识别器（v2.33）
+    ///
+    /// 注入后 archive() 时调用 resolve_effective_scenario 识别场景:
+    /// - 优先级:用户显式 preset.scenario > session_meta > 识别 > Agent 默认
+    /// - 识别失败不阻塞 archive,降级到 Agent 默认场景
+    ///
+    /// 未配置时使用 req.preset 原行为(无场景识别)。
+    pub scenario_detector:
+        Option<std::sync::Arc<hippocampus_presets::HybridScenarioDetector>>,
 }
 
 impl Default for AppState {
@@ -97,6 +106,7 @@ impl Default for AppState {
             session_search: None,
             conflict_detector: None,
             summary_generator: None,
+            scenario_detector: None,
         }
     }
 }

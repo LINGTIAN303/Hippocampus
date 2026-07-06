@@ -115,10 +115,55 @@ pub async fn archive(
         return Err(AppError::BadRequest("turns 不能为空".to_string()));
     }
 
-    // v2.29：若传入 preset，构建 CombinedProfile 提取 archive_threshold + summary_template
+    // v2.33：场景识别（仅首次 archive 时识别，后续读 session_meta 跳过）
+    // 优先级：用户显式 preset.scenario > session_meta > 识别 > Agent 默认
+    // 识别失败不阻塞 archive，降级到 Agent 默认场景
+    let effective_scenario_name: Option<String> = if let Some(detector) = &state.scenario_detector {
+        // 推导 Agent family（preset.agent 解析 + Custom 兜底）
+        let family = req.preset.as_ref()
+            .and_then(|p| p.agent.as_deref())
+            .and_then(hippocampus_agents::AgentFamily::from_str)
+            .unwrap_or_else(|| hippocampus_agents::AgentFamily::Custom("unknown".to_string()));
+
+        // 提取 preset.scenario 作为用户显式（若存在）
+        let user_explicit = req.preset.as_ref()
+            .and_then(|p| p.scenario.as_deref());
+
+        let storage_for_detect = create_storage(&state);
+        let scenario = hippocampus_presets::resolve_effective_scenario(
+            storage_for_detect.as_ref(),
+            &sid,
+            user_explicit,
+            &family,
+            detector.as_ref(),
+            &req.turns,
+        ).await;
+
+        Some(hippocampus_presets::scenario_to_str(&scenario))
+    } else {
+        // 未注入识别器：保留原行为（preset.scenario 或 None）
+        req.preset.as_ref().and_then(|p| p.scenario.clone())
+    };
+
+    // v2.33：若识别到场景（且 preset 未显式指定），用识别的场景重新 build CombinedProfile
+    // 以应用对应场景的 summary_template / archive_threshold / priority_tags 等
     let (archive_threshold, summary_template) = if let Some(preset_req) = &req.preset {
+        // 用户传了 preset，按 preset build（识别结果仅作记录已写入 session_meta）
         let combined = crate::presets::build_combined_from_request(preset_req)
             .map_err(AppError::BadRequest)?;
+        (
+            Some(combined.archive_threshold()),
+            Some(combined.summary_template().to_string()),
+        )
+    } else if let Some(scenario_name) = effective_scenario_name {
+        // 无 preset 但识别到场景 → 用识别的场景 build
+        let combined = hippocampus_presets::build_from_strings(
+            None,
+            Some(&scenario_name),
+            None,
+            None,
+            None,
+        ).map_err(|e| AppError::Internal(format!("识别场景构建预设失败: {e}")))?;
         (
             Some(combined.archive_threshold()),
             Some(combined.summary_template().to_string()),

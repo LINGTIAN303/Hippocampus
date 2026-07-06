@@ -179,6 +179,39 @@ fn build_summary_generator() -> Option<std::sync::Arc<dyn hippocampus_core::gene
     Some(std::sync::Arc::new(HttpSummaryGenerator::new(config)))
 }
 
+/// 从环境变量构造场景识别器（v2.33 新增）
+///
+/// 复用 `HIPPOCAMPUS_DETECTOR_*` 环境变量（与冲突检测器共享 LLM 配置）：
+///
+/// - 配置了 `HIPPOCAMPUS_DETECTOR_API_URL` + `API_KEY`：
+///   返回关键词 + LLM 兜底的 HybridScenarioDetector
+/// - 未配置：返回仅关键词模式的 HybridScenarioDetector
+///
+/// 与 `crates/hippocampus-mcp/src/main.rs::build_scenario_detector` 保持一致。
+fn build_scenario_detector() -> std::sync::Arc<hippocampus_presets::HybridScenarioDetector> {
+    use hippocampus_llm::LlmDetectorConfig;
+    use hippocampus_presets::scenario_detect::HttpScenarioDetector;
+
+    let llm_config = match LlmDetectorConfig::from_env() {
+        Some(config) => {
+            tracing::info!(
+                api_url = %config.api_url,
+                model = %config.model,
+                "场景识别器：LLM API 已配置，启用关键词 + LLM 兜底"
+            );
+            Some(std::sync::Arc::new(HttpScenarioDetector::new(config)))
+        }
+        None => {
+            tracing::info!(
+                "场景识别器：未配置 LLM API，仅用关键词规则识别（7 场景 × 15 关键词）"
+            );
+            None
+        }
+    };
+
+    std::sync::Arc::new(hippocampus_presets::HybridScenarioDetector::new(llm_config))
+}
+
 #[tokio::main]
 async fn main() {
     // 初始化日志
@@ -203,11 +236,16 @@ async fn main() {
     // v2.21 批次 8b：构造 LLM 摘要生成器（环境变量驱动：未配置时返回 None，使用启发式）
     let summary_generator = build_summary_generator();
 
+    // v2.33：构造场景识别器（环境变量驱动：未配置 LLM 时仅用关键词模式）
+    // 注入后 archive() 时调用 resolve_effective_scenario 识别场景
+    let scenario_detector = Some(build_scenario_detector());
+
     let state = AppState {
         storage_root: config.storage_root.clone(),
         session_search,
         conflict_detector,
         summary_generator,
+        scenario_detector,
     };
 
     let app = create_router(state).layer(TraceLayer::new_for_http());
