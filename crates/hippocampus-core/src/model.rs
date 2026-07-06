@@ -411,6 +411,37 @@ pub enum FileStatus {
     Corrupted,
 }
 
+/// 任务状态快照（v2.31 新增，动手点 2）
+///
+/// 用于解决 Trae 压缩后 LLM 无法感知自身状态的问题。
+/// LLM 调用 archive 时可传入此快照，hippocampus 持久化到 session_state.json。
+/// 下次 prompt 时返回最新快照，LLM 用它校准 Trae Summary 第8章节"Current Work"。
+///
+/// ## 持久化位置
+///
+/// `sessions/{session_id}/session_state.json`（独立文件，不动 IndexHook schema）
+///
+/// ## 与 Trae Summary 的关系
+///
+/// - hippocampus 记忆 = 一手源数据（LLM 主动传入）
+/// - Trae Summary 第8章节 = 二手信息（Trae 客户端生成）
+/// - 两者冲突时，以 hippocampus 快照为准（详见「压缩后行为协议」）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskStateSnapshot {
+    /// 当前任务名称（如 "批次A-数据完整性修复"）
+    pub current_task: String,
+    /// 已完成步骤列表
+    #[serde(default)]
+    pub completed_steps: Vec<String>,
+    /// 进行中步骤（如果有，表示被压缩打断的任务）
+    #[serde(default)]
+    pub in_progress_step: Option<String>,
+    /// 下一建议步骤
+    pub next_step: String,
+    /// 快照时间戳（ISO 8601）
+    pub snapshot_at: chrono::DateTime<chrono::Utc>,
+}
+
 /// 结构化摘要（借鉴 Memora 线索锚点设计）
 ///
 /// 从单一标题升级为多维摘要，支持分级生成：

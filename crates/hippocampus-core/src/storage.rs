@@ -332,6 +332,37 @@ pub trait Storage: Send + Sync {
         }
         results
     }
+
+    /// 读取 session 任务状态快照（v2.31 新增，动手点 2）
+    ///
+    /// 从 `sessions/{session_id}/session_state.json` 读取最新任务状态。
+    /// 返回 `Ok(None)` 表示该 session 无快照（首次归档前）。
+    ///
+    /// ## 默认实现
+    ///
+    /// 默认返回 `Ok(None)`（旧后端不支持任务状态快照）。
+    async fn read_session_state(
+        &self,
+        _session_id: &str,
+    ) -> crate::Result<Option<crate::model::TaskStateSnapshot>> {
+        Ok(None)
+    }
+
+    /// 写入 session 任务状态快照（v2.31 新增，动手点 2）
+    ///
+    /// 覆盖写入 `sessions/{session_id}/session_state.json`。
+    /// 每次 archive 时调用，保留最新状态。
+    ///
+    /// ## 默认实现
+    ///
+    /// 默认返回 `Ok(())`（no-op，旧后端不支持任务状态快照）。
+    async fn write_session_state(
+        &self,
+        _session_id: &str,
+        _snapshot: &crate::model::TaskStateSnapshot,
+    ) -> crate::Result<()> {
+        Ok(())
+    }
 }
 
 /// 本地文件树存储后端
@@ -806,6 +837,60 @@ impl Storage for LocalStorage {
                 e
             ))),
         }
+    }
+
+    /// 读取 session 任务状态快照（v2.31 动手点 2）
+    ///
+    /// 从 `sessions/{session_id}/session_state.json` 读取。
+    /// 文件不存在时返回 `Ok(None)`（首次归档前）。
+    async fn read_session_state(
+        &self,
+        session_id: &str,
+    ) -> crate::Result<Option<crate::model::TaskStateSnapshot>> {
+        let relative = self.session_scope_dir(session_id).join("session_state.json");
+        let abs = self.abs_path(&relative);
+
+        match tokio::fs::read(&abs).await {
+            Ok(content) => {
+                let snapshot: crate::model::TaskStateSnapshot = serde_json::from_slice(&content)
+                    .map_err(|e| crate::Error::Serialize(format!(
+                        "反序列化 TaskStateSnapshot 失败: {}", e
+                    )))?;
+                Ok(Some(snapshot))
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(crate::Error::Storage(format!(
+                "读取 session_state.json 失败 {:?}: {}",
+                path_display(&relative), e
+            ))),
+        }
+    }
+
+    /// 写入 session 任务状态快照（v2.31 动手点 2）
+    ///
+    /// 覆盖写入 `sessions/{session_id}/session_state.json`。
+    /// 不加 session 写锁（与索引/记忆文件独立，无并发冲突风险）。
+    async fn write_session_state(
+        &self,
+        session_id: &str,
+        snapshot: &crate::model::TaskStateSnapshot,
+    ) -> crate::Result<()> {
+        let relative = self.session_scope_dir(session_id).join("session_state.json");
+        let abs = self.abs_path(&relative);
+        self.ensure_parent_dir(&abs).await?;
+
+        let json = serde_json::to_vec_pretty(snapshot)
+            .map_err(|e| crate::Error::Serialize(format!("序列化 TaskStateSnapshot 失败: {}", e)))?;
+
+        self.atomic_write(&abs, &json).await?;
+
+        tracing::debug!(
+            session_id = %session_id,
+            current_task = %snapshot.current_task,
+            "session_state.json 已写入"
+        );
+
+        Ok(())
     }
 
     /// 删除索引文档（v2.16 IMP-02：LocalStorage 实现）

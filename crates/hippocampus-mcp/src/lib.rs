@@ -304,6 +304,32 @@ struct ArchiveParams {
     #[schemars(description = "预设配置（可选，传入后应用 archive_threshold + summary_template 覆盖默认行为）")]
     #[serde(default)]
     preset: Option<PresetParams>,
+    /// 任务状态快照（v2.31 动手点 2，可选）
+    ///
+    /// LLM 主动传入当前任务状态，hippocampus 持久化到 session_state.json。
+    /// 下次 prompt 时返回最新快照，用于校准 Trae Summary 第8章节"Current Work"。
+    /// 传入后覆盖上一次的快照（每 session 只保留最新一份）。
+    #[schemars(description = "任务状态快照（可选，v2.31）。传入后持久化到 session_state.json，下次 prompt 时返回。用于压缩后校准 Trae Summary 第8章节 Current Work。字段：current_task(当前任务名)/completed_steps(已完成步骤数组)/in_progress_step(进行中步骤,可选)/next_step(下一步建议)。snapshot_at 由服务端自动填充。")]
+    #[serde(default)]
+    task_state_snapshot: Option<TaskStateSnapshotParams>,
+}
+
+/// 任务状态快照参数（v2.31 动手点 2）
+///
+/// 与 hippocampus_core::model::TaskStateSnapshot 对应，
+/// 但 snapshot_at 由服务端自动填充（LLM 无需传入）。
+#[derive(Deserialize, schemars::JsonSchema)]
+struct TaskStateSnapshotParams {
+    /// 当前任务名称（如 "批次A-数据完整性修复"）
+    current_task: String,
+    /// 已完成步骤列表
+    #[serde(default)]
+    completed_steps: Vec<String>,
+    /// 进行中步骤（如果有，表示被压缩打断的任务）
+    #[serde(default)]
+    in_progress_step: Option<String>,
+    /// 下一建议步骤
+    next_step: String,
 }
 
 /// retrieve tool 参数
@@ -607,6 +633,8 @@ impl HippocampusMcp {
         };
         // v2.31：保存阈值用于返回值（config 会被 Archiver::new move）
         let threshold = config.token_threshold;
+        // v2.31 动手点 2：clone storage 用于归档后写 session_state.json
+        let storage_for_snapshot = storage.clone();
         let mut archiver = Archiver::new(config, storage, &params.session_id, params.project_id);
 
         // v2.21 批次 8c：若注入了 summary_generator，注入到 Archiver
@@ -655,6 +683,38 @@ impl HippocampusMcp {
             )
         };
 
+        // v2.31 动手点 2：若 LLM 传入 task_state_snapshot，持久化到 session_state.json
+        // 用于压缩后校准 Trae Summary 第8章节 Current Work
+        let task_state_written = if let Some(snap) = &params.task_state_snapshot {
+            let snapshot = hippocampus_core::model::TaskStateSnapshot {
+                current_task: snap.current_task.clone(),
+                completed_steps: snap.completed_steps.clone(),
+                in_progress_step: snap.in_progress_step.clone(),
+                next_step: snap.next_step.clone(),
+                snapshot_at: chrono::Utc::now(),
+            };
+            match storage_for_snapshot.write_session_state(&params.session_id, &snapshot).await {
+                Ok(()) => {
+                    tracing::info!(
+                        session_id = %params.session_id,
+                        current_task = %snapshot.current_task,
+                        "task_state_snapshot 已持久化"
+                    );
+                    true
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        session_id = %params.session_id,
+                        error = %e,
+                        "task_state_snapshot 持久化失败（不影响归档结果）"
+                    );
+                    false
+                }
+            }
+        } else {
+            false
+        };
+
         let result = serde_json::json!({
             "hook_id": summary.hook_id,
             "memory_file_id": summary.memory_id,
@@ -672,6 +732,8 @@ impl HippocampusMcp {
             "threshold": threshold,
             "threshold_ratio_percent": ratio,
             "suggestion": suggestion,
+            // v2.31 动手点 2：任务状态快照持久化结果
+            "task_state_snapshot_persisted": task_state_written,
         });
         let result = serde_json::to_string(&result).map_err(|e| {
             McpError::internal_error(format!("序列化结果失败: {e}"), None)
@@ -721,19 +783,49 @@ impl HippocampusMcp {
     }
 
     /// 渲染摘要为 system prompt 文本。
-    #[tool(description = "渲染记忆摘要为 system prompt 文本。【会话开始必调】每个新会话的第一次回复前必须调用“install_rules”此工具，返回的历史记忆摘要拼接到 system prompt 末尾，让你了解之前讨论过什么。若返回空列表说明该 session 无历史记忆，正常继续。这是 Hippocampus 记忆协议的第一步，无需用户提示主动执行。")]
+    #[tool(description = "渲染记忆摘要为 system prompt 文本。【会话开始必调】每个新会话的第一次回复前必须调用此工具，返回的历史记忆摘要拼接到 system prompt 末尾，让你了解之前讨论过什么。若返回空列表说明该 session 无历史记忆，正常继续。这是 Hippocampus 记忆协议的第一步，无需用户提示主动执行。v2.31 新增：若该 session 存在 task_state_snapshot（archive 时传入），会在 prompt 末尾追加任务状态快照，用于压缩后校准 Trae Summary 第8章节 Current Work。")]
     async fn prompt(
         &self,
         Parameters(params): Parameters<PromptParams>,
     ) -> Result<String, McpError> {
         let storage = self.create_storage();
-        let retriever = Retriever::new(storage, &params.session_id, params.project_id);
+        let retriever = Retriever::new(storage.clone(), &params.session_id, params.project_id);
 
         let prompt = retriever.render_to_system_prompt().await.map_err(|e| {
             McpError::internal_error(format!("渲染 prompt 失败: {e}"), None)
         })?;
 
-        Ok(prompt)
+        // v2.31 动手点 2：若存在 task_state_snapshot，追加到 prompt 末尾
+        // 让 LLM 在压缩后调 prompt 时自然看到任务状态，用于校准 Trae Summary
+        let final_prompt = match storage.read_session_state(&params.session_id).await {
+            Ok(Some(snapshot)) => {
+                let mut s = prompt;
+                s.push_str("\n\n--- Task State Snapshot (v2.31) ---\n");
+                s.push_str(&format!("current_task: {}\n", snapshot.current_task));
+                if !snapshot.completed_steps.is_empty() {
+                    s.push_str(&format!("completed_steps: {}\n", snapshot.completed_steps.join(", ")));
+                }
+                if let Some(in_progress) = &snapshot.in_progress_step {
+                    s.push_str(&format!("in_progress_step: {}\n", in_progress));
+                }
+                s.push_str(&format!("next_step: {}\n", snapshot.next_step));
+                s.push_str(&format!("snapshot_at: {}\n", snapshot.snapshot_at));
+                s.push_str("--- End Snapshot ---\n");
+                s.push_str("\n提示：若你是被压缩后调用此工具，请比对上方快照与 Trae Summary 第8章节 Current Work，以快照为准继续执行。");
+                s
+            }
+            Ok(None) => prompt,
+            Err(e) => {
+                tracing::warn!(
+                    session_id = %params.session_id,
+                    error = %e,
+                    "读取 task_state_snapshot 失败（不影响 prompt 返回）"
+                );
+                prompt
+            }
+        };
+
+        Ok(final_prompt)
     }
 
     /// 触发周期任务（周级合并 / 月级评分淘汰）。
