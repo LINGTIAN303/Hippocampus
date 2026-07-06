@@ -86,4 +86,7 @@ pub use builder::{build_from_strings, scenario_from_str, scenario_to_str, Preset
 pub use combined::{CombinedProfile, TriggerRule, UsageProtocol};
 pub use detect::{detect_agent_client, default_scenario_for_agent, resolve_scenario_name, DetectedAgent, DetectionSource};
 pub use linkage::derive_window_from_agent;
-pub use scenario_detect::{DetectionResult, KeywordScenarioDetector};
+pub use scenario_detect::{
+    DetectionResult, HybridScenarioDetector, HttpScenarioDetector, KeywordScenarioDetector,
+    resolve_effective_scenario,
+};
