@@ -1061,6 +1061,62 @@ impl Storage for LocalStorage {
         Ok(())
     }
 
+    /// 写入 session 元数据（v2.33 新增）
+    ///
+    /// 覆盖写入 `sessions/{session_id}/meta.json`。
+    /// 不加 session 写锁（与 session_state.json 同理，无并发冲突风险）。
+    async fn write_session_meta(
+        &self,
+        session_id: &str,
+        meta: &SessionMeta,
+    ) -> crate::Result<()> {
+        let relative = self.session_scope_dir(session_id).join("meta.json");
+        let abs = self.abs_path(&relative);
+        self.ensure_parent_dir(&abs).await?;
+
+        let json = serde_json::to_vec_pretty(meta)
+            .map_err(|e| crate::Error::Serialize(format!("序列化 SessionMeta 失败: {}", e)))?;
+
+        self.atomic_write(&abs, &json).await?;
+
+        tracing::debug!(
+            session_id = %session_id,
+            scenario = %meta.scenario,
+            confidence = meta.confidence,
+            method = %meta.method,
+            "session meta 已写入"
+        );
+
+        Ok(())
+    }
+
+    /// 读取 session 元数据（v2.33 新增）
+    ///
+    /// 从 `sessions/{session_id}/meta.json` 读取。
+    /// 文件不存在时返回 `Ok(None)`（首次 archive 前）。
+    async fn read_session_meta(
+        &self,
+        session_id: &str,
+    ) -> crate::Result<Option<SessionMeta>> {
+        let relative = self.session_scope_dir(session_id).join("meta.json");
+        let abs = self.abs_path(&relative);
+
+        match tokio::fs::read(&abs).await {
+            Ok(content) => {
+                let meta: SessionMeta = serde_json::from_slice(&content)
+                    .map_err(|e| crate::Error::Serialize(format!(
+                        "反序列化 SessionMeta 失败: {}", e
+                    )))?;
+                Ok(Some(meta))
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(crate::Error::Storage(format!(
+                "读取 meta.json 失败 {:?}: {}",
+                path_display(&relative), e
+            ))),
+        }
+    }
+
     /// 列出所有 session_id（v2.31 新增）
     ///
     /// 扫描 `sessions/` 目录下所有子目录名。
