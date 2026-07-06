@@ -309,7 +309,7 @@ struct ArchiveParams {
     /// LLM 主动传入当前任务状态，hippocampus 持久化到 session_state.json。
     /// 下次 prompt 时返回最新快照，用于校准 Trae Summary 第8章节"Current Work"。
     /// 传入后覆盖上一次的快照（每 session 只保留最新一份）。
-    #[schemars(description = "任务状态快照（可选，v2.31）。传入后持久化到 session_state.json，下次 prompt 时返回。用于压缩后校准 Trae Summary 第8章节 Current Work。字段：current_task(当前任务名)/completed_steps(已完成步骤数组)/in_progress_step(进行中步骤,可选)/next_step(下一步建议)。snapshot_at 由服务端自动填充。")]
+    #[schemars(description = "任务状态快照（可选）。传入后持久化到 session_state.json，下次 prompt 时返回。用于压缩后校准 Trae Summary 第8章节 Current Work。字段：current_task(当前任务名)/completed_steps(已完成步骤数组)/in_progress_step(进行中步骤,可选)/next_step(下一步建议)。snapshot_at 由服务端自动填充。")]
     #[serde(default)]
     task_state_snapshot: Option<TaskStateSnapshotParams>,
 }
@@ -587,9 +587,9 @@ impl HippocampusMcp {
     /// 归档一批轮次为记忆文件，生成索引钩子。
     #[tool(description = "归档对话轮次到 Hippocampus 记忆库（长期记忆）。何时主动调用：(1)对话超过20轮或包含大量代码/长文档时，(2)你感觉到'上下文变重'或'前面说过但记不清'时，(3)用户即将手动压缩上下文前，(4)每30轮兜底归档一次。你无法直接感知自身token消耗，但调用此工具后会返回 estimated_total_tokens / threshold_ratio_percent / suggestion，让你建立'token意识'判断后续何时归档：ratio>=100立即归档，>=80准备归档。调用格式简化：turns_json 只需传 [{\"user_message\":{\"text\":\"用户问的\"},\"llm_message\":{\"text\":\"我答的\"}}]，id/timestamp/tags/token_count 可省略由服务端自动补全。支持 preset 参数（内联预设）。返回 hook_id 用于后续 retrieve/semantic_search 检索。\
      \
-     【tool_calls 字段 schema（v2.31 补充）】归档端不自动注入 tool_calls，Agent 须主动喂入。MessageContent.tool_calls 是 ToolInvocation 数组，每项含 name(工具名,字符串)/arguments(JSON字符串,不是对象)/result(JSON字符串)/duration_ms(可选,毫秒)。示例：{\"user_message\":{\"text\":\"搜索 Rust 资料\"},\"llm_message\":{\"text\":\"已找到...\",\"tool_calls\":[{\"name\":\"WebSearch\",\"arguments\":\"{\\\"q\\\":\\\"Rust 编程\\\"}\",\"result\":\"{\\\"hits\\\":[...]}\",\"duration_ms\":1200}]}}。注意 arguments 和 result 都是 JSON 字符串而非嵌套对象。\
+     【tool_calls 字段 schema】归档端不自动注入 tool_calls，Agent 须主动喂入。MessageContent.tool_calls 是 ToolInvocation 数组，每项含 name(工具名,字符串)/arguments(JSON字符串,不是对象)/result(JSON字符串)/duration_ms(可选,毫秒)。示例：{\"user_message\":{\"text\":\"搜索 Rust 资料\"},\"llm_message\":{\"text\":\"已找到...\",\"tool_calls\":[{\"name\":\"WebSearch\",\"arguments\":\"{\\\"q\\\":\\\"Rust 编程\\\"}\",\"result\":\"{\\\"hits\\\":[...]}\",\"duration_ms\":1200}]}}。注意 arguments 和 result 都是 JSON 字符串而非嵌套对象。\
      \
-     【tags 自动推断（v2.31 补充）】tags 字段可省略，服务端根据内容自动推断：含 tool_calls → [ToolCall, AgentTool]；含 thinking → [Thinking]；含代码块 → [CodeBlock]；含 URL → [Url]；兜底 → [Text]。Agent 显式传入的 tags 优先，不会被覆盖。")]
+     【tags 自动推断】tags 字段可省略，服务端根据内容自动推断：含 tool_calls → [ToolCall, AgentTool]；含 thinking → [Thinking]；含代码块 → [CodeBlock]；含 URL → [Url]；兜底 → [Text]。Agent 显式传入的 tags 优先，不会被覆盖。")]
     async fn archive(
         &self,
         Parameters(params): Parameters<ArchiveParams>,
@@ -812,7 +812,7 @@ impl HippocampusMcp {
     }
 
     /// 渲染摘要为 system prompt 文本。
-    #[tool(description = "渲染记忆摘要为 system prompt 文本。【会话开始必调】每个新会话的第一次回复前必须调用此工具，返回的历史记忆摘要拼接到 system prompt 末尾，让你了解之前讨论过什么。若返回空列表说明该 session 无历史记忆，正常继续。这是 Hippocampus 记忆协议的第一步，无需用户提示主动执行。v2.31 新增：若该 session 存在 task_state_snapshot（archive 时传入），会在 prompt 末尾追加任务状态快照，用于压缩后校准 Trae Summary 第8章节 Current Work。")]
+    #[tool(description = "渲染记忆摘要为 system prompt 文本。【会话开始必调】每个新会话的第一次回复前必须调用此工具，返回的历史记忆摘要拼接到 system prompt 末尾，让你了解之前讨论过什么。若返回空列表说明该 session 无历史记忆，正常继续。这是 Hippocampus 记忆协议的第一步，无需用户提示主动执行。若该 session 存在 task_state_snapshot（archive 时传入），会在 prompt 末尾追加任务状态快照，用于压缩后校准 Trae Summary 第8章节 Current Work。")]
     async fn prompt(
         &self,
         Parameters(params): Parameters<PromptParams>,
@@ -829,7 +829,7 @@ impl HippocampusMcp {
         let mut final_prompt = match storage.read_session_state(&params.session_id).await {
             Ok(Some(snapshot)) => {
                 let mut s = prompt;
-                s.push_str("\n\n--- Task State Snapshot (v2.31) ---\n");
+                s.push_str("\n\n--- Task State Snapshot ---\n");
                 s.push_str(&format!("current_task: {}\n", snapshot.current_task));
                 if !snapshot.completed_steps.is_empty() {
                     s.push_str(&format!("completed_steps: {}\n", snapshot.completed_steps.join(", ")));
@@ -861,7 +861,7 @@ impl HippocampusMcp {
                 // 检查当前 session_id 是否在列表中
                 let current_in_list = sessions.iter().any(|s| s == &params.session_id);
                 if !current_in_list {
-                    final_prompt.push_str("\n\n--- Available Sessions (v2.31) ---\n");
+                    final_prompt.push_str("\n\n--- Available Sessions ---\n");
                     final_prompt.push_str(&format!("⚠️ 当前 session_id `{}` 不在已有列表中。\n", params.session_id));
                     final_prompt.push_str("若你是新会话，这是正常的。若你想检索历史记忆，请从以下列表选择正确的 session_id：\n");
                     for s in &sessions {
@@ -1025,7 +1025,7 @@ impl HippocampusMcp {
     }
 
     /// 批量按 hook_id 列表删除记忆文件。
-    #[tool(description = "批量删除多个记忆文件（v2.31 软删除方案）。传入 hook_id 列表，逐个删除。单个失败不影响其他。删除时同步清理索引钩子标记为 Deleted + 内存搜索索引，避免 semantic_search 返回幽灵记忆。用于清理过期或不需要的记忆。")]
+    #[tool(description = "批量删除多个记忆文件（软删除方案）。传入 hook_id 列表，逐个删除。单个失败不影响其他。删除时同步清理索引钩子标记为 Deleted + 内存搜索索引，避免 semantic_search 返回幽灵记忆。用于清理过期或不需要的记忆。")]
     async fn batch_delete(
         &self,
         Parameters(params): Parameters<BatchDeleteParams>,
@@ -1626,7 +1626,7 @@ impl HippocampusMcp {
     /// v2.31：首次接入时调用，自动写入 Rules 模板 + AGENTS.md。
     /// 支持 catpaw/trae/claude-code 三种客户端，覆盖策略按客户端类型自动决定。
     /// v2.31 新增：同时写入项目根目录的 AGENTS.md（含 session_id 约定 + 核心协议速查）。
-    #[tool(description = "首次接入 hippocampus 时调用此工具，自动写入 Rules 模板 + AGENTS.md。【一次性调用】每个项目只需调用一次，已存在会返回 action=skipped，不要重复调用。支持 catpaw（.catpaw/rules/）、trae（.trae/rules/）、claude-code（追加到 CLAUDE.md）三种客户端。【v2.31 新增】同时写入项目根目录的 AGENTS.md，包含 session_id 约定（治本：让 LLM 知道规范格式，避免用'项目名-session'这种错误格式）+ 核心协议速查表。AGENTS.md 用标记隔离，force=true 时只更新标记内容，不影响用户手动写入的部分。首次配置完 hippocampus MCP 后立即调用：install_rules(client=\"你的客户端类型\", project_root=\"项目根目录绝对路径\")。")]
+    #[tool(description = "首次接入 hippocampus 时调用此工具，自动写入 Rules 模板 + AGENTS.md。【一次性调用】每个项目只需调用一次，已存在会返回 action=skipped，不要重复调用。支持 catpaw（.catpaw/rules/）、trae（.trae/rules/）、claude-code（追加到 CLAUDE.md）三种客户端。同时写入项目根目录的 AGENTS.md，包含 session_id 约定（治本：让 LLM 知道规范格式，避免用'项目名-session'这种错误格式）+ 核心协议速查表。AGENTS.md 用标记隔离，force=true 时只更新标记内容，不影响用户手动写入的部分。首次配置完 hippocampus MCP 后立即调用：install_rules(client=\"你的客户端类型\", project_root=\"项目根目录绝对路径\")。")]
     async fn install_rules(
         &self,
         Parameters(params): Parameters<InstallRulesParams>,
@@ -1644,7 +1644,7 @@ impl HippocampusMcp {
     /// 用固定章节覆盖策略更新 hippocampus 维护的 project_memory.md 副本。
     /// 章节用 HTML 注释标记界定（`<!-- HIPPOCAMPUS:SECTION:{name} START/END -->`），
     /// 不影响用户手动写入的内容。
-    #[tool(description = "更新 project_memory.md 副本的指定章节（v2.31 动手点 4）。【让 hippocampus 记忆流入第7层 Memory Context】调用此工具后，hippocampus 维护的 project_memory.md 副本会被更新，返回 full_content 供你用 Write 工具写入 Trae 客户端的 memory 文件夹（如 c:\\Users\\<user>\\.trae-cn\\memory\\projects\\<project>\\project_memory.md）。\
+    #[tool(description = "更新 project_memory.md 副本的指定章节。【让 hippocampus 记忆流入第7层 Memory Context】调用此工具后，hippocampus 维护的 project_memory.md 副本会被更新，返回 full_content 供你用 Write 工具写入 Trae 客户端的 memory 文件夹（如 c:\\Users\\<user>\\.trae-cn\\memory\\projects\\<project>\\project_memory.md）。\
      \
      【固定章节覆盖策略】章节用 HTML 注释标记界定：\
      <!-- HIPPOCAMPUS:SECTION:task_state START -->\
@@ -1773,7 +1773,7 @@ impl HippocampusMcp {
     }
 
     /// 读取 project_memory.md 副本完整内容（v2.31 动手点 4）
-    #[tool(description = "读取 project_memory.md 副本完整内容（v2.31 动手点 4）。返回 hippocampus 维护的 project_memory.md 副本的完整 Markdown 内容。用于：(1)查看当前 hippocampus 写入了哪些章节；(2)拿到完整内容后用 Write 工具写入 Trae 客户端的 memory 文件夹。若文件不存在返回空字符串。")]
+    #[tool(description = "读取 project_memory.md 副本完整内容。返回 hippocampus 维护的 project_memory.md 副本的完整 Markdown 内容。用于：(1)查看当前 hippocampus 写入了哪些章节；(2)拿到完整内容后用 Write 工具写入 Trae 客户端的 memory 文件夹。若文件不存在返回空字符串。")]
     async fn get_project_memory(
         &self,
         Parameters(params): Parameters<GetProjectMemoryParams>,
@@ -2245,7 +2245,7 @@ const AGENTS_MD_TEMPLATE: &str = r#"<!-- hippocampus-agents begin -->
 当用户消息中出现"之前"、"上次"、"还记得"等指代词时，先用用户原话作为 query
 检索相关记忆，把检索结果作为上下文再回复。
 
-### 4. project_memory 反向写入（v2.31）
+### 4. project_memory 反向写入
 完成开发阶段/关键决策/风险点时，调 `update_project_memory` 更新 project_memory.md。
 拿到 full_content 后用 Write 工具写入 Trae 的 memory 文件夹。
 

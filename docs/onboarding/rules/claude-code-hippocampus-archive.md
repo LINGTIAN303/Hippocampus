@@ -30,7 +30,7 @@ hippocampus.archive(
     turns_json='[{"user_message":{"text":"用户问的"},"llm_message":{"text":"我答的"}}]'
 )
 
-# 注意：v2.30.1+ 简化格式，只需传 user_message/llm_message
+# 注意：简化格式，只需传 user_message/llm_message
 # id/timestamp/tags/token_count 可省略，服务端自动补全
 
 ## session_id 约定
@@ -41,7 +41,7 @@ trae-{项目名}-{日期}，如 trae-myapp-20260705
 
 ---
 
-## 压缩后行为协议（v2.31 新增，P0 动手点1）
+## 压缩后行为协议
 
 > 本协议解决"LLM 被压缩后无法感知自身状态"的伪钩子方案核心环节。
 > 通过识别 Trae 客户端注入的固定标记消息，触发强制校准流程。
@@ -92,7 +92,7 @@ using the summary as your guide to avoid repeating any completed steps.
 
 ---
 
-## Next Step 决策协议（v2.31 新增，P0 动手点3）
+## Next Step 决策协议
 
 > 本协议解决"LLM 压缩后重复提问或跳步"问题。
 > 通过 Pending todos（Trae 注入的状态）校准 Next Step（Trae 生成的建议）。
@@ -146,7 +146,7 @@ using the summary as your guide to avoid repeating any completed steps.
 
 ---
 
-## 反向写入协议（v2.31 新增，动手点 4）
+## 反向写入协议
 
 > 本协议解决"hippocampus 记忆无法主动流入第7层 Memory Context"问题。
 > 通过 `update_project_memory` 工具 + Write 工具的两步闭环，让 hippocampus 记忆

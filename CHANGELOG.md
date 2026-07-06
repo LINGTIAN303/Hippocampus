@@ -7,6 +7,71 @@
 ### 计划中
 - v2.4：WASM 组件（待生态成熟）+ Node/Go/Java 绑定
 
+### v2.31 - Agent 上下文感知与同步归档（2026-07-06）
+
+#### 背景
+v2.30.1 完成了 archive 入参简化，但 Agent 客户端压缩上下文时 hippocampus 无法感知被压缩的轮次。本版本通过"伪钩子方案"（外部反馈循环模拟主动感知）+ project_memory 反向写入，让 hippocampus 记忆主动流入 Agent 客户端的 Memory Context。
+
+#### 动手点 1：install_rules 写 AGENTS.md（治本）+ prompt 返回 session 列表（兜底）
+
+解决 CatPaw Agent 用错 session_id 格式（如 `项目名-session`）的问题。
+
+- **治本**：`install_rules_to_project` 新增写入 AGENTS.md 逻辑
+  - 新增 `AGENTS_MD_TEMPLATE` 常量（含 session_id 约定 + 核心协议速查）
+  - 所有客户端通用，用 `HIPPOCAMPUS_AGENTS_BEGIN/END` 标记隔离
+  - 支持 created/updated/appended/skipped 四种状态
+- **兜底**：`prompt` 工具新增返回可用 session 列表
+  - 当前 session_id 不在已有列表时追加提示
+  - 引导 LLM 从列表中选择正确的 session_id
+  - `Storage::list_sessions` 新增方法（LocalStorage 扫描 `sessions/` 目录）
+
+#### 动手点 2：TaskStateSnapshot
+
+LLM 调 archive 时传入任务状态快照，持久化到 `sessions/{session_id}/session_state.json`，prompt 时返回。用于压缩后校准 Trae Summary 第8章节 Current Work。
+
+#### 动手点 4：project_memory.md 反向写入
+
+新增 `update_project_memory` + `get_project_memory` MCP 工具，让 hippocampus 记忆"流入"第7层 Memory Context。
+
+- 固定章节覆盖策略：用 `<!-- HIPPOCAMPUS:SECTION:{name} START/END -->` 标记界定
+- 支持 replace/append/delete 三种 action
+- 两步闭环：调用 `update_project_memory` 拿到 `full_content` → 用 Write 工具写入 Trae 的 project_memory.md
+
+#### Bug 修复
+
+##### 修复 1：retrieve 不存在的 hook_id 返回 500 而非 404
+
+- **根因**：`error.rs` 的 `Error::Index` 匹配条件只含「未找到」，但 `retrieve_memory` 抛出的消息是「hook_id 不存在」。错误转换走了 `Internal` 分支，返回 500。
+- **修复**：`error.rs` 的 Index 匹配条件加上「不存在」和「已删除」（与 Storage 分支对齐）。
+- **附带收益**：软删除记忆（`file_status=Deleted`）的 retrieve 现在正确返回 404 而非 500。
+
+##### 修复 2：batch_delete 死锁（RwLock 重入）
+
+- **根因**：`delete_memory_complete` 持有 session 写锁后调用 `write_index`，`write_index` 内部重复获取同一个 session 写锁。`RwLock` 不允许同任务内重入写锁 → 死锁。
+- **修复**：提取 `write_index` 的核心逻辑为无锁内部版本 `write_index_locked`（在 `impl LocalStorage` 块中）。`write_index` 获取锁后委托给 `write_index_locked`，`delete_memory_complete` 持有锁后直接调用 `write_index_locked`。
+
+#### AppState deprecated 字段清理
+
+删除 `AppState.retriever` 和 `AppState.search_indexer` 字段（v2.8 起由 `session_search` 替代，降级路径是 dead code）。
+
+- 删除 `lib.rs` 中 AppState 字段 + Default impl
+- 删除 `main.rs` 中 AppState 构造处的两行 None 赋值
+- 删除 `handlers.rs` 中两处降级分支（archive 后索引 + search handler）
+- 删除测试文件中 7 个依赖旧字段的测试用例 + 3 个废弃辅助方法
+
+#### LLM 可见文本版本号剔除
+
+给 Agent 客户端 LLM 看的自然语言部分（AGENTS.md、规则文件、工具 description、prompt 返回文本）剔除所有 `v2.x` 版本号引用。版本号对 LLM 无意义，反而会消耗 token + 让 LLM 困惑 + 版本号会过时。
+
+- AGENTS.md：剔除 7 处版本号（保留文件名引用 `v2.30-roadmap.md`）
+- 5 个规则文件（`.trae/rules/` + `.catpaw/rules/` + `docs/onboarding/rules/*.md`）：各剔除 4 处
+- `lib.rs` LLM 可见部分：`AGENTS_MD_TEMPLATE`（1 处）+ 5 个工具 description + 2 处 prompt 返回文本 + 1 处 schemars description + 2 处 archive description
+
+#### 验证
+- hippocampus-core: 301 + 6 测试通过
+- hippocampus-server: 15 单元测试 + 37 集成测试全部通过（此前 1 失败 + 2 死锁，现在 37/37 全绿）
+- hippocampus-mcp: 46 测试通过
+
 ### v2.29 - Presets Create 全链路落地（2026-07-05）
 
 #### 背景

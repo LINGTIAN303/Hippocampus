@@ -2,7 +2,7 @@
 
 > 本文件由 Trae / Cursor / Claude Code 等 IDE 自动读取并注入 LLM 的 system prompt。
 >
-> Hippocampus v2.30+ 启动时会自动识别 Agent 客户端并注入 `usage_protocol.instructions`
+> Hippocampus 启动时会自动识别 Agent 客户端并注入 `usage_protocol.instructions`
 > 到 MCP `server_info.instructions` 字段。本文件作为补充，提供项目级硬性规则。
 
 ---
@@ -29,7 +29,7 @@ mcp_hippocampus.prompt(session_id)
 - **Token 反馈**：上次 archive 返回的 `threshold_ratio_percent >= 80`
 - **兜底**：每 30 轮对话主动归档一次（即使未达阈值）
 
-#### 2.2 调用方式（v2.30.1+ 简化格式）
+#### 2.2 调用方式（简化格式）
 
 ```
 mcp_hippocampus.archive(
@@ -39,7 +39,7 @@ mcp_hippocampus.archive(
 )
 ```
 
-#### 2.3 Token 反馈循环（v2.31 新增）
+#### 2.3 Token 反馈循环
 
 归档后返回结果包含：
 - `estimated_total_tokens`：当前累计估算 token 数
@@ -83,7 +83,7 @@ mcp_hippocampus.detect_conflicts(session_id, hook_id, added_facts, revised_facts
 
 检测冲突。若检测到冲突，向用户确认后再更新记忆。
 
-### 5. 上下文被压缩后：执行压缩后行为协议（v2.31 新增）
+### 5. 上下文被压缩后：执行压缩后行为协议
 
 当系统消息中出现以下固定文本时：
 
@@ -103,7 +103,7 @@ This session continues a previous conversation that lost its context.
 - Pending todos 状态 > Summary 第10章节建议
 - in_progress 任务必须从断点继续，禁止重复提问已完成决策
 
-### 6. project_memory 反向写入：让 hippocampus 记忆流入第7层 Memory Context（v2.31 新增）
+### 6. project_memory 反向写入：让 hippocampus 记忆流入第7层 Memory Context
 
 hippocampus 维护一份 `project_memory.md` 副本（`projects/{project_id}/project_memory.md`），
 LLM 通过 `update_project_memory` 工具更新副本后，用 Write 工具将内容写入 Trae 客户端的
@@ -175,8 +175,8 @@ trae-{项目名}-{日期}
 | 月级评分淘汰 | `compaction` | period="monthly" |
 | 批量检索/删除/更新 | `batch_retrieve` / `batch_delete` / `batch_update` | 批量操作 |
 | 查询冲突记录 | `get_conflicts` | 获取已持久化的冲突记录 |
-| **上下文被压缩后**（v2.31） | `archive` + `prompt` | 归档断层轮次 + 拉取一手记忆校准 Summary，详见「压缩后行为协议」 |
-| 完成开发阶段/关键决策/风险点 | `update_project_memory` | 更新 project_memory.md 副本指定章节（v2.31 动手点 4） |
+| **上下文被压缩后** | `archive` + `prompt` | 归档断层轮次 + 拉取一手记忆校准 Summary，详见「压缩后行为协议」 |
+| 完成开发阶段/关键决策/风险点 | `update_project_memory` | 更新 project_memory.md 副本指定章节 |
 | 查看 project_memory 副本 | `get_project_memory` | 读取 hippocampus 维护的 project_memory.md 完整内容 |
 
 ---
