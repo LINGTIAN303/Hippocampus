@@ -313,12 +313,51 @@ fn derived_window_scheme(w: &WindowProfile) -> String {
 // 字符串参数构建（v2.29 公共函数，供 server / mcp / python 复用）
 // ============================================================================
 
-/// 字符串解析为 Scenario（大小写不敏感）
+/// Scenario 枚举转稳定字符串（v2.33 新增）
 ///
-/// 支持的别名：coding / writing / research / daily / finance / design / officework|office|work
-/// 未匹配则返回 `Scenario::Custom(s)`。
+/// 与 [`scenario_from_str`] 互逆，用于 session_meta 持久化。
+///
+/// ## 映射
+///
+/// - `Coding` → `"coding"`
+/// - `Writing` → `"writing"`
+/// - `Research` → `"research"`
+/// - `Daily` → `"daily"`
+/// - `Finance` → `"finance"`
+/// - `Design` → `"design"`
+/// - `OfficeWork` → `"officework"`
+/// - `Custom(s)` → `"custom:{s}"`（带前缀避免与内置场景冲突）
+///
+/// ## 注意
+///
+/// 不用 `format!("{:?}", scenario).to_lowercase()`，因为对 `Custom("xxx")`
+/// 会生成 `custom("xxx")`，无法被 `scenario_from_str` 反解析。
+pub fn scenario_to_str(scenario: &hippocampus_scenarios::Scenario) -> String {
+    use hippocampus_scenarios::Scenario;
+    match scenario {
+        Scenario::Coding => "coding".to_string(),
+        Scenario::Writing => "writing".to_string(),
+        Scenario::Research => "research".to_string(),
+        Scenario::Daily => "daily".to_string(),
+        Scenario::Finance => "finance".to_string(),
+        Scenario::Design => "design".to_string(),
+        Scenario::OfficeWork => "officework".to_string(),
+        Scenario::Custom(s) => format!("custom:{}", s),
+    }
+}
+
+/// 字符串解析为 Scenario（大小写不敏感，v2.33 扩展 custom: 前缀）
+///
+/// 支持的别名：
+/// - `coding` / `writing` / `research` / `daily` / `finance` / `design`
+/// - `officework` / `office` / `work`
+/// - `custom:{s}`（v2.33 新增，与 `scenario_to_str` 互逆）
+/// - 其他字符串：兜底返回 `Scenario::Custom(s)`（向后兼容）
 pub fn scenario_from_str(s: &str) -> hippocampus_scenarios::Scenario {
     let lower = s.to_lowercase();
+    if let Some(custom_val) = lower.strip_prefix("custom:") {
+        return hippocampus_scenarios::Scenario::Custom(custom_val.to_string());
+    }
     match lower.as_str() {
         "coding" => hippocampus_scenarios::Scenario::Coding,
         "writing" => hippocampus_scenarios::Scenario::Writing,
@@ -784,5 +823,71 @@ mod tests {
             back.usage_protocol().trigger_rules.len(),
             combined.usage_protocol().trigger_rules.len()
         );
+    }
+
+    // ========================================================================
+    // v2.33 新增：scenario_to_str / scenario_from_str 互逆性测试
+    // ========================================================================
+
+    #[test]
+    fn test_scenario_to_str_builtin_scenarios() {
+        use hippocampus_scenarios::Scenario;
+        assert_eq!(scenario_to_str(&Scenario::Coding), "coding");
+        assert_eq!(scenario_to_str(&Scenario::Writing), "writing");
+        assert_eq!(scenario_to_str(&Scenario::Research), "research");
+        assert_eq!(scenario_to_str(&Scenario::Daily), "daily");
+        assert_eq!(scenario_to_str(&Scenario::Finance), "finance");
+        assert_eq!(scenario_to_str(&Scenario::Design), "design");
+        assert_eq!(scenario_to_str(&Scenario::OfficeWork), "officework");
+    }
+
+    #[test]
+    fn test_scenario_to_str_custom_with_prefix() {
+        use hippocampus_scenarios::Scenario;
+        assert_eq!(scenario_to_str(&Scenario::Custom("medical".into())), "custom:medical");
+        assert_eq!(scenario_to_str(&Scenario::Custom("".into())), "custom:");
+    }
+
+    #[test]
+    fn test_scenario_roundtrip_builtin() {
+        use hippocampus_scenarios::Scenario;
+        for s in [
+            Scenario::Coding,
+            Scenario::Writing,
+            Scenario::Research,
+            Scenario::Daily,
+            Scenario::Finance,
+            Scenario::Design,
+            Scenario::OfficeWork,
+        ] {
+            let s_str = scenario_to_str(&s);
+            let back = scenario_from_str(&s_str);
+            assert_eq!(s, back, "互逆失败: {} 往返后变 {:?}", s_str, back);
+        }
+    }
+
+    #[test]
+    fn test_scenario_roundtrip_custom() {
+        use hippocampus_scenarios::Scenario;
+        let original = Scenario::Custom("medical".into());
+        let s_str = scenario_to_str(&original);
+        let back = scenario_from_str(&s_str);
+        assert_eq!(original, back, "Custom 互逆失败: {}", s_str);
+    }
+
+    #[test]
+    fn test_scenario_from_str_custom_prefix() {
+        use hippocampus_scenarios::Scenario;
+        // 直接解析 "custom:xxx" 应得到 Custom("xxx")
+        assert_eq!(scenario_from_str("custom:medical"), Scenario::Custom("medical".into()));
+        // 大小写不敏感
+        assert_eq!(scenario_from_str("CUSTOM:medical"), Scenario::Custom("medical".into()));
+    }
+
+    #[test]
+    fn test_scenario_from_str_unknown_falls_back_to_custom() {
+        use hippocampus_scenarios::Scenario;
+        // 未知标签（无 custom: 前缀）兜底为 Custom(s)
+        assert_eq!(scenario_from_str("unknown_tag"), Scenario::Custom("unknown_tag".into()));
     }
 }
