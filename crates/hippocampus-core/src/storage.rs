@@ -40,11 +40,36 @@
 
 use crate::serialization::SerializationFormat;
 use crate::model::{ArchivePeriod, IndexDocument, IndexHook, MemoryFile};
-use chrono::{Datelike, NaiveDateTime};
+use chrono::{DateTime, Datelike, NaiveDateTime, Utc};
 use dashmap::DashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::RwLock;
+
+/// Session 元数据（v2.33 新增）
+///
+/// 首次 archive 时由 `HybridScenarioDetector` 识别生成，持久化到
+/// `sessions/{session_id}/meta.json`（LocalStorage）或 `session_meta` 表（SqliteStorage）。
+/// 后续该 session 的 archive 直接读取此元数据应用场景，跳过重复识别。
+///
+/// ## 字段
+///
+/// - `scenario`：稳定的场景字符串（如 "coding" / "writing" / "custom:xxx"），
+///   由 `scenario_to_str` 生成，可用 `scenario_from_str` 反解析
+/// - `confidence`：置信度 0.0-1.0（关键词规则按 top/(top+second) 计算，LLM 默认 0.8）
+/// - `method`：识别方法（"keyword" / "llm" / "agent_default"）
+/// - `detected_at`：识别时间（UTC）
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SessionMeta {
+    /// 识别的场景标签（与 `scenario_to_str` 输出一致）
+    pub scenario: String,
+    /// 置信度 0.0-1.0
+    pub confidence: f32,
+    /// 识别方法："keyword" / "llm" / "agent_default"
+    pub method: String,
+    /// 识别时间（UTC）
+    pub detected_at: DateTime<Utc>,
+}
 
 /// 存储后端 trait
 ///
@@ -415,6 +440,41 @@ pub trait Storage: Send + Sync {
     /// 默认返回空 Vec（旧后端不支持 session 列表）。
     async fn list_sessions(&self) -> crate::Result<Vec<String>> {
         Ok(Vec::new())
+    }
+
+    // ========================================================================
+    // session 元数据（v2.33 新增，场景识别结果持久化）
+    // ========================================================================
+
+    /// 写入 session 元数据（v2.33 新增）
+    ///
+    /// 覆盖写入（若已存在则替换）。由 `resolve_effective_scenario` 在首次识别后调用，
+    /// 失败不应阻塞 archive 主流程（调用方应忽略错误并日志 warn）。
+    ///
+    /// ## 默认实现
+    ///
+    /// 默认返回 `Ok(())`（no-op，旧后端不支持 session 元数据）。
+    async fn write_session_meta(
+        &self,
+        _session_id: &str,
+        _meta: &SessionMeta,
+    ) -> crate::Result<()> {
+        Ok(())
+    }
+
+    /// 读取 session 元数据（v2.33 新增）
+    ///
+    /// 未识别时返回 `Ok(None)`（首次 archive 前）。
+    /// 由 `resolve_effective_scenario` 在每次 archive 时调用，命中则跳过识别。
+    ///
+    /// ## 默认实现
+    ///
+    /// 默认返回 `Ok(None)`（旧后端不支持 session 元数据）。
+    async fn read_session_meta(
+        &self,
+        _session_id: &str,
+    ) -> crate::Result<Option<SessionMeta>> {
+        Ok(None)
     }
 }
 
