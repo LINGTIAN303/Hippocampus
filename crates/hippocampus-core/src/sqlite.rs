@@ -34,7 +34,7 @@
 
 use crate::model::{ArchivePeriod, IndexDocument, IndexHook, MemoryFile, MemoryUpdate};
 use crate::serialization::SerializationFormat;
-use crate::storage::Storage;
+use crate::storage::{SessionMeta, Storage};
 use chrono::{DateTime, Utc};
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
@@ -110,6 +110,14 @@ CREATE TABLE IF NOT EXISTS hooks (
 CREATE INDEX IF NOT EXISTS idx_hooks_session ON hooks(session_id, period, scope);
 CREATE INDEX IF NOT EXISTS idx_hooks_project ON hooks(project_id, period, scope);
 CREATE INDEX IF NOT EXISTS idx_hooks_memory ON hooks(memory_id);
+
+CREATE TABLE IF NOT EXISTS session_meta (
+    session_id  TEXT PRIMARY KEY,
+    scenario    TEXT NOT NULL,
+    confidence  REAL NOT NULL,
+    method      TEXT NOT NULL,
+    detected_at TEXT NOT NULL
+);
 "#;
 
 impl SqliteStorage {
@@ -926,6 +934,85 @@ impl Storage for SqliteStorage {
         })
         .await
         .unwrap_or_else(|e| (0..count).map(|_| Err(e.clone())).collect())
+    }
+
+    // ========================================================================
+    // session 元数据（v2.33 新增，场景识别结果持久化）
+    // ========================================================================
+
+    /// 写入 session 元数据（v2.33 新增）
+    ///
+    /// 覆盖写入（INSERT OR REPLACE）。由 `resolve_effective_scenario` 在首次识别后调用，
+    /// 失败不应阻塞 archive 主流程（调用方应忽略错误并日志 warn）。
+    async fn write_session_meta(
+        &self,
+        session_id: &str,
+        meta: &SessionMeta,
+    ) -> crate::Result<()> {
+        let sid = session_id.to_string();
+        let scenario = meta.scenario.clone();
+        let confidence = meta.confidence;
+        let method = meta.method.clone();
+        let detected_at = meta.detected_at.to_rfc3339();
+
+        self.with_conn(move |conn| {
+            conn.execute(
+                "INSERT OR REPLACE INTO session_meta (session_id, scenario, confidence, method, detected_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![sid, scenario, confidence, method, detected_at],
+            ).map_err(|e| crate::Error::Storage(format!("写入 session_meta 失败: {}", e)))?;
+            Ok(())
+        })
+        .await?;
+
+        tracing::debug!(
+            session_id = %session_id,
+            scenario = %meta.scenario,
+            "session_meta 已写入 SQLite"
+        );
+        Ok(())
+    }
+
+    /// 读取 session 元数据（v2.33 新增）
+    ///
+    /// 未识别时返回 `Ok(None)`（首次 archive 前）。
+    /// 由 `resolve_effective_scenario` 在每次 archive 时调用，命中则跳过识别。
+    async fn read_session_meta(
+        &self,
+        session_id: &str,
+    ) -> crate::Result<Option<SessionMeta>> {
+        let sid = session_id.to_string();
+
+        self.with_conn(move |conn| {
+            let mut stmt = conn.prepare(
+                "SELECT scenario, confidence, method, detected_at FROM session_meta WHERE session_id = ?1"
+            ).map_err(|e| crate::Error::Storage(format!("prepare 失败: {}", e)))?;
+
+            let row_result: rusqlite::Result<(String, f64, String, String)> =
+                stmt.query_row(rusqlite::params![sid], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                });
+
+            match row_result {
+                Ok((scenario, confidence, method, detected_at)) => {
+                    let dt = DateTime::parse_from_rfc3339(&detected_at)
+                        .map_err(|e| crate::Error::Serialize(format!(
+                            "解析 detected_at 失败: {}", e
+                        )))?
+                        .with_timezone(&Utc);
+                    Ok(Some(SessionMeta {
+                        scenario,
+                        confidence: confidence as f32,
+                        method,
+                        detected_at: dt,
+                    }))
+                }
+                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                Err(e) => Err(crate::Error::Storage(format!(
+                    "查询 session_meta 失败: {}", e
+                ))),
+            }
+        })
+        .await
     }
 }
 
