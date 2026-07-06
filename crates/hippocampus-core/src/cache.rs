@@ -40,7 +40,7 @@
 //! - **list_memories**：不缓存（结果可能变化，且调用频率低）
 
 use crate::model::{ArchivePeriod, IndexDocument, IndexHook, MemoryFile, MemoryUpdate};
-use crate::storage::Storage;
+use crate::storage::{SessionMeta, Storage};
 use moka::future::Cache;
 use std::sync::Arc;
 use std::time::Duration;
@@ -384,6 +384,25 @@ impl<T: Storage> Storage for CachedStorage<T> {
             .invalidate(&CacheKey::memory(memory_id))
             .await;
         Ok(())
+    }
+
+    /// 透传 session 元数据写入到 inner（v2.33 新增）
+    ///
+    /// CachedStorage 不单独缓存 session_meta（读取频率低，每个 session 仅首次 archive 时读一次）。
+    async fn write_session_meta(
+        &self,
+        session_id: &str,
+        meta: &SessionMeta,
+    ) -> crate::Result<()> {
+        self.inner.write_session_meta(session_id, meta).await
+    }
+
+    /// 透传 session 元数据读取到 inner（v2.33 新增）
+    async fn read_session_meta(
+        &self,
+        session_id: &str,
+    ) -> crate::Result<Option<SessionMeta>> {
+        self.inner.read_session_meta(session_id).await
     }
 }
 
