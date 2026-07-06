@@ -547,6 +547,35 @@ struct PresetBuildParams {
 #[derive(Deserialize, schemars::JsonSchema, Default)]
 struct NoParams {}
 
+/// update_project_memory tool 参数（v2.31 动手点 4）
+///
+/// LLM 主动调用，用固定章节覆盖策略更新 hippocampus 维护的 project_memory.md 副本。
+/// 章节用 HTML 注释标记界定，不影响用户手动写入的内容。
+#[derive(Deserialize, schemars::JsonSchema)]
+struct UpdateProjectMemoryParams {
+    /// 项目 ID
+    #[schemars(description = "项目 ID（用于定位 projects/{project_id}/project_memory.md）")]
+    project_id: String,
+    /// 章节标识（如 "task_state" / "decisions" / "progress" / "risks"）
+    #[schemars(description = "章节标识（如 task_state/decisions/progress/risks）。同一标识的内容会被覆盖，不同标识的章节独立存在。")]
+    section: String,
+    /// 章节内容（Markdown 格式）
+    #[schemars(description = "章节内容（Markdown 格式）。将覆盖该 section 的旧内容（action=replace 时）。")]
+    content: String,
+    /// 写入动作（可选，默认 "replace"）
+    #[schemars(description = "写入动作（默认 replace）：replace=覆盖该章节旧内容；append=在章节末尾追加；delete=删除整个章节（含标记）。")]
+    #[serde(default)]
+    action: Option<String>,
+}
+
+/// get_project_memory tool 参数（v2.31 动手点 4）
+#[derive(Deserialize, schemars::JsonSchema)]
+struct GetProjectMemoryParams {
+    /// 项目 ID
+    #[schemars(description = "项目 ID")]
+    project_id: String,
+}
+
 // ============================================================================
 // MCP Tools 实现
 // ============================================================================
@@ -1575,6 +1604,159 @@ impl HippocampusMcp {
     ) -> Result<String, McpError> {
         install_rules_to_project(&params.client, &params.project_root, params.force)
             .map_err(|e| McpError::internal_error(e, None))
+    }
+
+    // ========================================================================
+    // v2.31 动手点 4：project_memory.md 反向写入
+    // ========================================================================
+
+    /// 更新 project_memory.md 副本的指定章节（v2.31 动手点 4）
+    ///
+    /// 用固定章节覆盖策略更新 hippocampus 维护的 project_memory.md 副本。
+    /// 章节用 HTML 注释标记界定（`<!-- HIPPOCAMPUS:SECTION:{name} START/END -->`），
+    /// 不影响用户手动写入的内容。
+    #[tool(description = "更新 project_memory.md 副本的指定章节（v2.31 动手点 4）。【让 hippocampus 记忆流入第7层 Memory Context】调用此工具后，hippocampus 维护的 project_memory.md 副本会被更新，返回 full_content 供你用 Write 工具写入 Trae 客户端的 memory 文件夹（如 c:\\Users\\<user>\\.trae-cn\\memory\\projects\\<project>\\project_memory.md）。\
+     \
+     【固定章节覆盖策略】章节用 HTML 注释标记界定：\
+     <!-- HIPPOCAMPUS:SECTION:task_state START -->\
+     （hippocampus 写入的内容）\
+     <!-- HIPPOCAMPUS:SECTION:task_state END -->\
+     用户手动写入的内容（不在标记内）不受影响。同一 section 的内容会被覆盖（action=replace），不同 section 独立存在。\
+     \
+     【何时调用】(1)完成一个开发阶段时，更新 task_state/progress 章节；(2)关键架构决策时，更新 decisions 章节；(3)发现风险点时，更新 risks 章节；(4)用户说'记住这个'时立即更新。\
+     \
+     【参数】project_id/section/content 必填，action 可选（默认 replace，可选 append/delete）。\
+     \
+     【返回】success + updated_section + action + file_path + full_content。拿到 full_content 后请用 Write 工具写入 Trae 的 project_memory.md，完成'反向写入'闭环。")]
+    async fn update_project_memory(
+        &self,
+        Parameters(params): Parameters<UpdateProjectMemoryParams>,
+    ) -> Result<String, McpError> {
+        let storage = self.create_storage();
+
+        // 1. 读取现有内容（不存在则空字符串）
+        let mut full_content = storage
+            .read_project_memory(&params.project_id)
+            .await
+            .map_err(|e| McpError::internal_error(format!("读取 project_memory.md 失败: {e}"), None))?
+            .unwrap_or_default();
+
+        // 2. 构造章节标记
+        let section = &params.section;
+        let start_marker = format!("<!-- HIPPOCAMPUS:SECTION:{} START -->", section);
+        let end_marker = format!("<!-- HIPPOCAMPUS:SECTION:{} END -->", section);
+
+        // 3. 根据 action 处理
+        let action = params.action.as_deref().unwrap_or("replace");
+        match action {
+            "replace" => {
+                let new_section_block = format!("{}\n{}\n{}", start_marker, params.content, end_marker);
+                // 查找并替换标记之间的内容（含标记本身）
+                if let Some(start_idx) = full_content.find(&start_marker) {
+                    if let Some(end_idx_rel) = full_content[start_idx..].find(&end_marker) {
+                        let end_idx = start_idx + end_idx_rel + end_marker.len();
+                        full_content.replace_range(start_idx..end_idx, &new_section_block);
+                    } else {
+                        // 有 start 无 end（异常状态），追加 end_marker 后再 replace
+                        full_content.push_str(&format!("\n{}\n", end_marker));
+                        if let Some(s) = full_content.find(&start_marker) {
+                            if let Some(e_rel) = full_content[s..].find(&end_marker) {
+                                let e = s + e_rel + end_marker.len();
+                                full_content.replace_range(s..e, &new_section_block);
+                            }
+                        }
+                    }
+                } else {
+                    // 无该 section，追加新章节
+                    if !full_content.is_empty() && !full_content.ends_with('\n') {
+                        full_content.push('\n');
+                    }
+                    full_content.push_str(&format!("\n{}\n", new_section_block));
+                }
+            }
+            "append" => {
+                // 在章节内末尾追加内容（end_marker 之前）
+                if let Some(start_idx) = full_content.find(&start_marker) {
+                    if let Some(end_idx_rel) = full_content[start_idx..].find(&end_marker) {
+                        let insert_pos = start_idx + end_idx_rel;
+                        let insert_text = format!("{}\n", params.content);
+                        full_content.insert_str(insert_pos, &insert_text);
+                    } else {
+                        // 有 start 无 end，先补 end_marker 再追加
+                        full_content.push_str(&format!("\n{}\n", params.content));
+                        full_content.push_str(&format!("{}\n", end_marker));
+                    }
+                } else {
+                    // 无该 section，创建新章节（等同 replace）
+                    let new_section_block = format!("{}\n{}\n{}", start_marker, params.content, end_marker);
+                    if !full_content.is_empty() && !full_content.ends_with('\n') {
+                        full_content.push('\n');
+                    }
+                    full_content.push_str(&format!("\n{}\n", new_section_block));
+                }
+            }
+            "delete" => {
+                // 删除整个章节（含标记及前后空行）
+                if let Some(start_idx) = full_content.find(&start_marker) {
+                    if let Some(end_idx_rel) = full_content[start_idx..].find(&end_marker) {
+                        let end_idx = start_idx + end_idx_rel + end_marker.len();
+                        // 向前扩展删除前导空行
+                        let mut remove_start = start_idx;
+                        while remove_start > 0 && full_content.as_bytes()[remove_start - 1] == b'\n' {
+                            remove_start -= 1;
+                        }
+                        // 向后扩展删除后续空行（保留一个换行避免拼接）
+                        let mut remove_end = end_idx;
+                        while remove_end < full_content.len() && full_content.as_bytes()[remove_end] == b'\n' {
+                            remove_end += 1;
+                        }
+                        full_content.replace_range(remove_start..remove_end, "");
+                    }
+                }
+                // 无该 section 时 delete 为 no-op
+            }
+            other => {
+                return Err(McpError::invalid_params(
+                    format!("无效的 action: {}（支持: replace, append, delete）", other),
+                    None,
+                ));
+            }
+        }
+
+        // 4. 写回 hippocampus 副本
+        storage
+            .write_project_memory(&params.project_id, &full_content)
+            .await
+            .map_err(|e| McpError::internal_error(format!("写入 project_memory.md 失败: {e}"), None))?;
+
+        // 5. 返回结果（含 full_content 供 LLM 写入 Trae 文件）
+        let file_path = format!("projects/{}/project_memory.md", params.project_id);
+        let result = serde_json::json!({
+            "success": true,
+            "updated_section": section,
+            "action": action,
+            "file_path": file_path,
+            "full_content": full_content,
+            "content_bytes": full_content.len(),
+        });
+
+        Ok(result.to_string())
+    }
+
+    /// 读取 project_memory.md 副本完整内容（v2.31 动手点 4）
+    #[tool(description = "读取 project_memory.md 副本完整内容（v2.31 动手点 4）。返回 hippocampus 维护的 project_memory.md 副本的完整 Markdown 内容。用于：(1)查看当前 hippocampus 写入了哪些章节；(2)拿到完整内容后用 Write 工具写入 Trae 客户端的 memory 文件夹。若文件不存在返回空字符串。")]
+    async fn get_project_memory(
+        &self,
+        Parameters(params): Parameters<GetProjectMemoryParams>,
+    ) -> Result<String, McpError> {
+        let storage = self.create_storage();
+        let content = storage
+            .read_project_memory(&params.project_id)
+            .await
+            .map_err(|e| McpError::internal_error(format!("读取 project_memory.md 失败: {e}"), None))?
+            .unwrap_or_default();
+
+        Ok(content)
     }
 }
 

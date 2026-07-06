@@ -363,6 +363,47 @@ pub trait Storage: Send + Sync {
     ) -> crate::Result<()> {
         Ok(())
     }
+
+    // ========================================================================
+    // project_memory.md 反向写入（v2.31 新增，动手点 4）
+    // ========================================================================
+
+    /// 读取 project_memory.md 副本内容（v2.31 新增，动手点 4）
+    ///
+    /// 从 `projects/{project_id}/project_memory.md` 读取完整 Markdown 内容。
+    /// 返回 `Ok(None)` 表示文件不存在（首次写入前）。
+    ///
+    /// ## 设计动机
+    ///
+    /// hippocampus 维护一份 project_memory 副本，LLM 调用 `update_project_memory`
+    /// 更新副本后，用 Write 工具将内容写入 Trae 客户端的 memory 文件夹，
+    /// 让 hippocampus 记忆"流入"第7层 Memory Context。
+    ///
+    /// ## 默认实现
+    ///
+    /// 默认返回 `Ok(None)`（旧后端不支持 project_memory 反向写入）。
+    async fn read_project_memory(
+        &self,
+        _project_id: &str,
+    ) -> crate::Result<Option<String>> {
+        Ok(None)
+    }
+
+    /// 覆盖写入 project_memory.md 副本（v2.31 新增，动手点 4）
+    ///
+    /// 写入 `projects/{project_id}/project_memory.md`。
+    /// 由 `update_project_memory` 工具调用，章节覆盖逻辑在工具层处理。
+    ///
+    /// ## 默认实现
+    ///
+    /// 默认返回 `Ok(())`（no-op，旧后端不支持 project_memory 反向写入）。
+    async fn write_project_memory(
+        &self,
+        _project_id: &str,
+        _content: &str,
+    ) -> crate::Result<()> {
+        Ok(())
+    }
 }
 
 /// 本地文件树存储后端
@@ -888,6 +929,51 @@ impl Storage for LocalStorage {
             session_id = %session_id,
             current_task = %snapshot.current_task,
             "session_state.json 已写入"
+        );
+
+        Ok(())
+    }
+
+    /// 读取 project_memory.md 副本内容（v2.31 动手点 4）
+    ///
+    /// 从 `projects/{project_id}/project_memory.md` 读取。
+    /// 文件不存在时返回 `Ok(None)`（首次写入前）。
+    async fn read_project_memory(
+        &self,
+        project_id: &str,
+    ) -> crate::Result<Option<String>> {
+        let relative = self.project_scope_dir(project_id).join("project_memory.md");
+        let abs = self.abs_path(&relative);
+
+        match tokio::fs::read_to_string(&abs).await {
+            Ok(content) => Ok(Some(content)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(crate::Error::Storage(format!(
+                "读取 project_memory.md 失败 {:?}: {}",
+                path_display(&relative), e
+            ))),
+        }
+    }
+
+    /// 覆盖写入 project_memory.md 副本（v2.31 动手点 4）
+    ///
+    /// 写入 `projects/{project_id}/project_memory.md`。
+    /// 不加 project 写锁（与索引/记忆文件独立，无并发冲突风险）。
+    async fn write_project_memory(
+        &self,
+        project_id: &str,
+        content: &str,
+    ) -> crate::Result<()> {
+        let relative = self.project_scope_dir(project_id).join("project_memory.md");
+        let abs = self.abs_path(&relative);
+        self.ensure_parent_dir(&abs).await?;
+
+        self.atomic_write(&abs, content.as_bytes()).await?;
+
+        tracing::debug!(
+            project_id = %project_id,
+            content_bytes = content.len(),
+            "project_memory.md 已写入"
         );
 
         Ok(())

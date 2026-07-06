@@ -103,6 +103,47 @@ This session continues a previous conversation that lost its context.
 - Pending todos 状态 > Summary 第10章节建议
 - in_progress 任务必须从断点继续，禁止重复提问已完成决策
 
+### 6. project_memory 反向写入：让 hippocampus 记忆流入第7层 Memory Context（v2.31 新增）
+
+hippocampus 维护一份 `project_memory.md` 副本（`projects/{project_id}/project_memory.md`），
+LLM 通过 `update_project_memory` 工具更新副本后，用 Write 工具将内容写入 Trae 客户端的
+memory 文件夹（如 `c:\Users\<user>\.trae-cn\memory\projects\<project>\project_memory.md`），
+完成"反向写入"闭环——让 hippocampus 记忆主动流入第7层 Memory Context。
+
+#### 何时调用 update_project_memory
+
+- **完成一个开发阶段时**：更新 `task_state` / `progress` 章节
+- **关键架构决策时**：更新 `decisions` 章节
+- **发现风险点时**：更新 `risks` 章节
+- **用户说"记住这个"时**：立即更新对应章节
+
+#### 调用方式
+
+```
+mcp_hippocampus.update_project_memory(
+    project_id="myapp",
+    section="task_state",
+    content="## 当前任务\n- 动手点 4 已完成\n- 下一步：提交部署",
+    action="replace"  // 默认 replace，可选 append / delete
+)
+```
+
+返回 `full_content` 后，用 Write 工具写入 Trae 的 project_memory.md。
+
+#### 固定章节覆盖策略
+
+章节用 HTML 注释标记界定，**不影响用户手动写入的内容**：
+
+```markdown
+<!-- HIPPOCAMPUS:SECTION:task_state START -->
+（hippocampus 写入的内容）
+<!-- HIPPOCAMPUS:SECTION:task_state END -->
+
+（用户手动写入的内容，不受 hippocampus 影响）
+```
+
+同一 section 的内容会被覆盖（action=replace），不同 section 独立存在。
+
 ---
 
 ## session_id 约定
@@ -135,6 +176,8 @@ trae-{项目名}-{日期}
 | 批量检索/删除/更新 | `batch_retrieve` / `batch_delete` / `batch_update` | 批量操作 |
 | 查询冲突记录 | `get_conflicts` | 获取已持久化的冲突记录 |
 | **上下文被压缩后**（v2.31） | `archive` + `prompt` | 归档断层轮次 + 拉取一手记忆校准 Summary，详见「压缩后行为协议」 |
+| 完成开发阶段/关键决策/风险点 | `update_project_memory` | 更新 project_memory.md 副本指定章节（v2.31 动手点 4） |
+| 查看 project_memory 副本 | `get_project_memory` | 读取 hippocampus 维护的 project_memory.md 完整内容 |
 
 ---
 

@@ -143,3 +143,76 @@ using the summary as your guide to avoid repeating any completed steps.
 若 Pending todos 与 hippocampus 记忆冲突（如 todos 显示 in_progress 但 hippocampus 显示已完成）：
 - 以 hippocampus 记忆为准
 - 向用户简短说明冲突，请用户确认
+
+---
+
+## 反向写入协议（v2.31 新增，动手点 4）
+
+> 本协议解决"hippocampus 记忆无法主动流入第7层 Memory Context"问题。
+> 通过 `update_project_memory` 工具 + Write 工具的两步闭环，让 hippocampus 记忆
+> 主动写入 Trae 客户端的 project_memory.md，影响下次会话的第7层注入。
+
+### 1. 触发条件（满足任一即调用）
+
+- **完成一个开发阶段时**：更新 `task_state` / `progress` 章节
+- **关键架构决策时**：更新 `decisions` 章节（新增/修改 crate、数据模型变更等）
+- **发现风险点时**：更新 `risks` 章节
+- **用户说"记住这个"时**：立即更新对应章节
+- **会话结束前**：若本会话有重要进展，更新 `task_state` 章节供下次会话参考
+
+### 2. 两步闭环流程
+
+#### 步骤 1：调用 update_project_memory 更新 hippocampus 副本
+
+```
+hippocampus.update_project_memory(
+    project_id="myapp",
+    section="task_state",
+    content="## 当前任务\n- 动手点 4 已完成\n- 下一步：提交部署",
+    action="replace"
+)
+```
+
+返回 `full_content`（更新后的完整 project_memory.md 内容）。
+
+#### 步骤 2：用 Write 工具写入 Trae 的 project_memory.md
+
+将 `full_content` 写入 Trae 客户端的 memory 文件夹：
+- Trae: `c:\Users\<user>\.trae-cn\memory\projects\<project>\project_memory.md`
+- Cursor: 对应的 memory 目录
+
+完成"反向写入"闭环——hippocampus 记忆主动流入第7层 Memory Context。
+
+### 3. 固定章节覆盖策略
+
+章节用 HTML 注释标记界定，**不影响用户手动写入的内容**：
+
+```markdown
+<!-- HIPPOCAMPUS:SECTION:task_state START -->
+（hippocampus 写入的内容，会被 action=replace 覆盖）
+<!-- HIPPOCAMPUS:SECTION:task_state END -->
+
+（用户手动写入的内容，hippocampus 不会触碰）
+```
+
+- 同一 section 的内容会被覆盖（action=replace）
+- 不同 section 独立存在，互不影响
+- action=append 在章节末尾追加，action=delete 删除整个章节
+
+### 4. 推荐章节标识
+
+| section | 用途 | 更新时机 |
+|---------|------|---------|
+| `task_state` | 当前任务状态 + 下一步 | 每个开发阶段完成时 |
+| `decisions` | 架构决策记录 | 新增/修改 crate、数据模型变更时 |
+| `progress` | 进度跟踪 | 里程碑达成时 |
+| `risks` | 风险点记录 | 发现潜在问题时 |
+| `conventions` | 项目约定 | 确立新约定时 |
+
+### 5. 注意事项
+
+- **不要覆盖用户手动写入的内容**：只在标记范围内操作
+- **返回的 full_content 必须完整写入 Trae 文件**：不能只写部分
+- **会话结束前更新 task_state**：供下次会话的第7层注入参考
+- **与 TaskStateSnapshot 配合**：archive 时传 task_state_snapshot（动手点 2），
+  update_project_memory 更新 project_memory.md（动手点 4），双重保障
