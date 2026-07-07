@@ -21,7 +21,7 @@ pub mod model;
 pub mod score;
 pub mod semantic; // 额外迁移：bm25/conflict/heuristic/vector/model 依赖 semantic，不启用会导致 model.rs 业务逻辑被破坏
 pub mod serialization;
-// pub mod storage;
+pub mod storage;
 pub mod vector;
 
 /// Crate 级错误类型

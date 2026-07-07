@@ -30,6 +30,8 @@ dashmap.workspace = true
 moka.workspace = true
 # v2.5 批次 7 新增：中文分词（BM25 关键词检索）
 jieba-rs.workspace = true
+# v2.35 新增：从 core-logic 引入纯逻辑（Storage trait / model / bm25 等）
+hippocampus-core-logic = { path = "../hippocampus-core-logic" }
 
 [dev-dependencies]
 tokio = { version = "1.0", features = ["full"] }
