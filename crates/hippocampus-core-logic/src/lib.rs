@@ -6,20 +6,19 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs, rust_2018_idioms)]
 
-// 暂时注释，Task 3-4 再启用
-// pub mod archive;
+pub mod archive;
 pub mod bm25;
-// pub mod compact;
+pub mod compact;
 pub mod conflict;
 pub mod context_parser;
 pub mod generate;
 pub mod heuristic;
-// pub mod hybrid;
+pub mod hybrid;
 pub mod migrator;
 pub mod model;
-// pub mod retrieve;
+pub mod retrieve;
 pub mod score;
-pub mod semantic; // 额外迁移：bm25/conflict/heuristic/vector/model 依赖 semantic，不启用会导致 model.rs 业务逻辑被破坏
+pub mod semantic;
 pub mod serialization;
 pub mod storage;
 pub mod vector;

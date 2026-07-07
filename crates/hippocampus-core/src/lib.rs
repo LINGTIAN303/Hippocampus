@@ -41,13 +41,8 @@
 // ============================================================================
 // IO 实现层模块（hippocampus-core 独有，依赖原生 fs/SQLite）
 // ============================================================================
-pub mod archive;
 /// 缓存装饰器（CachedStorage<T>，moka LRU + TTL）
 pub mod cache;
-pub mod compact;
-/// 混合检索器（HybridRetriever + RRF 融合 + 降级策略）
-pub mod hybrid;
-pub mod retrieve;
 /// SQLite 存储后端（rusqlite + r2d2 连接池 + WAL 模式）
 pub mod sqlite;
 /// SQLite 向量索引（BLOB 持久化 + InMemoryVectorIndex 缓存）
@@ -59,13 +54,18 @@ pub mod storage;
 // 从 hippocampus-core-logic 重导出纯逻辑模块（v2.35 WASM 拆分）
 // ============================================================================
 //
-// 以下模块的源文件仍保留在 hippocampus-core/src/ 中（Task 4 删除），
-// 但 lib.rs 不再 `pub mod xxx;` 声明它们，而是从 core-logic 重导出。
-// 这样 `crate::model::*` / `crate::bm25::*` 等在 hippocampus-core 中
-// 指向 core-logic 的版本，与 Storage trait 中的 `crate::model::*` 类型一致。
+// 所有纯逻辑模块的源文件已迁移到 hippocampus-core-logic/src/ 中，
+// hippocampus-core/src/ 中已删除这些文件，lib.rs 通过 `pub use` 重导出。
+// 这样 `crate::model::*` / `crate::bm25::*` / `crate::archive::*` 等在
+// hippocampus-core 中指向 core-logic 的版本，与 Storage trait 中的
+// `crate::model::*` 类型一致。
 
+/// 归档/冻结逻辑（达到阈值时将上下文冻结为记忆文件）
+pub use hippocampus_core_logic::archive;
 /// BM25 关键词检索（jieba-rs 中文分词 + 倒排索引）
 pub use hippocampus_core_logic::bm25;
+/// 周期任务（周去重合并 / 月评分淘汰）
+pub use hippocampus_core_logic::compact;
 /// 记忆冲突检测（ConflictDetector trait + NoopDetector）
 pub use hippocampus_core_logic::conflict;
 /// 上下文字符串解析器（v2.34，pre_compress_hook 用）
@@ -74,8 +74,12 @@ pub use hippocampus_core_logic::context_parser;
 pub use hippocampus_core_logic::generate;
 /// 启发式冲突检测器（HeuristicDetector，反义词词典 + 三维度检测）
 pub use hippocampus_core_logic::heuristic;
+/// 混合检索器（HybridRetriever + RRF 融合 + 降级策略）
+pub use hippocampus_core_logic::hybrid;
 pub use hippocampus_core_logic::migrator;
 pub use hippocampus_core_logic::model;
+/// 检索机制（摘要钩子注入 + tool 主动检索）
+pub use hippocampus_core_logic::retrieve;
 pub use hippocampus_core_logic::score;
 /// 语义检索（Embedder / KeywordSearcher / VectorIndex / SemanticRetriever trait + RRF 融合）
 pub use hippocampus_core_logic::semantic;
