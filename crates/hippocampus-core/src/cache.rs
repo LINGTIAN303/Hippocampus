@@ -475,6 +475,9 @@ mod tests {
             period,
             token_count,
             file_status: crate::model::FileStatus::Normal,
+            // v2.34：测试辅助函数默认 None
+            archive_reason: None,
+            raw_context_path: None,
         }
     }
 

@@ -220,6 +220,10 @@ impl SqliteStorage {
             period,
             token_count: token_count as usize,
             file_status: crate::model::FileStatus::Normal,
+            // v2.34：SQLite schema 尚未包含这两列，读取时默认 None
+            // 后续 Task 会扩展 schema 并从对应列读取
+            archive_reason: None,
+            raw_context_path: None,
         })
     }
 

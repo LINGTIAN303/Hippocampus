@@ -804,6 +804,9 @@ mod tests {
             period: ArchivePeriod::Daily,
             token_count: 100,
             file_status: hippocampus_core::model::FileStatus::Normal,
+            // v2.34：测试辅助函数默认 None
+            archive_reason: None,
+            raw_context_path: None,
         }
     }
 

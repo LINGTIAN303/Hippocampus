@@ -387,6 +387,23 @@ pub struct IndexHook {
     /// 旧索引文件未序列化此字段时，`#[serde(default)]` 自动填充为 `Normal`，向后兼容。
     #[serde(default)]
     pub file_status: FileStatus,
+
+    /// 归档来源：`archive`（日常） / `pre_compress`（压缩前） / `manual`（手动）
+    ///
+    /// v2.34 新增，用于区分该钩子由哪条路径产生。pre_compress_hook 生成时填
+    /// `pre_compress`，并配套写入 [`raw_context_path`] 指向完整原始上下文。
+    /// 旧索引文件未序列化此字段时，`#[serde(default)]` 自动填充为 `None`，向后兼容。
+    #[serde(default)]
+    pub archive_reason: Option<String>,
+
+    /// raw_context 文件相对路径（仅 pre_compress_hook 生成时填入）
+    ///
+    /// v2.34 新增。当 `archive_reason == Some("pre_compress")` 时，本字段指向
+    /// `sessions/{session_id}/raw_context/{hook_id}.json` 完整原始上下文备份，
+    /// 供 LLM 通过 retrieve 工具按需拉取。其余归档路径下为 `None`。
+    /// 旧索引文件未序列化此字段时，`#[serde(default)]` 自动填充为 `None`，向后兼容。
+    #[serde(default)]
+    pub raw_context_path: Option<String>,
 }
 
 /// 索引钩子关联文件的状态（v2.31 新增，软删除支持）
@@ -928,6 +945,10 @@ impl IndexHook {
             period: file.period,
             token_count: file.total_tokens,
             file_status: FileStatus::Normal,
+            // v2.34：from_memory_file 走日常归档路径，新字段默认 None
+            // pre_compress 路径由后续 Task 的 hook 工厂单独填充
+            archive_reason: None,
+            raw_context_path: None,
         }
     }
 }
@@ -971,5 +992,107 @@ impl IndexDocument {
     /// `memory_id` 在 LocalStorage 后端为路径字符串，在 SQLite 后端为 UUID 字符串
     pub fn find_by_memory(&self, memory_id: &str) -> Option<&IndexHook> {
         self.hooks.iter().find(|h| h.memory_id == memory_id)
+    }
+}
+
+/// v2.34 测试：IndexHook 新增 `archive_reason` + `raw_context_path` 字段，
+/// 需保证旧索引文件（无新字段）反序列化向后兼容。
+#[cfg(test)]
+mod v2_34_tests {
+    use super::*;
+
+    /// 旧 JSON（v2.33 及之前，无 archive_reason / raw_context_path 字段）反序列化
+    /// 新字段应被 `#[serde(default)]` 自动填充为 None
+    #[test]
+    fn test_index_hook_deserialize_legacy_without_new_fields() {
+        let json = r#"{
+            "id":"00000000-0000-0000-0000-000000000001",
+            "memory_id":"sessions/old/memory.json",
+            "summary":{"title":"旧记忆标题"},
+            "tags":[{"kind":"Text"}],
+            "archived_at":"2026-07-01T00:00:00Z",
+            "period":"Daily",
+            "token_count":100,
+            "file_status":"normal"
+        }"#;
+        let hook: IndexHook = serde_json::from_str(json).unwrap();
+
+        // 旧字段应正常解析
+        assert_eq!(
+            hook.id,
+            Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap()
+        );
+        assert_eq!(hook.memory_id, "sessions/old/memory.json");
+        assert_eq!(hook.summary.title, "旧记忆标题");
+        assert_eq!(hook.tags.len(), 1);
+        assert_eq!(hook.tags[0], Tag::Text);
+        assert_eq!(hook.period, ArchivePeriod::Daily);
+        assert_eq!(hook.token_count, 100);
+        assert_eq!(hook.file_status, FileStatus::Normal);
+
+        // 新字段应为 None（向后兼容）
+        assert!(
+            hook.archive_reason.is_none(),
+            "旧 JSON 反序列化时 archive_reason 应为 None"
+        );
+        assert!(
+            hook.raw_context_path.is_none(),
+            "旧 JSON 反序列化时 raw_context_path 应为 None"
+        );
+    }
+
+    /// 构造带新字段的 IndexHook，序列化后反序列化，验证字段值保留
+    /// 同时验证新字段在 JSON 中以预期键名出现
+    #[test]
+    fn test_index_hook_with_archive_reason_and_raw_context_path() {
+        let hook = IndexHook {
+            id: Uuid::parse_str("00000000-0000-0000-0000-000000000002").unwrap(),
+            memory_id: "sessions/new/memory.json".to_string(),
+            summary: Summary::from_title("新记忆标题".to_string()),
+            tags: vec![Tag::Text],
+            archived_at: DateTime::parse_from_rfc3339("2026-07-07T00:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+            period: ArchivePeriod::Daily,
+            token_count: 200,
+            file_status: FileStatus::Normal,
+            archive_reason: Some("pre_compress".to_string()),
+            raw_context_path: Some("sessions/new/raw_context.json".to_string()),
+        };
+
+        // 序列化为 JSON
+        let serialized = serde_json::to_string(&hook).unwrap();
+        println!("serialized: {}", serialized);
+
+        // JSON 中应包含新字段键名
+        assert!(
+            serialized.contains("\"archive_reason\":\"pre_compress\""),
+            "序列化 JSON 应包含 archive_reason 字段, 实际: {}",
+            serialized
+        );
+        assert!(
+            serialized.contains("\"raw_context_path\":\"sessions/new/raw_context.json\""),
+            "序列化 JSON 应包含 raw_context_path 字段, 实际: {}",
+            serialized
+        );
+
+        // 反序列化回来验证字段值保留
+        let deserialized: IndexHook = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(deserialized.id, hook.id);
+        assert_eq!(deserialized.memory_id, hook.memory_id);
+        assert_eq!(deserialized.summary.title, hook.summary.title);
+        assert_eq!(deserialized.token_count, hook.token_count);
+
+        // 新字段值应保留
+        assert_eq!(
+            deserialized.archive_reason,
+            Some("pre_compress".to_string()),
+            "反序列化后 archive_reason 应保留原值"
+        );
+        assert_eq!(
+            deserialized.raw_context_path,
+            Some("sessions/new/raw_context.json".to_string()),
+            "反序列化后 raw_context_path 应保留原值"
+        );
     }
 }
