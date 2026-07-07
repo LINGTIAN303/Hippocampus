@@ -34,6 +34,8 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 chrono = { workspace = true }
+# v2.34：pre_compress_hook 生成 hook_id 用（已是 workspace 依赖，原仅在 dev-dependencies）
+uuid = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3.0"

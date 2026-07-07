@@ -445,6 +445,66 @@ struct TaskStateSnapshotParams {
     next_step: String,
 }
 
+/// pre_compress_hook tool 参数（v2.34 新增）
+///
+/// 与 archive 的 ArchiveParams 字段集对等，但用 `full_context`（完整字符串）
+/// 替代 `turns_json`（结构化轮次），实现压缩前一次性完整归档。
+#[derive(Deserialize, schemars::JsonSchema)]
+struct PreCompressParams {
+    /// 会话 ID
+    #[schemars(description = "会话 ID（约定 {客户端前缀}-{项目名}-{日期}，如 trae-myapp-20260707）")]
+    session_id: String,
+    /// 完整上下文字符串
+    #[schemars(description = "完整上下文字符串。客户端 dump 整个对话或 LLM 拼接关键内容。支持 JSON 数组([{user_message,llm_message}]) 或 User:/Assistant: 分隔符格式，无法识别时仅存 raw_context 不阻塞")]
+    full_context: String,
+    /// 客户端估算的原始 token 数（可选）
+    #[schemars(description = "客户端估算的原始 token 数，用于反馈循环。未传时服务端按 full_context.len()/3 估算")]
+    #[serde(default)]
+    estimated_tokens: Option<usize>,
+    /// 预设配置（可选，与 archive 的 PresetParams 一致）
+    #[schemars(description = "预设配置（可选，传入后应用 archive_threshold + summary_template 覆盖默认行为）")]
+    #[serde(default)]
+    preset: Option<PresetParams>,
+    /// 任务状态快照（可选，与 archive 的 task_state_snapshot 一致）
+    #[schemars(description = "任务状态快照（可选）。传入后持久化到 session_state.json，下次 prompt 时返回。用于压缩后校准 Trae Summary 第8章节 Current Work")]
+    #[serde(default)]
+    task_state_snapshot: Option<TaskStateSnapshotParams>,
+    /// 项目 ID（可选）
+    #[schemars(description = "项目 ID（可选，用于项目级隔离）")]
+    #[serde(default)]
+    project_id: Option<String>,
+}
+
+/// pre_compress_hook 返回结果（v2.34 新增）
+///
+/// 与 archive 的 JSON 返回结构对等，额外包含 `raw_context_path` /
+/// `parse_success` / `parsed_turns_count` 三个 pre_compress 特有字段。
+///
+/// 序列化为 JSON 字符串后通过 MCP tool 返回（与 archive 一致）。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct PreCompressResult {
+    /// 钩子 ID（UUID v4，用于后续 retrieve / raw_context 检索）
+    pub hook_id: String,
+    /// raw_context 文件相对路径（如 sessions/{sid}/raw_contexts/{hook_id}.txt）
+    pub raw_context_path: String,
+    /// 是否成功解析 turns（false 表示仅存 raw_context，未走 Archiver）
+    pub parse_success: bool,
+    /// 解析出的轮次数（0 表示未解析或解析失败）
+    pub parsed_turns_count: usize,
+    /// 归档的 token 数（parse_success=true 时为 Archiver 估算；false 时等于 estimated_total_tokens）
+    pub archived_tokens: usize,
+    /// 估算的累计 token 数（客户端传入或服务端按 len/3 估算）
+    pub estimated_total_tokens: usize,
+    /// 当前 preset 的归档阈值（token 数）
+    pub threshold: usize,
+    /// 当前占比百分比（archived_tokens / threshold * 100，四舍五入）
+    pub threshold_ratio_percent: u64,
+    /// 人类可读建议（含 parse_success 状态 + token 反馈）
+    pub suggestion: String,
+    /// 归档时间（ISO 8601 / RFC 3339）
+    pub archived_at: String,
+}
+
 /// retrieve tool 参数
 #[derive(Deserialize, schemars::JsonSchema)]
 struct RetrieveParams {
@@ -2112,6 +2172,311 @@ impl HippocampusMcp {
             .unwrap_or_default();
 
         Ok(content)
+    }
+
+    // ========================================================================
+    // v2.34：pre_compress_hook 工具（压缩前一次性完整归档）
+    // ========================================================================
+    //
+    // 与 archive 互补：
+    // - archive：日常归档，输入结构化 turns_json
+    // - pre_compress_hook：压缩前一次性完整归档，输入 full_context 字符串
+    //
+    // 双轨处理（spec 第五章）：
+    // 1. raw_context 永远先存（失败才阻塞返回 500）
+    // 2. 尝试解析 turns：成功复用 Archiver 归档；失败仅存 raw_context（parse_success=false）
+    //
+    // 与 archive 共享 Archiver 逻辑（preset 应用 / summary_generator 注入 /
+    // task_state_snapshot 写入），通过私有辅助方法 archive_parsed_turns 提取公共流程。
+
+    /// 压缩前一次性完整归档（v2.34 新增）。
+    ///
+    /// 当 LLM 感知到即将被压缩时调用（伪钩子增强）：
+    /// - 用户明确说"压缩上下文" / "上下文好长"
+    /// - 上次 archive 返回的 threshold_ratio_percent >= 90
+    /// - 长任务执行中预判上下文即将超限
+    ///
+    /// 与 archive 的区别：接收完整上下文字符串而非结构化 turns，双轨存储
+    /// （raw_context + 解析 turns）。内部复用 Archiver 生成可检索的 IndexHook，
+    /// 并原样保留完整上下文。解析失败时仅存 raw_context，不阻塞（parse_success=false）。
+    #[tool(description = "压缩前一次性完整归档。当 LLM 感知到即将被压缩（用户告知 / 客户端显示压缩进度 / 预判上下文超限 / 上次 archive 返回 threshold_ratio_percent >= 90）时调用。与 archive 的区别：接收完整上下文字符串而非结构化 turns，双轨存储（raw_context + 解析 turns）。内部复用 Archiver 生成可检索的 IndexHook，并原样保留完整上下文。支持 JSON 数组（[{user_message,llm_message}]）或 User:/Assistant: 分隔符格式，无法识别时仅存 raw_context 不阻塞。返回 hook_id / raw_context_path / parse_success / parsed_turns_count / archived_tokens / estimated_total_tokens / threshold / threshold_ratio_percent / suggestion / archived_at。")]
+    async fn pre_compress_hook(
+        &self,
+        Parameters(params): Parameters<PreCompressParams>,
+    ) -> Result<String, McpError> {
+        // 1. 生成 hook_id（提前生成，用于 raw_context 文件命名 + 后续 IndexHook 关联）
+        let hook_id = uuid::Uuid::new_v4().to_string();
+
+        // 2. 写 raw_context（spec 第七章：永远先存，失败才阻塞返回错误）
+        let storage = self.create_storage();
+        let raw_context_path = storage
+            .write_raw_context(&params.session_id, &hook_id, &params.full_context)
+            .await
+            .map_err(|e| {
+                McpError::internal_error(
+                    format!(
+                        "写 raw_context 失败: {e}\n\n\
+                         raw_context 是 pre_compress_hook 的核心兜底，失败则阻塞返回。\
+                         后续解析/归档步骤不会执行。"
+                    ),
+                    None,
+                )
+            })?;
+
+        // 3. 估算 token（用 full_context 字符数 / 3，或客户端传入的 estimated_tokens）
+        let estimated_total_tokens = params
+            .estimated_tokens
+            .unwrap_or_else(|| params.full_context.len() / 3);
+
+        // 4. 尝试解析 turns（context_parser 支持 JSON 数组 + User:/Assistant: 分隔符）
+        let parse_result = hippocampus_core::context_parser::parse_context(&params.full_context);
+
+        // 5. 根据解析结果走不同分支（spec 第五章数据流）
+        let (archived_tokens, parsed_turns_count, parse_success) = match parse_result {
+            Some(parsed) => {
+                // 5a. 解析成功：复用 Archiver 归档（应用 preset + 写 task_state_snapshot）
+                let turns_count = parsed.turns.len();
+                match self
+                    .archive_parsed_turns(
+                        &params.session_id,
+                        params.project_id.as_deref(),
+                        parsed.turns,
+                        &params.preset,
+                        &params.task_state_snapshot,
+                    )
+                    .await
+                {
+                    Ok(tokens) => (tokens, turns_count, true),
+                    Err(e) => {
+                        // Archiver 失败，降级为仅 raw_context（spec 7.1：不阻塞）
+                        tracing::warn!(
+                            session_id = %params.session_id,
+                            hook_id = %hook_id,
+                            error = %e,
+                            "Archiver 归档失败，降级为仅 raw_context（parse_success=false）"
+                        );
+                        (estimated_total_tokens, 0, false)
+                    }
+                }
+            }
+            None => {
+                // 5b. 解析失败：仅存 raw_context（不阻塞）
+                tracing::info!(
+                    session_id = %params.session_id,
+                    hook_id = %hook_id,
+                    "full_context 解析失败（非 JSON 数组、无 User:/Assistant: 标记），仅存 raw_context"
+                );
+                (estimated_total_tokens, 0, false)
+            }
+        };
+
+        // 6. 计算 threshold / ratio / suggestion（与 archive 反馈循环一致）
+        let threshold = self.get_archive_threshold(&params.preset);
+        let ratio = if threshold > 0 {
+            (archived_tokens as f64 / threshold as f64 * 100.0).round() as u64
+        } else {
+            0
+        };
+        let suggestion = if parse_success {
+            format!(
+                "压缩前归档完成，共 {} 轮，原始 ~{} tokens（阈值 {}，当前 {}%）。可安全压缩。",
+                parsed_turns_count, estimated_total_tokens, threshold, ratio
+            )
+        } else {
+            format!(
+                "压缩前归档完成（仅 raw_context，解析失败），原始 ~{} tokens（阈值 {}，当前 {}%）。可安全压缩。",
+                estimated_total_tokens, threshold, ratio
+            )
+        };
+
+        let result = PreCompressResult {
+            hook_id,
+            raw_context_path,
+            parse_success,
+            parsed_turns_count,
+            archived_tokens,
+            estimated_total_tokens,
+            threshold,
+            threshold_ratio_percent: ratio,
+            suggestion,
+            archived_at: chrono::Utc::now().to_rfc3339(),
+        };
+
+        let result_str = serde_json::to_string(&result).map_err(|e| {
+            McpError::internal_error(format!("序列化 PreCompressResult 失败: {e}"), None)
+        })?;
+
+        Ok(result_str)
+    }
+
+    /// 解析成功后复用 Archiver 归档 turns（v2.34 新增，私有辅助方法）。
+    ///
+    /// 提取 archive 方法的公共逻辑：构建 Archiver + 应用 preset + 注入 summary_generator
+    /// + 写 task_state_snapshot。失败时调用方应降级为仅 raw_context（parse_success=false）。
+    ///
+    /// 返回值为归档后的 token_count（IndexHook.token_count），用于反馈循环。
+    async fn archive_parsed_turns(
+        &self,
+        session_id: &str,
+        project_id: Option<&str>,
+        turns: Vec<MessageTurn>,
+        preset: &Option<PresetParams>,
+        task_state_snapshot: &Option<TaskStateSnapshotParams>,
+    ) -> Result<usize, String> {
+        // v2.33：场景识别（仅首次 archive 时识别，后续读 session_meta 跳过）
+        // 优先级：用户显式 preset.scenario > session_meta > 识别 > Agent 默认
+        // 识别失败不阻塞，降级到 Agent 默认场景（与 archive 一致）
+        let effective_scenario_name: Option<String> = if let Some(detector) = &self.scenario_detector
+        {
+            let family = self
+                .combined_profile
+                .as_ref()
+                .and_then(|cp| cp.agent.as_ref())
+                .map(|a| a.family.clone())
+                .unwrap_or(hippocampus_agents::AgentFamily::Custom("unknown".to_string()));
+
+            let user_explicit = preset.as_ref().and_then(|p| p.scenario.as_deref());
+
+            let storage_for_detect = self.create_storage();
+            let scenario = hippocampus_presets::resolve_effective_scenario(
+                storage_for_detect.as_ref(),
+                session_id,
+                user_explicit,
+                &family,
+                detector.as_ref(),
+                &turns,
+            )
+            .await;
+            Some(hippocampus_presets::scenario_to_str(&scenario))
+        } else {
+            // 未注入识别器：保留原行为（preset.scenario 或 None）
+            preset.as_ref().and_then(|p| p.scenario.clone())
+        };
+
+        // 构建 preset（与 archive 一致：preset > 识别场景 > 默认）
+        let (archive_threshold, summary_template) = if let Some(preset_req) = preset {
+            let combined = hippocampus_presets::build_from_strings(
+                preset_req.agent.as_deref(),
+                preset_req.scenario.as_deref(),
+                preset_req.model.as_deref(),
+                preset_req.archive_threshold,
+                preset_req.summary_template.as_deref(),
+            )
+            .map_err(|e| format!("预设构建失败: {e}"))?;
+            (
+                Some(combined.archive_threshold()),
+                Some(combined.summary_template().to_string()),
+            )
+        } else if let Some(scenario_name) = effective_scenario_name {
+            // 无 preset 但识别到场景 → 用识别的场景 build
+            let combined = hippocampus_presets::build_from_strings(
+                None,
+                Some(&scenario_name),
+                None,
+                None,
+                None,
+            )
+            .map_err(|e| format!("识别场景构建预设失败: {e}"))?;
+            (
+                Some(combined.archive_threshold()),
+                Some(combined.summary_template().to_string()),
+            )
+        } else {
+            (None, None)
+        };
+
+        let storage = self.create_storage();
+        let config = if let Some(threshold) = archive_threshold {
+            ArchiveConfig {
+                token_threshold: threshold,
+                force_truncate_limit: threshold * 3 / 2,
+                wait_for_turn_completion: true,
+            }
+        } else {
+            ArchiveConfig::default()
+        };
+        let storage_for_snapshot = storage.clone();
+        let mut archiver = Archiver::new(
+            config,
+            storage,
+            session_id,
+            project_id.map(|s| s.to_string()),
+        );
+
+        // 注入 summary_generator（若注入）
+        if let Some(gen) = &self.summary_generator {
+            archiver = archiver.with_summary_generator(gen.clone());
+        }
+
+        // 注入 summary_template（若构建出）
+        if let Some(tpl) = summary_template {
+            archiver = archiver.with_summary_template_override(tpl);
+        }
+
+        for turn in turns {
+            archiver.push_turn(turn);
+        }
+
+        let (_, hook) = archiver
+            .archive()
+            .await
+            .map_err(|e| format!("归档失败: {e}"))?;
+
+        // 写 task_state_snapshot（若有，与 archive 一致：失败不影响归档结果）
+        if let Some(snap) = task_state_snapshot {
+            let snapshot = hippocampus_core::model::TaskStateSnapshot {
+                current_task: snap.current_task.clone(),
+                completed_steps: snap.completed_steps.clone(),
+                in_progress_step: snap.in_progress_step.clone(),
+                next_step: snap.next_step.clone(),
+                snapshot_at: chrono::Utc::now(),
+            };
+            if let Err(e) = storage_for_snapshot
+                .write_session_state(session_id, &snapshot)
+                .await
+            {
+                tracing::warn!(
+                    session_id = %session_id,
+                    error = %e,
+                    "task_state_snapshot 持久化失败（不影响归档结果）"
+                );
+            }
+        }
+
+        // 返回归档后的 token_count（IndexHook.token_count，供反馈循环）
+        Ok(hook.token_count)
+    }
+
+    /// 获取当前 archive 阈值（v2.34 新增，私有辅助方法）。
+    ///
+    /// 优先级（与 archive 一致）：
+    /// 1. preset.archive_threshold（用户显式覆盖，最高优先级）
+    /// 2. preset 构建的 CombinedProfile.archive_threshold()
+    /// 3. self.combined_profile()（启动时注入的 CombinedProfile）
+    /// 4. 默认 120000
+    fn get_archive_threshold(&self, preset: &Option<PresetParams>) -> usize {
+        if let Some(preset_req) = preset {
+            // 用户显式 archive_threshold 最高优先级
+            if let Some(t) = preset_req.archive_threshold {
+                return t;
+            }
+            // 用 preset 构建 CombinedProfile（仅取 archive_threshold，不传 user_override）
+            if let Ok(combined) = hippocampus_presets::build_from_strings(
+                preset_req.agent.as_deref(),
+                preset_req.scenario.as_deref(),
+                preset_req.model.as_deref(),
+                None,
+                preset_req.summary_template.as_deref(),
+            ) {
+                return combined.archive_threshold();
+            }
+        }
+        // 启动时注入的 CombinedProfile
+        if let Some(cp) = self.combined_profile() {
+            return cp.archive_threshold();
+        }
+        // 默认阈值（与 ArchiveConfig::default().token_threshold 一致）
+        120000
     }
 }
 
