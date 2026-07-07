@@ -6,6 +6,7 @@
 resolver = "2"
 members = [
     "crates/hippocampus-core",
+    "crates/hippocampus-core-logic",
     "crates/hippocampus-models",
     "crates/hippocampus-scenarios",
     "crates/hippocampus-windows",
