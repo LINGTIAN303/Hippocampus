@@ -450,7 +450,7 @@ struct TaskStateSnapshotParams {
 /// 与 archive 的 ArchiveParams 字段集对等，但用 `full_context`（完整字符串）
 /// 替代 `turns_json`（结构化轮次），实现压缩前一次性完整归档。
 #[derive(Deserialize, schemars::JsonSchema)]
-struct PreCompressParams {
+pub struct PreCompressParams {
     /// 会话 ID
     #[schemars(description = "会话 ID（约定 {客户端前缀}-{项目名}-{日期}，如 trae-myapp-20260707）")]
     session_id: String,
@@ -2200,7 +2200,7 @@ impl HippocampusMcp {
     /// （raw_context + 解析 turns）。内部复用 Archiver 生成可检索的 IndexHook，
     /// 并原样保留完整上下文。解析失败时仅存 raw_context，不阻塞（parse_success=false）。
     #[tool(description = "压缩前一次性完整归档。当 LLM 感知到即将被压缩（用户告知 / 客户端显示压缩进度 / 预判上下文超限 / 上次 archive 返回 threshold_ratio_percent >= 90）时调用。与 archive 的区别：接收完整上下文字符串而非结构化 turns，双轨存储（raw_context + 解析 turns）。内部复用 Archiver 生成可检索的 IndexHook，并原样保留完整上下文。支持 JSON 数组（[{user_message,llm_message}]）或 User:/Assistant: 分隔符格式，无法识别时仅存 raw_context 不阻塞。返回 hook_id / raw_context_path / parse_success / parsed_turns_count / archived_tokens / estimated_total_tokens / threshold / threshold_ratio_percent / suggestion / archived_at。")]
-    async fn pre_compress_hook(
+    pub async fn pre_compress_hook(
         &self,
         Parameters(params): Parameters<PreCompressParams>,
     ) -> Result<String, McpError> {
