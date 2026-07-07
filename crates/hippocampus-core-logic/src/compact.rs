@@ -731,9 +731,8 @@ mod tests {
     use super::*;
     use crate::model::{MessageContent, Tag};
     use crate::score::DefaultScorer;
-    use crate::storage::LocalStorage;
+    use crate::test_support::InMemoryStorage;
     use chrono::Utc;
-    use tempfile::TempDir;
     use uuid::Uuid;
 
     /// 构造测试用 MessageTurn
@@ -854,8 +853,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_weekly_merge_strips_chitchat() {
-        let tmp = TempDir::new().unwrap();
-        let storage: Arc<dyn Storage> = Arc::new(LocalStorage::new(tmp.path()));
+        let storage: Arc<dyn Storage> = Arc::new(InMemoryStorage::new());
 
         // 通过 Archiver 归档一个含寒暄的 daily 文件
         use crate::archive::Archiver;
@@ -897,8 +895,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_weekly_merge_empty_fails() {
-        let tmp = TempDir::new().unwrap();
-        let storage: Arc<dyn Storage> = Arc::new(LocalStorage::new(tmp.path()));
+        let storage: Arc<dyn Storage> = Arc::new(InMemoryStorage::new());
         let scorer: Box<dyn Scorer> = Box::new(DefaultScorer::new());
         let compactor = Compactor::new(storage, scorer, "nonexistent", None);
 
@@ -909,8 +906,7 @@ mod tests {
     /// IMP-02：weekly_merge 开启 cleanup_daily 后应删除 daily 文件和索引
     #[tokio::test]
     async fn test_imp02_weekly_merge_cleanup_daily() {
-        let tmp = TempDir::new().unwrap();
-        let storage: Arc<dyn Storage> = Arc::new(LocalStorage::new(tmp.path()));
+        let storage: Arc<dyn Storage> = Arc::new(InMemoryStorage::new());
 
         // 归档 2 个 daily 文件
         use crate::archive::Archiver;
@@ -985,8 +981,7 @@ mod tests {
     /// IMP-02：默认配置（cleanup_daily=false）应保留 daily 文件（向后兼容）
     #[tokio::test]
     async fn test_imp02_weekly_merge_default_keeps_daily() {
-        let tmp = TempDir::new().unwrap();
-        let storage: Arc<dyn Storage> = Arc::new(LocalStorage::new(tmp.path()));
+        let storage: Arc<dyn Storage> = Arc::new(InMemoryStorage::new());
 
         use crate::archive::Archiver;
         use crate::model::ArchiveConfig;
@@ -1025,8 +1020,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_monthly_evict_picks_highest_score() {
-        let tmp = TempDir::new().unwrap();
-        let storage: Arc<dyn Storage> = Arc::new(LocalStorage::new(tmp.path()));
+        let storage: Arc<dyn Storage> = Arc::new(InMemoryStorage::new());
 
         // 通过 Archiver 归档多个 weekly 文件（直接写入 weekly 目录）
         use crate::archive::Archiver;
@@ -1095,8 +1089,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_monthly_evict_no_weekly_fails() {
-        let tmp = TempDir::new().unwrap();
-        let storage: Arc<dyn Storage> = Arc::new(LocalStorage::new(tmp.path()));
+        let storage: Arc<dyn Storage> = Arc::new(InMemoryStorage::new());
         let scorer: Box<dyn Scorer> = Box::new(DefaultScorer::new());
         let compactor = Compactor::new(storage, scorer, "nonexistent", None);
 
@@ -1164,8 +1157,7 @@ mod tests {
     /// v2.22: weekly_merge 注入 SummaryGenerator 后应使用 LLM 生成的摘要
     #[tokio::test]
     async fn test_weekly_merge_with_summary_generator_uses_llm() {
-        let tmp = TempDir::new().unwrap();
-        let storage: Arc<dyn Storage> = Arc::new(LocalStorage::new(tmp.path()));
+        let storage: Arc<dyn Storage> = Arc::new(InMemoryStorage::new());
         setup_daily_files(storage.clone(), "sess-weekly-gen", 2).await;
 
         let scorer: Box<dyn Scorer> = Box::new(DefaultScorer::new());
@@ -1194,8 +1186,7 @@ mod tests {
     /// v2.22: weekly_merge LLM 失败时降级为启发式 Summary（v2.4 机械拼接）
     #[tokio::test]
     async fn test_weekly_merge_summary_generator_failure_degrades_gracefully() {
-        let tmp = TempDir::new().unwrap();
-        let storage: Arc<dyn Storage> = Arc::new(LocalStorage::new(tmp.path()));
+        let storage: Arc<dyn Storage> = Arc::new(InMemoryStorage::new());
         setup_daily_files(storage.clone(), "sess-weekly-fail", 2).await;
 
         let scorer: Box<dyn Scorer> = Box::new(DefaultScorer::new());
@@ -1222,8 +1213,7 @@ mod tests {
     /// v2.22: monthly_evict 注入 SummaryGenerator 后应使用 LLM 生成的摘要
     #[tokio::test]
     async fn test_monthly_evict_with_summary_generator_uses_llm() {
-        let tmp = TempDir::new().unwrap();
-        let storage: Arc<dyn Storage> = Arc::new(LocalStorage::new(tmp.path()));
+        let storage: Arc<dyn Storage> = Arc::new(InMemoryStorage::new());
 
         // 先归档若干 daily 文件，再执行 weekly_merge 生成 weekly 文件
         setup_daily_files(storage.clone(), "sess-monthly-gen", 2).await;
@@ -1261,8 +1251,7 @@ mod tests {
     /// v2.22: monthly_evict LLM 失败时降级为原 weekly 钩子 Summary
     #[tokio::test]
     async fn test_monthly_evict_summary_generator_failure_degrades_gracefully() {
-        let tmp = TempDir::new().unwrap();
-        let storage: Arc<dyn Storage> = Arc::new(LocalStorage::new(tmp.path()));
+        let storage: Arc<dyn Storage> = Arc::new(InMemoryStorage::new());
 
         // 先归档 + weekly_merge 生成 weekly 文件
         setup_daily_files(storage.clone(), "sess-monthly-fail", 2).await;

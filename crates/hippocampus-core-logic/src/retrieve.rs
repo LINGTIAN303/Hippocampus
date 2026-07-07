@@ -884,9 +884,8 @@ mod tests {
     use super::*;
     use crate::archive::Archiver;
     use crate::model::{ArchiveConfig, MessageContent, MessageTurn, Tag};
-    use crate::storage::LocalStorage;
+    use crate::test_support::InMemoryStorage;
     use chrono::Utc;
-    use tempfile::TempDir;
     use uuid::Uuid;
 
     /// 构造测试用 MessageTurn
@@ -913,8 +912,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_retriever_empty_summaries() {
-        let tmp = TempDir::new().unwrap();
-        let storage: Arc<dyn Storage> = Arc::new(LocalStorage::new(tmp.path()));
+        let storage: Arc<dyn Storage> = Arc::new(InMemoryStorage::new());
         let retriever = Retriever::new(storage, "sess-empty", None);
 
         let summaries = retriever.get_summaries().await.unwrap();
@@ -926,8 +924,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_retriever_after_archive() {
-        let tmp = TempDir::new().unwrap();
-        let storage: Arc<dyn Storage> = Arc::new(LocalStorage::new(tmp.path()));
+        let storage: Arc<dyn Storage> = Arc::new(InMemoryStorage::new());
 
         // 用 Archiver 归档一次
         let config = ArchiveConfig {
@@ -959,8 +956,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_retriever_render_prompt() {
-        let tmp = TempDir::new().unwrap();
-        let storage: Arc<dyn Storage> = Arc::new(LocalStorage::new(tmp.path()));
+        let storage: Arc<dyn Storage> = Arc::new(InMemoryStorage::new());
 
         let config = ArchiveConfig {
             token_threshold: 100,
@@ -984,8 +980,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_retriever_retrieve_memory() {
-        let tmp = TempDir::new().unwrap();
-        let storage: Arc<dyn Storage> = Arc::new(LocalStorage::new(tmp.path()));
+        let storage: Arc<dyn Storage> = Arc::new(InMemoryStorage::new());
 
         let config = ArchiveConfig {
             token_threshold: 100,
@@ -1012,8 +1007,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_retriever_retrieve_nonexistent() {
-        let tmp = TempDir::new().unwrap();
-        let storage: Arc<dyn Storage> = Arc::new(LocalStorage::new(tmp.path()));
+        let storage: Arc<dyn Storage> = Arc::new(InMemoryStorage::new());
         let retriever = Retriever::new(storage, "sess-r4", None);
 
         let result = retriever.retrieve_memory("nonexistent-id").await;
@@ -1022,8 +1016,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_retriever_multiple_archives() {
-        let tmp = TempDir::new().unwrap();
-        let storage: Arc<dyn Storage> = Arc::new(LocalStorage::new(tmp.path()));
+        let storage: Arc<dyn Storage> = Arc::new(InMemoryStorage::new());
 
         let config = ArchiveConfig {
             token_threshold: 100,
@@ -1069,8 +1062,7 @@ mod tests {
     #[tokio::test]
     async fn test_imp01_access_count_increments_on_retrieve() {
         // IMP-01：retrieve 成功后 access_count 应自增
-        let tmp = TempDir::new().unwrap();
-        let storage: Arc<dyn Storage> = Arc::new(LocalStorage::new(tmp.path()));
+        let storage: Arc<dyn Storage> = Arc::new(InMemoryStorage::new());
 
         let config = ArchiveConfig {
             token_threshold: 100,
@@ -1152,8 +1144,7 @@ mod tests {
     #[tokio::test]
     async fn test_imp06_filter_hooks_by_keyword() {
         // IMP-06：按关键词筛选钩子
-        let tmp = TempDir::new().unwrap();
-        let storage: Arc<dyn Storage> = Arc::new(LocalStorage::new(tmp.path()));
+        let storage: Arc<dyn Storage> = Arc::new(InMemoryStorage::new());
 
         let config = ArchiveConfig {
             token_threshold: 100,
@@ -1205,8 +1196,7 @@ mod tests {
     #[tokio::test]
     async fn test_imp07_render_with_query_relevance_order() {
         // IMP-07：按查询相关性排序渲染
-        let tmp = TempDir::new().unwrap();
-        let storage: Arc<dyn Storage> = Arc::new(LocalStorage::new(tmp.path()));
+        let storage: Arc<dyn Storage> = Arc::new(InMemoryStorage::new());
 
         let config = ArchiveConfig {
             token_threshold: 100,
@@ -1257,8 +1247,7 @@ mod tests {
     #[tokio::test]
     async fn test_imp07_render_with_empty_query_degrades() {
         // IMP-07：空 query 退化为时间排序
-        let tmp = TempDir::new().unwrap();
-        let storage: Arc<dyn Storage> = Arc::new(LocalStorage::new(tmp.path()));
+        let storage: Arc<dyn Storage> = Arc::new(InMemoryStorage::new());
 
         let config = ArchiveConfig {
             token_threshold: 100,

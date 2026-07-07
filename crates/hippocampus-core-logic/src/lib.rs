@@ -29,6 +29,9 @@ pub mod serialization;
 pub mod storage;
 pub mod vector;
 
+#[cfg(test)]
+pub mod test_support;
+
 /// Crate 级错误类型
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum Error {

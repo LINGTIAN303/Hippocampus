@@ -345,9 +345,8 @@ impl Archiver {
 mod tests {
     use super::*;
     use crate::model::{MessageContent, Tag};
-    use crate::storage::LocalStorage;
+    use crate::test_support::InMemoryStorage;
     use chrono::Utc;
-    use tempfile::TempDir;
     use uuid::Uuid;
 
     /// 构造测试用 MessageTurn
@@ -374,9 +373,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_archiver_push_and_threshold() {
-        let tmp = TempDir::new().unwrap();
         let storage: Arc<dyn Storage> =
-            Arc::new(LocalStorage::new(tmp.path()));
+            Arc::new(InMemoryStorage::new());
         let config = ArchiveConfig {
             token_threshold: 100,
             force_truncate_limit: 150,
@@ -394,9 +392,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_archiver_force_truncate() {
-        let tmp = TempDir::new().unwrap();
         let storage: Arc<dyn Storage> =
-            Arc::new(LocalStorage::new(tmp.path()));
+            Arc::new(InMemoryStorage::new());
         let config = ArchiveConfig {
             token_threshold: 100,
             force_truncate_limit: 150,
@@ -411,9 +408,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_archiver_archive_full_flow() {
-        let tmp = TempDir::new().unwrap();
         let storage: Arc<dyn Storage> =
-            Arc::new(LocalStorage::new(tmp.path()));
+            Arc::new(InMemoryStorage::new());
         let config = ArchiveConfig {
             token_threshold: 100,
             force_truncate_limit: 150,
@@ -462,9 +458,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_archiver_archive_truncated() {
-        let tmp = TempDir::new().unwrap();
         let storage: Arc<dyn Storage> =
-            Arc::new(LocalStorage::new(tmp.path()));
+            Arc::new(InMemoryStorage::new());
         let config = ArchiveConfig {
             token_threshold: 100,
             force_truncate_limit: 150,
@@ -483,9 +478,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_archiver_multiple_archives() {
-        let tmp = TempDir::new().unwrap();
         let storage: Arc<dyn Storage> =
-            Arc::new(LocalStorage::new(tmp.path()));
+            Arc::new(InMemoryStorage::new());
         let config = ArchiveConfig {
             token_threshold: 100,
             force_truncate_limit: 150,
@@ -521,9 +515,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_archiver_empty_archive_fails() {
-        let tmp = TempDir::new().unwrap();
         let storage: Arc<dyn Storage> =
-            Arc::new(LocalStorage::new(tmp.path()));
+            Arc::new(InMemoryStorage::new());
         let config = ArchiveConfig::default();
         let mut archiver = Archiver::new(config, storage, "sess-empty", None);
 
@@ -581,8 +574,7 @@ mod tests {
     /// 注入 SummaryGenerator 后，archive() 应使用 LLM 生成的摘要
     #[tokio::test]
     async fn test_archive_with_summary_generator() {
-        let tmp = TempDir::new().unwrap();
-        let storage: Arc<dyn Storage> = Arc::new(LocalStorage::new(tmp.path()));
+        let storage: Arc<dyn Storage> = Arc::new(InMemoryStorage::new());
         let config = ArchiveConfig {
             token_threshold: 100,
             force_truncate_limit: 150,
@@ -606,8 +598,7 @@ mod tests {
     /// LLM 摘要生成失败时，降级为启发式 Summary::from_title
     #[tokio::test]
     async fn test_archive_summary_generator_failure_degrades() {
-        let tmp = TempDir::new().unwrap();
-        let storage: Arc<dyn Storage> = Arc::new(LocalStorage::new(tmp.path()));
+        let storage: Arc<dyn Storage> = Arc::new(InMemoryStorage::new());
         let config = ArchiveConfig {
             token_threshold: 100,
             force_truncate_limit: 150,
@@ -631,8 +622,7 @@ mod tests {
     /// 未注入 SummaryGenerator 时，使用启发式摘要（向后兼容）
     #[tokio::test]
     async fn test_archive_without_summary_generator_uses_heuristic() {
-        let tmp = TempDir::new().unwrap();
-        let storage: Arc<dyn Storage> = Arc::new(LocalStorage::new(tmp.path()));
+        let storage: Arc<dyn Storage> = Arc::new(InMemoryStorage::new());
         let config = ArchiveConfig {
             token_threshold: 100,
             force_truncate_limit: 150,
@@ -693,8 +683,7 @@ mod tests {
     /// `generate_summary_with_template(Some(template))` 而非 `generate_summary`
     #[tokio::test]
     async fn test_archive_with_summary_template_override() {
-        let tmp = TempDir::new().unwrap();
-        let storage: Arc<dyn Storage> = Arc::new(LocalStorage::new(tmp.path()));
+        let storage: Arc<dyn Storage> = Arc::new(InMemoryStorage::new());
         let config = ArchiveConfig {
             token_threshold: 100,
             force_truncate_limit: 150,
@@ -719,8 +708,7 @@ mod tests {
     /// `generate_summary`（向后兼容）
     #[tokio::test]
     async fn test_archive_without_template_override_uses_default() {
-        let tmp = TempDir::new().unwrap();
-        let storage: Arc<dyn Storage> = Arc::new(LocalStorage::new(tmp.path()));
+        let storage: Arc<dyn Storage> = Arc::new(InMemoryStorage::new());
         let config = ArchiveConfig {
             token_threshold: 100,
             force_truncate_limit: 150,
@@ -747,8 +735,7 @@ mod tests {
     /// 注入 override_hook_id 后，archive() 返回的 IndexHook.id 应等于注入值
     #[tokio::test]
     async fn test_archive_with_override_hook_id() {
-        let tmp = TempDir::new().unwrap();
-        let storage: Arc<dyn Storage> = Arc::new(LocalStorage::new(tmp.path()));
+        let storage: Arc<dyn Storage> = Arc::new(InMemoryStorage::new());
         let config = ArchiveConfig {
             token_threshold: 100,
             force_truncate_limit: 150,
@@ -767,8 +754,7 @@ mod tests {
     /// 注入 archive_reason 后，IndexHook.archive_reason 应等于注入值
     #[tokio::test]
     async fn test_archive_with_archive_reason() {
-        let tmp = TempDir::new().unwrap();
-        let storage: Arc<dyn Storage> = Arc::new(LocalStorage::new(tmp.path()));
+        let storage: Arc<dyn Storage> = Arc::new(InMemoryStorage::new());
         let config = ArchiveConfig {
             token_threshold: 100,
             force_truncate_limit: 150,
@@ -786,8 +772,7 @@ mod tests {
     /// 注入 raw_context_path 后，IndexHook.raw_context_path 应等于注入值
     #[tokio::test]
     async fn test_archive_with_raw_context_path() {
-        let tmp = TempDir::new().unwrap();
-        let storage: Arc<dyn Storage> = Arc::new(LocalStorage::new(tmp.path()));
+        let storage: Arc<dyn Storage> = Arc::new(InMemoryStorage::new());
         let config = ArchiveConfig {
             token_threshold: 100,
             force_truncate_limit: 150,
@@ -806,8 +791,7 @@ mod tests {
     /// 未注入覆盖时，IndexHook 字段保持默认（向后兼容）
     #[tokio::test]
     async fn test_archive_without_overrides_backward_compatible() {
-        let tmp = TempDir::new().unwrap();
-        let storage: Arc<dyn Storage> = Arc::new(LocalStorage::new(tmp.path()));
+        let storage: Arc<dyn Storage> = Arc::new(InMemoryStorage::new());
         let config = ArchiveConfig {
             token_threshold: 100,
             force_truncate_limit: 150,
@@ -829,8 +813,7 @@ mod tests {
     /// 非法 UUID 的 override_hook_id 应降级为内部生成的 uuid（不 panic）
     #[tokio::test]
     async fn test_archive_with_invalid_override_hook_id_falls_back() {
-        let tmp = TempDir::new().unwrap();
-        let storage: Arc<dyn Storage> = Arc::new(LocalStorage::new(tmp.path()));
+        let storage: Arc<dyn Storage> = Arc::new(InMemoryStorage::new());
         let config = ArchiveConfig {
             token_threshold: 100,
             force_truncate_limit: 150,
