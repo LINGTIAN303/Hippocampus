@@ -404,6 +404,42 @@ impl<T: Storage> Storage for CachedStorage<T> {
     ) -> crate::Result<Option<SessionMeta>> {
         self.inner.read_session_meta(session_id).await
     }
+
+    // ========================================================================
+    // raw_context 原始上下文（v2.34 新增，透传给 inner）
+    // ========================================================================
+
+    /// 透传 raw_context 写入到 inner（v2.34 新增）
+    ///
+    /// CachedStorage 不单独缓存 raw_context（体积大，且仅在压缩后重建时读取一次）。
+    async fn write_raw_context(
+        &self,
+        session_id: &str,
+        hook_id: &str,
+        content: &str,
+    ) -> crate::Result<String> {
+        self.inner
+            .write_raw_context(session_id, hook_id, content)
+            .await
+    }
+
+    /// 透传 raw_context 读取到 inner（v2.34 新增）
+    async fn read_raw_context(
+        &self,
+        session_id: &str,
+        hook_id: &str,
+    ) -> crate::Result<String> {
+        self.inner.read_raw_context(session_id, hook_id).await
+    }
+
+    /// 透传 raw_context 删除到 inner（v2.34 新增）
+    async fn delete_raw_context(
+        &self,
+        session_id: &str,
+        hook_id: &str,
+    ) -> crate::Result<()> {
+        self.inner.delete_raw_context(session_id, hook_id).await
+    }
 }
 
 // ============================================================================
