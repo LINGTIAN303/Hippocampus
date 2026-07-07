@@ -118,7 +118,44 @@ CREATE TABLE IF NOT EXISTS session_meta (
     method      TEXT NOT NULL,
     detected_at TEXT NOT NULL
 );
+
+-- v2.34: raw_contexts 表（pre_compress_hook 持久化完整原始上下文）
+CREATE TABLE IF NOT EXISTS raw_contexts (
+    session_id  TEXT NOT NULL,
+    hook_id     TEXT NOT NULL,
+    content     TEXT NOT NULL,
+    stored_at   TEXT NOT NULL,
+    PRIMARY KEY (session_id, hook_id)
+);
 "#;
+
+/// v2.34 schema 迁移：memories 表新增 archive_reason / raw_context_path 列
+///
+/// SQLite 的 `ALTER TABLE ADD COLUMN` 不支持 `IF NOT EXISTS`，需用
+/// `pragma_table_info` 检查列是否已存在后再 ALTER，确保幂等。
+///
+/// 在每个新连接创建时调用（with_init），幂等安全。
+fn run_v2_34_migrations(conn: &mut rusqlite::Connection) -> rusqlite::Result<()> {
+    // 检查 memories 表的所有列名
+    let mut stmt = conn.prepare("SELECT name FROM pragma_table_info('memories')")?;
+    let existing_cols: Vec<String> = stmt
+        .query_map([], |row| row.get::<_, String>(0))?
+        .filter_map(|r| r.ok())
+        .collect();
+    drop(stmt); // 释放 stmt 借用，允许后续 ALTER
+
+    // 若 archive_reason 列不存在则添加
+    if !existing_cols.contains(&"archive_reason".to_string()) {
+        conn.execute("ALTER TABLE memories ADD COLUMN archive_reason TEXT", [])?;
+    }
+
+    // 若 raw_context_path 列不存在则添加
+    if !existing_cols.contains(&"raw_context_path".to_string()) {
+        conn.execute("ALTER TABLE memories ADD COLUMN raw_context_path TEXT", [])?;
+    }
+
+    Ok(())
+}
 
 impl SqliteStorage {
     /// 创建新的 SQLite 存储后端（默认 JSON 格式）
@@ -150,7 +187,8 @@ impl SqliteStorage {
 
         let db_path = project_dir.join("memories.db");
         let manager = SqliteConnectionManager::file(&db_path).with_init(|c| {
-            c.execute_batch(INIT_SQL)
+            c.execute_batch(INIT_SQL)?;
+            run_v2_34_migrations(c)
         });
 
         let pool = Pool::builder()
@@ -1018,6 +1056,95 @@ impl Storage for SqliteStorage {
         })
         .await
     }
+
+    // ========================================================================
+    // raw_context 原始上下文（v2.34 新增，pre_compress_hook 使用）
+    // ========================================================================
+
+    /// 写入 raw_context（v2.34 新增，pre_compress_hook 调用）
+    ///
+    /// INSERT OR REPLACE 语义：同一 (session_id, hook_id) 重复写入会覆盖。
+    /// 返回虚拟相对路径 `sessions/{session_id}/raw_contexts/{hook_id}.txt`，
+    /// 与 LocalStorage 保持一致（实际内容存储在 raw_contexts 表中）。
+    async fn write_raw_context(
+        &self,
+        session_id: &str,
+        hook_id: &str,
+        content: &str,
+    ) -> crate::Result<String> {
+        let sid = session_id.to_string();
+        let hid = hook_id.to_string();
+        let content = content.to_string();
+        let stored_at = chrono::Utc::now().to_rfc3339();
+
+        self.with_conn(move |conn| {
+            conn.execute(
+                "INSERT OR REPLACE INTO raw_contexts (session_id, hook_id, content, stored_at) VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![&sid, &hid, &content, &stored_at],
+            )
+            .map_err(|e| crate::Error::Storage(format!("写入 raw_context 失败: {}", e)))?;
+            Ok(())
+        })
+        .await?;
+
+        // 返回与 LocalStorage 一致的虚拟路径（POSIX 分隔符）
+        Ok(format!("sessions/{}/raw_contexts/{}.txt", session_id, hook_id))
+    }
+
+    /// 读取 raw_context（v2.34 新增）
+    ///
+    /// 按 (session_id, hook_id) 检索。记录不存在时返回 `Err`（与 LocalStorage 行为一致，
+    /// 因为压缩后重建时 raw_context 缺失是异常情况，应让调用方感知）。
+    async fn read_raw_context(
+        &self,
+        session_id: &str,
+        hook_id: &str,
+    ) -> crate::Result<String> {
+        let sid = session_id.to_string();
+        let hid = hook_id.to_string();
+
+        self.with_conn(move |conn| {
+            let content: String = conn
+                .query_row(
+                    "SELECT content FROM raw_contexts WHERE session_id = ?1 AND hook_id = ?2",
+                    rusqlite::params![&sid, &hid],
+                    |row| row.get(0),
+                )
+                .map_err(|e| match e {
+                    rusqlite::Error::QueryReturnedNoRows => {
+                        crate::Error::Storage(format!(
+                            "raw_context 不存在: session={}, hook={}",
+                            sid, hid
+                        ))
+                    }
+                    other => crate::Error::Storage(format!("查询 raw_context 失败: {}", other)),
+                })?;
+            Ok(content)
+        })
+        .await
+    }
+
+    /// 删除 raw_context（v2.34 新增，随记忆删除级联）
+    ///
+    /// DELETE 0 行也返回 Ok(())（幂等，与 LocalStorage 行为一致）。
+    async fn delete_raw_context(
+        &self,
+        session_id: &str,
+        hook_id: &str,
+    ) -> crate::Result<()> {
+        let sid = session_id.to_string();
+        let hid = hook_id.to_string();
+
+        self.with_conn(move |conn| {
+            conn.execute(
+                "DELETE FROM raw_contexts WHERE session_id = ?1 AND hook_id = ?2",
+                rusqlite::params![&sid, &hid],
+            )
+            .map_err(|e| crate::Error::Storage(format!("删除 raw_context 失败: {}", e)))?;
+            Ok(())
+        })
+        .await
+    }
 }
 
 // ============================================================================
@@ -1730,6 +1857,165 @@ mod tests {
             assert_eq!(b.id, s.id);
             assert_eq!(b.total_tokens, s.total_tokens);
             assert_eq!(b.turns.len(), s.turns.len());
+        }
+    }
+
+    // ========================================================================
+    // v2.34 raw_context 3 方法测试（pre_compress_hook 持久化原始上下文）
+    // ========================================================================
+
+    mod v2_34_raw_context_tests {
+        use super::*;
+
+        /// 验证 raw_contexts 表存在且可查询（COUNT(*) 不报错）
+        #[tokio::test]
+        async fn test_raw_contexts_table_creation() {
+            let tmp = TempDir::new().unwrap();
+            let storage = SqliteStorage::new(tmp.path(), None).unwrap();
+
+            // 直接通过 with_conn 验证 raw_contexts 表存在
+            let count: i64 = storage
+                .with_conn(|conn| {
+                    let c: i64 = conn
+                        .query_row("SELECT COUNT(*) FROM raw_contexts", [], |row| row.get(0))
+                        .map_err(|e| {
+                            crate::Error::Storage(format!("查询 raw_contexts 失败: {}", e))
+                        })?;
+                    Ok(c)
+                })
+                .await
+                .expect("raw_contexts 表应存在且可查询");
+            assert_eq!(count, 0, "新建数据库的 raw_contexts 表应为空");
+        }
+
+        /// write → read → delete → read 失败 完整 CRUD 流程
+        #[tokio::test]
+        async fn test_raw_contexts_crud() {
+            let tmp = TempDir::new().unwrap();
+            let storage = SqliteStorage::new(tmp.path(), None).unwrap();
+
+            let session_id = "sess-crud";
+            let hook_id = "hook-crud-001";
+            let content = r#"{"turns":[{"user":"完整原始上下文"}]}"#;
+
+            // Write
+            let path = storage
+                .write_raw_context(session_id, hook_id, content)
+                .await
+                .expect("write_raw_context 应成功");
+            assert!(
+                path.contains("raw_contexts"),
+                "返回路径应包含 raw_contexts 目录, 实际: {}",
+                path
+            );
+            assert!(
+                path.contains(hook_id),
+                "返回路径应包含 hook_id, 实际: {}",
+                path
+            );
+
+            // Read
+            let read_back = storage
+                .read_raw_context(session_id, hook_id)
+                .await
+                .expect("read_raw_context 应成功");
+            assert_eq!(read_back, content, "读取内容应与写入内容一致");
+
+            // Delete
+            storage
+                .delete_raw_context(session_id, hook_id)
+                .await
+                .expect("delete_raw_context 应成功");
+
+            // Read 失败
+            let result = storage.read_raw_context(session_id, hook_id).await;
+            assert!(
+                result.is_err(),
+                "删除后读取应失败, 实际: {:?}",
+                result
+            );
+        }
+
+        /// 验证 memories 表有 archive_reason 和 raw_context_path 列
+        #[tokio::test]
+        async fn test_alter_memories_add_archive_reason_column() {
+            let tmp = TempDir::new().unwrap();
+            let storage = SqliteStorage::new(tmp.path(), None).unwrap();
+
+            let cols: Vec<String> = storage
+                .with_conn(|conn| {
+                    let mut stmt = conn
+                        .prepare("SELECT name FROM pragma_table_info('memories') ORDER BY name")
+                        .map_err(|e| {
+                            crate::Error::Storage(format!("prepare pragma_table_info 失败: {}", e))
+                        })?;
+                    let rows: Vec<String> = stmt
+                        .query_map([], |row| row.get::<_, String>(0))
+                        .map_err(|e| {
+                            crate::Error::Storage(format!("查询 pragma_table_info 失败: {}", e))
+                        })?
+                        .filter_map(|r| r.ok())
+                        .collect();
+                    Ok(rows)
+                })
+                .await
+                .expect("应能查询 memories 表的列");
+
+            assert!(
+                cols.contains(&"archive_reason".to_string()),
+                "memories 表应有 archive_reason 列, 实际列: {:?}",
+                cols
+            );
+            assert!(
+                cols.contains(&"raw_context_path".to_string()),
+                "memories 表应有 raw_context_path 列, 实际列: {:?}",
+                cols
+            );
+        }
+
+        /// 同一 hook_id 重复写入应覆盖（INSERT OR REPLACE 语义）
+        #[tokio::test]
+        async fn test_write_raw_context_overwrites_existing() {
+            let tmp = TempDir::new().unwrap();
+            let storage = SqliteStorage::new(tmp.path(), None).unwrap();
+
+            let session_id = "sess-overwrite";
+            let hook_id = "hook-overwrite-001";
+            let content_v1 = r#"{"version":1}"#;
+            let content_v2 = r#"{"version":2,"turns":[]}"#;
+
+            storage
+                .write_raw_context(session_id, hook_id, content_v1)
+                .await
+                .expect("第一次 write_raw_context 应成功");
+
+            storage
+                .write_raw_context(session_id, hook_id, content_v2)
+                .await
+                .expect("第二次 write_raw_context 应成功");
+
+            let read_back = storage
+                .read_raw_context(session_id, hook_id)
+                .await
+                .expect("read_raw_context 应成功");
+            assert_eq!(
+                read_back, content_v2,
+                "覆盖后读取应为 v2 内容, 实际: {}",
+                read_back
+            );
+        }
+
+        /// 删除不存在的 raw_context 应幂等成功（与 LocalStorage 行为一致）
+        #[tokio::test]
+        async fn test_delete_raw_context_idempotent() {
+            let tmp = TempDir::new().unwrap();
+            let storage = SqliteStorage::new(tmp.path(), None).unwrap();
+
+            // 删除不存在的记录应成功（DELETE 0 行也返回 Ok）
+            storage
+                .delete_raw_context("non-existent-sess", "non-existent-hook")
+                .await
+                .expect("删除不存在的 raw_context 应幂等成功");
         }
     }
 }
