@@ -1,0 +1,27 @@
+[package]
+name = "hippocampus-wasm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Hippocampus WASM 绑定 - 浏览器/Edge/多语言嵌入"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+hippocampus-core-logic = { path = "../hippocampus-core-logic", default-features = false, features = ["wasm"] }
+wasm-bindgen.workspace = true
+js-sys.workspace = true
+serde = { workspace = true }
+serde-wasm-bindgen.workspace = true
+wasm-bindgen-futures.workspace = true
+async-trait.workspace = true
+tokio = { version = "1.0", features = ["sync"] }
+chrono = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
