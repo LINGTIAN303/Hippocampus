@@ -67,7 +67,9 @@ pub struct SessionMeta {
 ///
 /// `update_memory` 用于批次 3 的记忆迭代更新（added/revised/deprecated facts），
 /// 默认实现返回未实现错误。
-#[async_trait::async_trait]
+// WASM 下 JsFuture 不 Send，用 ?Send 模式；native 下保持 Send 以支持多线程
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 pub trait Storage: Send + Sync {
     /// 写入记忆文件，返回 memory_id（相对路径或数据库 ID）
     async fn write_memory(&self, file: &MemoryFile) -> crate::Result<String>;

@@ -48,7 +48,9 @@ impl Default for InMemoryStorage {
     }
 }
 
-#[async_trait::async_trait]
+// 与 Storage trait 保持一致：WASM 下 ?Send，native 下 Send
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Storage for InMemoryStorage {
     async fn write_memory(&self, file: &MemoryFile) -> Result<String> {
         // 模拟 LocalStorage 的 memory_id 格式：sessions/{session_id}/{period}/{id}.json
