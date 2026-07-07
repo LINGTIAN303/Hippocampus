@@ -63,7 +63,33 @@ mcp_hippocampus.archive(
 
 > Trae/Cursor 的自动压缩机制会丢弃旧轮次，归档可保留被丢弃的内容。
 
-### 3. 用户提到过去事件：先调 semantic_search 再回复
+### 3. 上下文即将被压缩：调 pre_compress_hook 完整归档
+
+当 LLM 检测到以下压缩前兆时，**优先调用 `pre_compress_hook` 而非 `archive`**：
+
+- 客户端提示"上下文即将压缩" / "context compression"
+- 系统消息出现 "This session continues a previous conversation that lost its context"
+- LLM 主观判断上下文已接近窗口上限（如累计 token 估算接近 200K）
+- 用户手动触发压缩（如点击"压缩"按钮）
+
+调用方式：
+```
+mcp_hippocampus.pre_compress_hook(
+    session_id,                  // 必填
+    full_context,                // 必填，完整上下文字符串
+    estimated_tokens,            // 可选，估算 token 数
+    task_state_snapshot,         // 可选，任务状态快照（推荐传入）
+    project_id                   // 可选
+)
+```
+
+**与 archive 的区别**：
+- `archive`：日常归档，传入结构化 turns 数组
+- `pre_compress_hook`：压缩前一次性归档，传入完整上下文字符串，双轨处理（raw_context 原样保存 + 解析 turns 复用 Archiver）
+
+**核心价值**：即使客户端压缩丢弃了原始轮次，hippocampus 仍保留了完整的 raw_context 备份，可通过 retrieve 工具按需拉取。
+
+### 4. 用户提到过去事件：先调 semantic_search 再回复
 
 当用户消息中出现「之前」「上次」「还记得」「上次我们讨论的」「之前那个方案」等指代过去的词语时，**先调用**：
 
@@ -73,7 +99,7 @@ mcp_hippocampus.semantic_search(query, session_id, top_k=5)
 
 用用户原话作为 `query`，检索相关记忆。把检索结果作为上下文再回复用户。
 
-### 4. 用户陈述与记忆可能矛盾：先调 detect_conflicts 检测
+### 5. 用户陈述与记忆可能矛盾：先调 detect_conflicts 检测
 
 当用户陈述的事实与记忆中的记录可能冲突时（如用户说「我用的是 Python」但记忆里是 Rust），**先调用**：
 
@@ -83,7 +109,7 @@ mcp_hippocampus.detect_conflicts(session_id, hook_id, added_facts, revised_facts
 
 检测冲突。若检测到冲突，向用户确认后再更新记忆。
 
-### 5. 上下文被压缩后：执行压缩后行为协议
+### 6. 上下文被压缩后：执行压缩后行为协议
 
 当系统消息中出现以下固定文本时：
 
@@ -103,7 +129,7 @@ This session continues a previous conversation that lost its context.
 - Pending todos 状态 > Summary 第10章节建议
 - in_progress 任务必须从断点继续，禁止重复提问已完成决策
 
-### 6. project_memory 反向写入：让 hippocampus 记忆流入第7层 Memory Context
+### 7. project_memory 反向写入：让 hippocampus 记忆流入第7层 Memory Context
 
 hippocampus 维护一份 `project_memory.md` 副本（`projects/{project_id}/project_memory.md`），
 LLM 通过 `update_project_memory` 工具更新副本后，用 Write 工具将内容写入 Trae 客户端的
@@ -168,6 +194,7 @@ trae-{项目名}-{日期}
 | 会话第一次回复前 | `prompt` | 获取历史记忆摘要 |
 | 会话开始时 / 调 semantic_search 前 | `get_config` | 查询运行时配置快照（归档阈值 / Agent / scenario / **降级状态**），scope=runtime\|preset\|degraded\|all |
 | 上下文接近 400K | `archive` | 归档完整上下文（非摘要） |
+| 上下文即将被压缩 | `pre_compress_hook` | 压缩前一次性完整归档（raw_context + 解析 turns 双轨） |
 | 用户提到过去事件 | `semantic_search` | 检索相关记忆 |
 | 用户陈述与记忆矛盾 | `detect_conflicts` | 检测事实冲突 |
 | 需要查特定记忆细节 | `retrieve` | 按 hook_id 检索完整记忆 |

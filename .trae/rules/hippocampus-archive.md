@@ -23,6 +23,29 @@
 ### 4. 兜底定期归档
 每 30 轮对话主动归档一次（即使未达阈值）。
 
+### 5. 压缩前兆触发
+
+当 LLM 检测到以下压缩前兆时，优先调用 `pre_compress_hook`（而非 `archive`）：
+
+- 客户端提示"上下文即将压缩" / "context compression"
+- 系统消息出现 "This session continues a previous conversation that lost its context"
+- LLM 主观判断上下文已接近窗口上限
+- 用户手动触发压缩
+
+调用示例：
+```
+hippocampus.pre_compress_hook(
+    session_id="trae-{项目名}-{日期}",
+    full_context="完整上下文字符串",
+    estimated_tokens=150000,
+    task_state_snapshot={...}
+)
+```
+
+**与 archive 的选择优先级**：
+- 压缩前兆 → `pre_compress_hook`（双轨：raw_context + 解析 turns）
+- 日常归档（无压缩前兆）→ `archive`（结构化 turns）
+
 ## 调用示例
 
 hippocampus.archive(
