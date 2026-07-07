@@ -1,8 +1,9 @@
 # Trae 接入 MemoryCenter 记忆库 Onboarding 指南
 
-> 适用版本：MemoryCenter v2.30+ / Trae 1.x
+> 适用版本：MemoryCenter v2.37+ / Trae 1.x
 >
 > 本指南教你如何在 Trae 中接入 memory-center MCP server，让 LLM 自动获得长期记忆能力。
+> 支持两种传输模式：stdio（本地子进程，v2.3 起）+ Streamable HTTP（远程访问，v2.36 起）。
 
 ---
 
@@ -11,7 +12,7 @@
 ### 1.1 安装 memory-center-mcp 二进制
 
 ```bash
-# 从源码构建（需要 Rust 1.75+）
+# 从源码构建（需要 Rust 1.85+，rmcp 1.8 要求 edition 2024 编译器）
 git clone <memory-center-repo>
 cd memory-center
 cargo build --release -p memory-center-mcp
@@ -34,7 +35,7 @@ mkdir -p D:/memory-center-data
 
 ## 2. 在 Trae 中添加 MCP server
 
-### 2.1 通过 Trae UI 添加
+### 2.1 通过 Trae UI 添加（stdio 模式，推荐用于本地）
 
 1. 打开 Trae → 设置 → MCP 服务器
 2. 点击「添加 MCP 服务器」
@@ -47,7 +48,26 @@ mkdir -p D:/memory-center-data
 | 命令 | `D:/path/to/memory-center-mcp.exe`（替换为实际路径） |
 | 参数 | （留空） |
 
-### 2.2 环境变量配置
+### 2.2 Streamable HTTP 模式（v2.36 新增，用于远程访问）
+
+若 memory-center 部署在远程服务器（如 Web 端 Agent 接入、多客户端共享场景），可使用 Streamable HTTP 模式：
+
+```bash
+# 在远程服务器启动 Axum 服务（同时承载 REST API + MCP Streamable HTTP）
+MEMORY_CENTER_MCP_ENABLED=true MEMORY_CENTER_ROOT=./data cargo run -p memory-center-server
+```
+
+Trae 端配置：
+
+| 字段 | 值 |
+|------|-----|
+| 名称 | `memory-center` |
+| URL | `https://your-server/mcp` |
+| 传输类型 | `streamable-http` |
+
+> stdio 模式适合单客户端本地使用（零配置），Streamable HTTP 模式适合多客户端共享远程访问。
+
+### 2.3 环境变量配置
 
 在 Trae MCP 服务器的「环境变量」栏添加：
 
@@ -94,9 +114,9 @@ mkdir -p D:/memory-center-data
 | `MEMORY_CENTER_DETECTOR_API_KEY` | API Key | 空 |
 | `MEMORY_CENTER_DETECTOR_MODEL` | 模型名 | `gpt-5.5-instant` |
 
-#### 可选：Preset 显式声明（v2.30 新增）
+#### 可选：Preset 显式声明（v2.3 新增）
 
-memory-center 启动时会自动识别 Agent 客户端（3 层信号融合）。
+memory-center 启动时会自动识别 Agent 客户端（3 层信号融合，覆盖 11 个 Agent 预设）。
 若自动识别失败或需强制指定，可设置：
 
 | 变量名 | 说明 | 示例值 |
@@ -164,6 +184,14 @@ INFO  启动 MemoryCenter MCP server (stdio 传输)  root=D:/memory-center-data 
 
 ## 5. AGENTS.md（项目级规则）
 
+### 5.1 自动安装（v2.37 新增，推荐）
+
+v2.37 起，`install_rules` 工具支持远程模式：在 HTTPS MCP 模式下，LLM 可主动调用 `install_rules` 工具，工具返回 AGENTS.md / Trae Rules 模板内容，LLM 用 Write 工具直接创建文件，**零配置接入**。
+
+stdio 模式下，`install_rules` 工具会直接将模板写入本地文件（需 `MEMORY_CENTER_ROOT` 可写）。
+
+### 5.2 手动创建（适用于所有版本）
+
 在项目根目录创建 `AGENTS.md`，Trae / Cursor 等 IDE 会自动读取并注入 LLM 的 system prompt：
 
 ```markdown
@@ -215,6 +243,7 @@ trae-{项目名}-{日期}
 
 ## 7. 下一步
 
-- 阅读 [v2.30 路线图](../v2.30-roadmap-agent-onboarding.md) 了解后续 Cursor / Claude Code 接入计划
+- 阅读 [v2.30 路线图](../v2.30-roadmap-agent-onboarding.md) 了解 Agent 接入的完整设计思路（历史路线图，v2.3 已实现 11 个 Agent 预设自动识别）
 - 阅读 [架构文档](../ARCHITECTURE.md) 了解 memory-center 内部设计
-- 调整 `MEMORY_CENTER_PRESET_SCENARIO` 适配你的工作场景（coding/writing/research 等）
+- 调整 `MEMORY_CENTER_PRESET_SCENARIO` 适配你的工作场景（coding/writing/research/daily/finance/design/officework 7 个内置 Scenario）
+- 如部署在远程服务器，参考 [部署文档](../DEPLOY.md) 配置 MCP Streamable HTTP 模式

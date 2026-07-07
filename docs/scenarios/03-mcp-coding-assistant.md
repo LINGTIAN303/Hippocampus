@@ -902,7 +902,7 @@ sessions/
 - [ ] **多 Agent 通过 project_id 共享记忆**（场景三）
 - [ ] **CachedStorage 缓存命中率**（场景二）
 - [ ] **HybridRetriever 语义检索效果**（场景三）
-- [ ] **WASM 组件嵌入浏览器**（v2.16+ 路线图）
+- [x] **WASM 组件嵌入浏览器**（v2.35 已实现，wasm-bindgen + MemoryStorage + JsStorage）
 
 ---
 

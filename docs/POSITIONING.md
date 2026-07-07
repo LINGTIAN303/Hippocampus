@@ -1,7 +1,7 @@
 # MemoryCenter 定位与竞品对比
 
 > Agent 记忆库赛道全景对标，明确 MemoryCenter 的差异化定位与护城河。
-> 调研时间：2026-07-02 | 数据来源：GitHub、arXiv、横评文章
+> 调研时间：2026-07-02（v2.37 更新于 2026-07-08） | 数据来源：GitHub、arXiv、横评文章
 
 ## 一句话定位
 
@@ -44,7 +44,7 @@ MemoryCenter 是 Agent 的时序记忆基础设施：完整保存对话上下文
 | **Supermemory** | Memory Engine + 自动遗忘 | 自动遗忘 + 矛盾解决 | Hybrid Search（RAG+Memory） | containerTag 级 | Python/TS + REST + MCP | TypeScript + Cloud SaaS | 24.6k | LongMemEval **81.6%** | 个人+商业 AI |
 | **Cognee** | ECL 三阶段 + 知识图谱 | forget API 手动 | 图遍历多跳推理 | 实体/三元组级 | Python + CLI + MCP | Python + 图数据库 | 16.6k | 关系推理 **92.5%** | 知识图谱推理 |
 | **OpenAI Responses** | previous_response_id 链式 | 服务端托管（黑盒） | 内置不可控 | 会话级 | OpenAI SDK | OpenAI 云 | - | - | OpenAI 生态 |
-| **MemoryCenter** | **时序归档（完整非摘要）+ 三级周期** | **天归档/周去重/月评分淘汰** | **摘要钩子注入 + tool 主动检索** | **17 类消息级标签** | **C ABI + HTTP + Python** | **Rust 单二进制 + SQLite** | 新项目 | 待测 | 编程助手/通用 |
+| **MemoryCenter** | **时序归档（完整非摘要）+ 三级周期** | **天归档/周去重/月评分淘汰** | **摘要钩子注入 + tool 主动检索 + BM25 + 语义检索** | **17 类消息级标签** | **C ABI + HTTP REST + Python + Node.js + WASM + MCP（stdio + Streamable HTTP）** | **Rust 单二进制 + SQLite** | 新项目 | 待测 | 编程助手/通用 |
 
 ## 三大直接竞品深度对比
 
@@ -92,6 +92,20 @@ MemoryCenter 是 Agent 的时序记忆基础设施：完整保存对话上下文
 
 ### 4. 17 类消息级标签体系（最细粒度）
 竞品要么无标签（Mem0）、要么单层 Observation（agentmemory）、要么实体级（Zep/Cognee）——**消息级 17 类标签**粒度独家。
+
+## 补充能力（v2.3+ 持续增强，竞品暂无对应）
+
+以下能力为 v2.3 起逐步引入、至 v2.37 已成熟的差异化扩展：
+
+| 能力 | 引入版本 | 说明 |
+|------|---------|------|
+| **冲突检测** | v2.3x | 用户陈述与记忆矛盾时自动检测（自我矛盾 / 直接矛盾 / 立场反转三维度），可降级为启发式纯算法 |
+| **压缩前完整归档** `pre_compress_hook` | v2.3x | 在客户端压缩上下文前一次性归档完整 raw_context，避免信息丢失（双轨：raw_context 原样保存 + 解析 turns） |
+| **project_memory 反向写入** | v2.3x | 通过 `update_project_memory` 工具将 MemoryCenter 记忆主动写入 IDE 的 project_memory.md，影响下次会话注入上下文 |
+| **Agent 自识别** | v2.3 | 内置 11 个 Agent 预设（ClaudeCode / Cursor / Trae / Codex 等），3 层信号融合自动识别客户端并注入对应使用协议 |
+| **场景自适应** | v2.3 | 7 个内置 Scenario（coding / writing / research / daily / finance / design / officework），根据场景调整归档阈值和检索策略 |
+| **MCP Streamable HTTP** | v2.36 | `/mcp` 端点远程访问，多客户端共享，适合 Web 端 Agent 接入（与 REST API 共享 Axum 服务） |
+| **install_rules 远程模式** | v2.37 | HTTPS MCP 模式下返回模板让 LLM 用 Write 工具创建 AGENTS.md / Rules 文件，零配置接入 |
 
 ## 明确放弃的方向（聚焦）
 
