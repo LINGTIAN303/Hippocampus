@@ -72,6 +72,60 @@ LLM 调 archive 时传入任务状态快照，持久化到 `sessions/{session_id
 - hippocampus-server: 15 单元测试 + 37 集成测试全部通过（此前 1 失败 + 2 死锁，现在 37/37 全绿）
 - hippocampus-mcp: 46 测试通过
 
+### v2.32 - 运行时配置查询工具 get_config（2026-07-06）
+
+#### 背景
+LLM 在调用 hippocampus 工具时，无法感知当前服务的运行时配置（哪些 LLM 组件已注入、用什么模式、降级状态如何）。本版本新增 `get_config` 工具，让 LLM 主动查询运行时配置快照。
+
+#### 变更
+- **`RuntimeStatus` struct**（`crates/hippocampus-mcp/src/lib.rs`）
+  - 记录 conflict_detector / semantic_search / summary_generator 三个组件的降级模式
+  - `Default` 全降级（heuristic + keyword_only + heuristic）
+  - `with_runtime_status` 链式注入方法
+- **`get_config` MCP 工具**
+  - 支持 4 种 scope：runtime / preset / degraded / all
+  - runtime：返回 RuntimeStatus 快照
+  - preset：返回 CombinedProfile 配置
+  - degraded：返回降级状态详情
+  - all：返回全部信息
+- **`main.rs` build 函数增强**
+  - `build_summary_generator` / `build_conflict_detector` / `build_session_search` 返回降级状态元组
+  - 启动时汇总注入 RuntimeStatus
+
+### v2.33 - 场景识别功能（2026-07-07）
+
+#### 背景
+Trae/Cursor 等 Agent 里做写作/研究/金融分析时，场景永远是 coding（因 `resolve_scenario_name` 按 Agent family 推导），导致摘要 focus / 评分权重 / 检索策略 / 归档阈值 / 标签优先级 5 维配置错配。
+
+#### 核心设计
+首次 archive 时从对话内容识别场景（Coding/Writing/Research 等 7 类），写入 session 元数据，后续该 session 的 archive 读取元数据应用识别场景。
+
+- **KeywordScenarioDetector**：7 场景 × ~15 关键词子串匹配，置信度 = top/(top+second)，≥ 0.6 高置信
+- **HttpScenarioDetector**：LLM 兜底，复用 `LlmDetectorConfig`（HIPPOCAMPUS_DETECTOR_* 环境变量），OpenAI 兼容 API
+- **HybridScenarioDetector**：串联关键词 + LLM，置信度 < 0.6 触发 LLM
+- **resolve_effective_scenario**：4 级优先级链（用户显式 > session_meta > 识别 > Agent 默认），识别失败永不阻塞 archive
+- **Storage trait 扩展**：`write_session_meta` / `read_session_meta` 默认实现（向后兼容），LocalStorage（meta.json）/ SqliteStorage（session_meta 表）/ CachedStorage（透传）三实现
+
+#### 变更
+- `crates/hippocampus-core/src/storage.rs`：SessionMeta struct + Storage trait 2 新方法 + LocalStorage 实现
+- `crates/hippocampus-core/src/sqlite.rs`：SqliteStorage session_meta 表 + 2 方法
+- `crates/hippocampus-core/src/cache.rs`：CachedStorage 透传
+- `crates/hippocampus-presets/src/builder.rs`：scenario_to_str + scenario_from_str 支持 custom: 前缀
+- `crates/hippocampus-presets/src/scenario_detect.rs`（新文件）：3 Detector + resolve_effective_scenario + 28 测试
+- `crates/hippocampus-mcp/src/lib.rs`：HippocampusMcp 注入 scenario_detector + archive handler 调用 resolve_effective_scenario
+- `crates/hippocampus-mcp/src/main.rs`：build_scenario_detector 函数
+- `crates/hippocampus-server/src/lib.rs`：AppState 新增 scenario_detector 字段
+- `crates/hippocampus-server/src/main.rs`：build_scenario_detector 函数
+- `crates/hippocampus-server/src/handlers.rs`：archive handler 接入 resolve_effective_scenario
+
+#### 验证
+- 生产环境验证：传入写作类对话 archive，关键词模式识别为 "writing" 场景，置信度 0.9，正确写入 session_meta
+- 工作区全测试通过（800+ 测试）
+- clippy 无 warning（hippocampus-server 范围）
+
+#### 执行模式
+12 个 Task 采用 Subagent-Driven 执行模式（每 Task 派发独立子 Agent，TDD 流程）
+
 ### v2.29 - Presets Create 全链路落地（2026-07-05）
 
 #### 背景
