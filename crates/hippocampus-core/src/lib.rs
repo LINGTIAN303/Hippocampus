@@ -41,6 +41,8 @@ pub mod cache;
 /// 记忆冲突检测（ConflictDetector trait + NoopDetector）
 pub mod conflict;
 pub mod compact;
+/// 上下文字符串解析器（v2.34，pre_compress_hook 用）
+pub mod context_parser;
 /// LLM 生成器 trait（AnchorGenerator / SummaryGenerator，v2.16 IMP-05/10）
 pub mod generate;
 /// 混合检索器（HybridRetriever + RRF 融合 + 降级策略）
