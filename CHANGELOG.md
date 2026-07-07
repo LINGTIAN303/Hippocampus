@@ -2,6 +2,34 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。变更格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## v2.37 - install_rules 远程模式（2026-07-08）
+
+### 新增
+- **install_rules 远程模式**：当 MCP server 无法访问客户端本地路径时（如 HTTPS MCP 模式下 DeepSeek 网页端接入），返回模板内容 + 文件相对路径 + 写入指引，让 LLM 用客户端的 Write 工具自行创建文件
+  - 触发条件：`project_root` 路径在 server 端不存在（远程模式）
+  - 返回结构：`action=remote_template` + `files[]`（每项含 `relative_path` + `content` + `mode`）+ `instructions`
+  - 支持 catpaw / trae / claude-code 三种客户端的模板和路径
+  - `mode` 字段：`create`（创建新文件）/ `append_with_markers`（带标记追加，已存在文件只更新标记区间）
+
+### 改动
+- `crates/hippocampus-mcp/src/lib.rs`：
+  - 新增 `build_remote_template_response()` 辅助函数（~70 行）
+  - 修改 `install_rules_to_project()`：路径不存在时调用远程模式分支，不再返回错误
+  - 更新 `install_rules` 工具 description：补充远程模式行为说明
+  - 新增 5 个测试用例：覆盖远程模式三种客户端 + 不支持类型 + 本地模式兼容性
+
+### 设计决策
+- **保持向后兼容**：本地模式（路径存在）行为完全不变，仍由 server 端直接写入文件
+- **远程模式返回 JSON 而非错误**：让 LLM 能解析 files 数组并用 Write 工具创建文件
+- **不支持的客户端类型仍返回错误**：避免静默失败
+
+### 测试结果
+- hippocampus-mcp: 56 passed（原 51 + 新增 5），0 failed
+
+### 向后兼容
+- 本地 stdio 模式：行为不变（路径存在时仍直接写入文件）
+- HTTPS MCP 模式：install_rules 从"必然失败"变为"返回模板让 LLM 自行创建"
+
 ## v2.36 - MCP Streamable HTTP 传输（2026-07-07）
 
 ### 新增

@@ -1860,7 +1860,11 @@ impl HippocampusMcp {
     /// v2.31：首次接入时调用，自动写入 Rules 模板 + AGENTS.md。
     /// 支持 catpaw/trae/claude-code 三种客户端，覆盖策略按客户端类型自动决定。
     /// v2.31 新增：同时写入项目根目录的 AGENTS.md（含 session_id 约定 + 核心协议速查）。
-    #[tool(description = "首次接入 hippocampus 时调用此工具，自动写入 Rules 模板 + AGENTS.md。【一次性调用】每个项目只需调用一次，已存在会返回 action=skipped，不要重复调用。支持 catpaw（.catpaw/rules/）、trae（.trae/rules/）、claude-code（追加到 CLAUDE.md）三种客户端。同时写入项目根目录的 AGENTS.md，包含 session_id 约定（治本：让 LLM 知道规范格式，避免用'项目名-session'这种错误格式）+ 核心协议速查表。AGENTS.md 用标记隔离，force=true 时只更新标记内容，不影响用户手动写入的部分。首次配置完 hippocampus MCP 后立即调用：install_rules(client=\"你的客户端类型\", project_root=\"项目根目录绝对路径\")。")]
+    #[tool(description = "首次接入 hippocampus 时调用此工具，自动写入 Rules 模板 + AGENTS.md。【一次性调用】每个项目只需调用一次，已存在会返回 action=skipped，不要重复调用。支持 catpaw（.catpaw/rules/）、trae（.trae/rules/）、claude-code（追加到 CLAUDE.md）三种客户端。同时写入项目根目录的 AGENTS.md，包含 session_id 约定（治本：让 LLM 知道规范格式，避免用'项目名-session'这种错误格式）+ 核心协议速查表。AGENTS.md 用标记隔离，force=true 时只更新标记内容，不影响用户手动写入的部分。\
+     \
+     【远程模式】当 MCP server 无法访问你传入的 project_root 时（如 HTTPS MCP 模式下 server 在远程），返回 action=remote_template + files 数组（含 relative_path + content + mode）。此时你需要用 Write 工具自行创建这些文件：catpaw/trae 模式创建新文件，claude-code 追加到 CLAUDE.md。\
+     \
+     首次配置完 hippocampus MCP 后立即调用：install_rules(client=\"你的客户端类型\", project_root=\"项目根目录绝对路径\")。")]
     async fn install_rules(
         &self,
         Parameters(params): Parameters<InstallRulesParams>,
@@ -2986,6 +2990,88 @@ const AGENTS_MD_TEMPLATE: &str = r#"<!-- hippocampus-agents begin -->
 | 月级评分淘汰 | `compaction` period="monthly" |
 <!-- hippocampus-agents end -->"#;
 
+/// 构建远程模式响应（v2.37 新增）
+///
+/// 当 MCP server 无法访问客户端本地路径时（如 HTTPS MCP 模式下，
+/// DeepSeek 网页端传入的是本地 Windows 路径，但 server 在 Linux 上运行），
+/// 返回模板内容 + 文件相对路径，让 LLM 用客户端的 Write 工具自己创建文件。
+///
+/// 返回 JSON：
+/// - action: "remote_template"
+/// - client: 客户端类型
+/// - files: 需要创建的文件列表（每项含 relative_path + content + mode）
+/// - instructions: 写入指引（告诉 LLM 怎么用 Write 工具创建这些文件）
+fn build_remote_template_response(client: &str, project_root: &str) -> Result<String, String> {
+    // 根据客户端类型确定 Rules 模板和文件路径
+    let (rules_relative_path, rules_template, rules_mode): (&str, &str, &str) = match client {
+        "catpaw" => (".catpaw/rules/hippocampus-archive.md", CATPAW_RULES_TEMPLATE, "create"),
+        "trae" => (".trae/rules/hippocampus-archive.md", TRAE_RULES_TEMPLATE, "create"),
+        "claude-code" => ("CLAUDE.md", CLAUDE_CODE_RULES_TEMPLATE, "append_with_markers"),
+        _ => {
+            return Err(format!(
+                "不支持的客户端类型: {client}\n支持的类型: catpaw / trae / claude-code"
+            ));
+        }
+    };
+
+    // AGENTS.md 模板（所有客户端通用，带标记）
+    let agents_md_relative_path = "AGENTS.md";
+    let agents_md_content = format!(
+        "{begin}\n{template}\n{end}",
+        begin = HIPPOCAMPUS_AGENTS_BEGIN,
+        template = AGENTS_MD_TEMPLATE,
+        end = HIPPOCAMPUS_AGENTS_END,
+    );
+
+    // claude-code 的 Rules 文件也需要标记包裹
+    let rules_content = if client == "claude-code" {
+        format!(
+            "{begin}\n{template}\n{end}",
+            begin = HIPPOCAMPUS_RULES_BEGIN,
+            template = rules_template,
+            end = HIPPOCAMPUS_RULES_END,
+        )
+    } else {
+        rules_template.to_string()
+    };
+
+    let result = serde_json::json!({
+        "success": true,
+        "action": "remote_template",
+        "client": client,
+        "reason": format!(
+            "MCP server 无法访问路径 '{}'（远程模式：server 与客户端不在同一机器上）。\
+             请用你本地的 Write 工具创建以下文件。", project_root
+        ),
+        "files": [
+            {
+                "relative_path": rules_relative_path,
+                "mode": rules_mode,
+                "content": rules_content,
+                "description": " hippocampus 记忆归档规则模板",
+            },
+            {
+                "relative_path": agents_md_relative_path,
+                "mode": "append_with_markers",
+                "content": agents_md_content,
+                "description": "AGENTS.md 记忆协议（被 IDE 自动读取注入 system prompt）",
+            },
+        ],
+        "instructions": format!(
+            "请在你的项目根目录下创建以下文件（用 Write 工具）：\n\
+             1. {rules_path} — {rules_mode} 模式\n\
+             2. {agents_path} — append_with_markers 模式\n\n\
+             文件内容见上方 files 数组的 content 字段。\n\
+             对于 append_with_markers 模式：若文件已存在，在末尾追加 content；若不存在，创建新文件。\n\
+             创建完成后，IDE 会自动读取这些文件注入 system prompt。",
+            rules_path = rules_relative_path,
+            agents_path = agents_md_relative_path,
+        ),
+    });
+
+    Ok(result.to_string())
+}
+
 /// 安装 Rules 模板到项目目录
 ///
 /// 参数：
@@ -3009,7 +3095,11 @@ pub fn install_rules_to_project(
     // 1. 验证项目根目录
     let root = Path::new(project_root);
     if !root.exists() {
-        return Err(format!("项目根目录不存在: {project_root}"));
+        // 远程模式：MCP server 在远程机器上，无法访问客户端本地路径
+        // （如 HTTPS MCP 模式下，DeepSeek 网页端传入的是本地 Windows 路径，
+        // 但 server 在 Linux 上运行）。返回模板内容，让 LLM 用客户端的 Write
+        // 工具自己创建文件。
+        return build_remote_template_response(client, project_root);
     }
     if !root.is_dir() {
         return Err(format!("路径不是目录: {project_root}"));
@@ -4681,6 +4771,93 @@ mod tests {
             mcp2.combined_profile().is_none(),
             "with_conflict_detector() 默认不应注入 combined_profile"
         );
+    }
+
+    // ========================================================================
+    // install_rules 远程模式测试（v2.37）
+    // ========================================================================
+
+    /// 远程模式：不存在的路径应返回 remote_template 而非错误
+    #[test]
+    fn test_install_rules_remote_mode_returns_template() {
+        let result = install_rules_to_project("trae", "/nonexistent/path/that/does/not/exist", false);
+        assert!(result.is_ok(), "远程模式应返回 Ok 而非 Err");
+
+        let json: Value = serde_json::from_str(&result.unwrap()).expect("返回应为合法 JSON");
+        assert_eq!(json["action"], "remote_template");
+        assert_eq!(json["client"], "trae");
+        assert_eq!(json["success"], true);
+        assert!(json["files"].is_array(), "files 应为数组");
+        let files = json["files"].as_array().unwrap();
+        assert_eq!(files.len(), 2, "应返回 2 个文件（rules + AGENTS.md）");
+
+        // 第一个文件：.trae/rules/hippocampus-archive.md
+        assert_eq!(files[0]["relative_path"], ".trae/rules/hippocampus-archive.md");
+        assert_eq!(files[0]["mode"], "create");
+        assert!(files[0]["content"].as_str().unwrap().contains("Hippocampus"), "content 应包含模板内容");
+
+        // 第二个文件：AGENTS.md
+        assert_eq!(files[1]["relative_path"], "AGENTS.md");
+        assert_eq!(files[1]["mode"], "append_with_markers");
+        assert!(files[1]["content"].as_str().unwrap().contains("hippocampus-agents begin"));
+    }
+
+    /// 远程模式：catpaw 客户端应返回 .catpaw/rules/ 路径
+    #[test]
+    fn test_install_rules_remote_mode_catpaw() {
+        let result = install_rules_to_project("catpaw", "D:/nonexistent", false);
+        assert!(result.is_ok());
+
+        let json: Value = serde_json::from_str(&result.unwrap()).unwrap();
+        assert_eq!(json["action"], "remote_template");
+        assert_eq!(json["client"], "catpaw");
+        let files = json["files"].as_array().unwrap();
+        assert_eq!(files[0]["relative_path"], ".catpaw/rules/hippocampus-archive.md");
+    }
+
+    /// 远程模式：claude-code 客户端应返回 CLAUDE.md 路径 + append_with_markers 模式
+    #[test]
+    fn test_install_rules_remote_mode_claude_code() {
+        let result = install_rules_to_project("claude-code", "/remote/nonexistent", false);
+        assert!(result.is_ok());
+
+        let json: Value = serde_json::from_str(&result.unwrap()).unwrap();
+        assert_eq!(json["action"], "remote_template");
+        assert_eq!(json["client"], "claude-code");
+        let files = json["files"].as_array().unwrap();
+        assert_eq!(files[0]["relative_path"], "CLAUDE.md");
+        assert_eq!(files[0]["mode"], "append_with_markers");
+        // claude-code 的 content 应包含 hippocampus-rules begin 标记
+        assert!(files[0]["content"].as_str().unwrap().contains("hippocampus-rules begin"));
+    }
+
+    /// 远程模式：不支持的客户端类型仍返回错误
+    #[test]
+    fn test_install_rules_remote_mode_unsupported_client() {
+        let result = install_rules_to_project("deepseek", "/nonexistent", false);
+        assert!(result.is_err(), "不支持的客户端应返回 Err");
+        let err = result.unwrap_err();
+        assert!(err.contains("不支持的客户端类型"), "错误信息应包含'不支持的客户端类型'");
+    }
+
+    /// 本地模式：存在的路径应正常执行文件写入（保持向后兼容）
+    #[test]
+    fn test_install_rules_local_mode_still_works() {
+        let tmpdir = TempDir::new().unwrap();
+        let root = tmpdir.path().to_str().unwrap();
+
+        let result = install_rules_to_project("trae", root, false);
+        assert!(result.is_ok(), "本地模式应返回 Ok");
+
+        let json: Value = serde_json::from_str(&result.unwrap()).unwrap();
+        assert_eq!(json["action"], "created", "本地模式应返回 created 而非 remote_template");
+        assert_eq!(json["client"], "trae");
+
+        // 验证文件确实被创建
+        let rules_file = tmpdir.path().join(".trae").join("rules").join("hippocampus-archive.md");
+        assert!(rules_file.exists(), "Rules 文件应被创建");
+        let agents_file = tmpdir.path().join("AGENTS.md");
+        assert!(agents_file.exists(), "AGENTS.md 应被创建");
     }
 
     /// 测试 with_combined_profile(Some) 注入后可读取（链式 builder）
