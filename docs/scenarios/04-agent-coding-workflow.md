@@ -1,10 +1,10 @@
 # 场景六推演：Agent 编程工具全流程（Codex + GPT-5.5 从零生产项目）
 
 > 本文档推演用户使用 Codex CLI（GPT-5.5）从零开始生产一个完整项目的全过程，
-> 详细记录每个阶段用户与 Agent 的交互、Hippocampus 在其中被调用的时机与作用。
+> 详细记录每个阶段用户与 Agent 的交互、MemoryCenter 在其中被调用的时机与作用。
 >
 > **用途**：
-> - 帮助开发者理解 Hippocampus 在真实 Agent 编程工作流中的定位
+> - 帮助开发者理解 MemoryCenter 在真实 Agent 编程工作流中的定位
 > - 帮助用户（产品方）理解「记忆库」对长周期项目开发的价值
 > - 为后续功能开发提供真实场景参照
 >
@@ -21,9 +21,9 @@
 
 | 角色 | 身份 | 工具 |
 |------|-----|------|
-| 小李 | 独立开发者 | Codex CLI + Hippocampus MCP Server |
+| 小李 | 独立开发者 | Codex CLI + MemoryCenter MCP Server |
 | Codex CLI | Agent 编程工具 | GPT-5.5 + MCP 客户端 |
-| Hippocampus | 记忆库依赖 | MCP Server（stdio） |
+| MemoryCenter | 记忆库依赖 | MCP Server（stdio） |
 
 ### 0.2 项目设定
 
@@ -36,7 +36,7 @@
 | Agent 工具 | Codex CLI（GPT-5.5） | 支持 MCP 协议 |
 | 预计周期 | 7 天（含跨会话） | 模拟真实开发节奏 |
 
-### 0.3 Hippocampus 配置
+### 0.3 MemoryCenter 配置
 
 | 配置项 | 值 | 说明 |
 |--------|----|----|
@@ -47,7 +47,7 @@
 
 ### 0.4 全流程时间线
 
-| 阶段 | 时间 | 会话 | 累计 token | Hippocampus 调用 |
+| 阶段 | 时间 | 会话 | 累计 token | MemoryCenter 调用 |
 |------|-----|------|-----------|-----------------|
 | Day 1 上午 | 需求沟通 + 项目初始化 | S1 | 80K | archive（D1） |
 | Day 1 下午 | 数据库 Schema 设计 | S2 | 150K | prompt → archive（D2） |
@@ -75,14 +75,14 @@
 ### 1.2 Codex 初始化（08:01）
 
 Codex CLI 启动时执行两件事：
-1. 拉起 Hippocampus MCP Server 子进程（stdio 传输）
+1. 拉起 MemoryCenter MCP Server 子进程（stdio 传输）
 2. 调用 `prompt` tool 注入历史记忆索引
 
 **调用链**：
 
 ```
 Codex CLI 启动
-  ↓ 拉起 MCP Server 子进程（hippocampus-mcp --root ~/.hippocampus/blog-backend）
+  ↓ 拉起 MCP Server 子进程（memory-center-mcp --root ~/.memory-center/blog-backend）
 MCP Server 就绪
   ↓ Codex 调用 prompt tool（会话开始必调）
 Retriever::render_to_system_prompt()
@@ -208,9 +208,9 @@ Codex 生成 SQLx migration 文件 `migrations/20260704_init.sql`，并执行 `s
 
 ### 2.3 跨会话记忆延续的关键
 
-**没有 Hippocampus 时**：小李需要重新告诉 Codex 上午讨论的需求（产品定位、技术栈选择、模块划分）。
+**没有 MemoryCenter 时**：小李需要重新告诉 Codex 上午讨论的需求（产品定位、技术栈选择、模块划分）。
 
-**有 Hippocampus 时**：Codex 通过 prompt tool 看到上午的摘要「博客系统后端需求讨论与项目初始化」，知道：
+**有 MemoryCenter 时**：Codex 通过 prompt tool 看到上午的摘要「博客系统后端需求讨论与项目初始化」，知道：
 - 技术栈：Rust + Axum + SQLx + PostgreSQL
 - 模块：用户/文章/评论/点赞/标签
 - 认证：JWT
@@ -299,7 +299,7 @@ Codex 提取 Schema 相关 turn（约 5 个 turn，8K token）
 
 Codex 知道上午的 turn 中记录了「使用 Argon2 哈希密码」，先调用 `detect_conflicts` 预检测：
 
-**调用链**：[hippocampus-mcp/src/lib.rs detect_conflicts tool](../../crates/hippocampus-mcp/src/lib.rs)
+**调用链**：[memory-center-mcp/src/lib.rs detect_conflicts tool](../../crates/memory-center-mcp/src/lib.rs)
 
 ```
 Codex 调用 detect_conflicts tool
@@ -608,11 +608,11 @@ tags=[Text, CodeBlock, URL, Plan, ToolCall, Thinking]
 
 ---
 
-## 9. Hippocampus 在全流程中的作用总结
+## 9. MemoryCenter 在全流程中的作用总结
 
 ### 9.1 按阶段梳理
 
-| 阶段 | 用户痛点 | Hippocampus 作用 | 调用 tool |
+| 阶段 | 用户痛点 | MemoryCenter 作用 | 调用 tool |
 |------|---------|----------------|-----------|
 | 项目初始化 | 长会话 token 超限 | 归档保存完整对话 | archive |
 | 跨会话延续 | 新会话不知历史 | prompt 注入摘要索引 | prompt |
@@ -636,14 +636,14 @@ tags=[Text, CodeBlock, URL, Plan, ToolCall, Thinking]
 
 ### 9.3 价值量化对比
 
-| 维度 | 无 Hippocampus | 有 Hippocampus | 节省 |
+| 维度 | 无 MemoryCenter | 有 MemoryCenter | 节省 |
 |------|---------------|---------------|------|
 | 跨会话上下文重述 | 每次会话重述 50K token | 0 token（prompt 自动注入） | 7 × 50K = 350K |
 | 历史细节追溯 | 全量历史塞入（1.23M token） | 按需 retrieve（9 × 15K = 135K） | 1.095M |
 | 决策冲突避免 | 用户人工记忆 + 易出错 | detect_conflicts 自动检测 | 1 次关键冲突避免 |
 | LLM 上下文负载 | 1.23M（超出窗口） | 7 × 200K = 1.4M 但分批 | 单次始终 <300K |
 
-### 9.4 Hippocampus 在 Agent 工作流中的定位
+### 9.4 MemoryCenter 在 Agent 工作流中的定位
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -659,7 +659,7 @@ tags=[Text, CodeBlock, URL, Plan, ToolCall, Thinking]
 └──────────────────────────────────────────────────────────────┘
         ↑↓ prompt          ↑↓ retrieve         ↑↓ archive
 ┌──────────────────────────────────────────────────────────────┐
-│ Hippocampus MCP Server                                         │
+│ MemoryCenter MCP Server                                         │
 │   - prompt：会话开始注入摘要索引                                │
 │   - retrieve：按需加载完整 MemoryFile                          │
 │   - archive：归档完整对话（非摘要）                             │
@@ -687,9 +687,9 @@ tags=[Text, CodeBlock, URL, Plan, ToolCall, Thinking]
 **流程**：
 
 ```
-1. Codex 启动 → 拉起 Hippocampus MCP Server
+1. Codex 启动 → 拉起 MemoryCenter MCP Server
 2. Codex 调用 prompt tool（自动，无需用户感知）
-3. Hippocampus 返回历史摘要索引
+3. MemoryCenter 返回历史摘要索引
 4. Codex 将摘要注入 GPT-5.5 system prompt
 5. GPT-5.5 基于历史上下文开始响应新需求
 ```
@@ -708,7 +708,7 @@ tags=[Text, CodeBlock, URL, Plan, ToolCall, Thinking]
 3. Codex 先调用 summaries tool 获取所有摘要
 4. LLM 识别 "Schema 设计" 匹配某个 summary_title
 5. Codex 调用 retrieve tool，传入 hook_id
-6. Hippocampus 返回完整 MemoryFile
+6. MemoryCenter 返回完整 MemoryFile
 7. Codex 提取相关 turn 注入 LLM 上下文
 8. GPT-5.5 基于历史细节生成对齐代码
 ```
@@ -725,7 +725,7 @@ tags=[Text, CodeBlock, URL, Plan, ToolCall, Thinking]
 1. 用户："密码哈希从 Argon2 改为 bcrypt"
 2. Codex 知道历史中记录了 Argon2
 3. Codex 调用 detect_conflicts tool 预检测
-4. Hippocampus 返回 ConflictReport
+4. MemoryCenter 返回 ConflictReport
 5. 若 has_critical=true → Codex 提示用户确认
    若 has_critical=false → Codex 自主继续
 6. Codex 调用 batch_update tool 持久化冲突记录
@@ -745,7 +745,7 @@ tags=[Text, CodeBlock, URL, Plan, ToolCall, Thinking]
 2. Codex 询问用户："是否归档当前会话？"
 3. 用户确认
 4. Codex 调用 archive tool，传入所有 turns
-5. Hippocampus 生成 MemoryFile + IndexHook
+5. MemoryCenter 生成 MemoryFile + IndexHook
 6. Codex 记录 hook_id 到本地状态
 ```
 
@@ -767,7 +767,7 @@ tags=[Text, CodeBlock, URL, Plan, ToolCall, Thinking]
 | retrieve 频次 | 1 次 | 9 次 + 1 次 batch |
 | 关注点 | 4 周长期演化 | 单项目全流程 |
 
-**结论**：场景六更聚焦于「单项目从零到上线」的短期高密度开发，验证 Hippocampus 在频繁跨会话、多次历史追溯、多次决策变更场景下的价值。
+**结论**：场景六更聚焦于「单项目从零到上线」的短期高密度开发，验证 MemoryCenter 在频繁跨会话、多次历史追溯、多次决策变更场景下的价值。
 
 ---
 
@@ -809,7 +809,7 @@ tags=[Text, CodeBlock, URL, Plan, ToolCall, Thinking]
 
 | 编号 | 风险 | 影响 | 缓解措施 |
 |------|-----|------|---------|
-| RISK-05 | Codex token 计数与 Hippocampus 不一致 | 阈值触发不准 | Codex 主动调用 archive，Hippocampus 被动接收 |
+| RISK-05 | Codex token 计数与 MemoryCenter 不一致 | 阈值触发不准 | Codex 主动调用 archive，MemoryCenter 被动接收 |
 | RISK-06 | retrieve 返回大 MemoryFile（150K+） | 注入 LLM 时截断 | Codex 应用层分页或摘要 |
 | RISK-07 | 多次 retrieve 累积 token 超限 | 单会话 token 失控 | Codex 监控累计 token 并归档 |
 
@@ -820,35 +820,35 @@ tags=[Text, CodeBlock, URL, Plan, ToolCall, Thinking]
 ### 14.1 文档更新触发条件
 
 - Codex CLI 或 GPT-5.5 行为变化时
-- Hippocampus MCP tool 新增或变更时
+- MemoryCenter MCP tool 新增或变更时
 - 用户反馈真实使用流程与本推演不符时
 
 ### 14.2 关联代码引用
 
 | 章节 | 代码位置 | 用途 |
 |------|---------|------|
-| §1.2 prompt | [retrieve.rs:156-240](../../crates/hippocampus-core/src/retrieve.rs#L156-L240) | render_to_system_prompt() |
-| §1.4 archive | [archive.rs:138-200](../../crates/hippocampus-core/src/archive.rs#L138-L200) | Archiver::archive() |
-| §3.3 retrieve | [retrieve.rs:248-269](../../crates/hippocampus-core/src/retrieve.rs#L248-L269) | retrieve_memory() |
-| §3.4 detect_conflicts | [hippocampus-mcp/src/lib.rs](../../crates/hippocampus-mcp/src/lib.rs) | detect_conflicts tool |
-| §3.4 batch_update | [hippocampus-mcp/src/lib.rs](../../crates/hippocampus-mcp/src/lib.rs) | batch_update tool |
-| §6.2 batch_retrieve | [hippocampus-mcp/src/lib.rs](../../crates/hippocampus-mcp/src/lib.rs) | batch_retrieve tool |
-| §8.2 weekly_merge | [compact.rs:136-269](../../crates/hippocampus-core/src/compact.rs#L136-L269) | Compactor::weekly_merge() |
+| §1.2 prompt | [retrieve.rs:156-240](../../crates/memory-center-core/src/retrieve.rs#L156-L240) | render_to_system_prompt() |
+| §1.4 archive | [archive.rs:138-200](../../crates/memory-center-core/src/archive.rs#L138-L200) | Archiver::archive() |
+| §3.3 retrieve | [retrieve.rs:248-269](../../crates/memory-center-core/src/retrieve.rs#L248-L269) | retrieve_memory() |
+| §3.4 detect_conflicts | [memory-center-mcp/src/lib.rs](../../crates/memory-center-mcp/src/lib.rs) | detect_conflicts tool |
+| §3.4 batch_update | [memory-center-mcp/src/lib.rs](../../crates/memory-center-mcp/src/lib.rs) | batch_update tool |
+| §6.2 batch_retrieve | [memory-center-mcp/src/lib.rs](../../crates/memory-center-mcp/src/lib.rs) | batch_retrieve tool |
+| §8.2 weekly_merge | [compact.rs:136-269](../../crates/memory-center-core/src/compact.rs#L136-L269) | Compactor::weekly_merge() |
 
 ### 14.3 真实使用复现方法
 
-如需在 Codex CLI 中接入 Hippocampus：
+如需在 Codex CLI 中接入 MemoryCenter：
 
-1. 安装 hippocampus-mcp 二进制
+1. 安装 memory-center-mcp 二进制
 2. 在 Codex 配置文件中添加 MCP Server：
 
 ```json
 {
   "mcpServers": {
-    "hippocampus": {
-      "command": "hippocampus-mcp",
+    "memory-center": {
+      "command": "memory-center-mcp",
       "env": {
-        "HIPPOCAMPUS_ROOT": "~/.hippocampus/blog-backend"
+        "MEMORY_CENTER_ROOT": "~/.memory-center/blog-backend"
       }
     }
   }

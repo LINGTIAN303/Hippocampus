@@ -144,7 +144,7 @@ Storage::append_project_hook()  ← v2.4 双写，project 级 daily 索引文档
 （无）
 ```
 
-**分级渲染说明**：daily 钩子默认只显示标题行，因 tags 中含「代码块」（HIGH_VALUE_TAGS），但因 key_facts 为空（日级钩子），不展开关键事实。详见 [retrieve.rs:156-240](../../crates/hippocampus-core/src/retrieve.rs#L156-L240)。
+**分级渲染说明**：daily 钩子默认只显示标题行，因 tags 中含「代码块」（HIGH_VALUE_TAGS），但因 key_facts 为空（日级钩子），不展开关键事实。详见 [retrieve.rs:156-240](../../crates/memory-center-core/src/retrieve.rs#L156-L240)。
 
 ---
 
@@ -237,7 +237,7 @@ Day 5 16:00 时累计 token 达到 600K，触发硬上限。
 
 ### 3.2 硬上限截断机制
 
-**调用链**：[archive.rs:138-200](../../crates/hippocampus-core/src/archive.rs#L138-L200)
+**调用链**：[archive.rs:138-200](../../crates/memory-center-core/src/archive.rs#L138-L200)
 
 ```rust
 // Archiver::archive() 关键逻辑
@@ -553,7 +553,7 @@ Week 2 周一早上小林开始新会话，调用 `prompt` tool：
 （无）
 ```
 
-**渲染规则**：weekly 钩子 `is_rich=true`（因含 abstract_text），自动展开 abstract + key_facts + key_entities。详见 [retrieve.rs:156-240](../../crates/hippocampus-core/src/retrieve.rs#L156-L240)。
+**渲染规则**：weekly 钩子 `is_rich=true`（因含 abstract_text），自动展开 abstract + key_facts + key_entities。详见 [retrieve.rs:156-240](../../crates/memory-center-core/src/retrieve.rs#L156-L240)。
 
 ---
 
@@ -644,7 +644,7 @@ let weekly_paths = self.storage.list_memories(
 
 #### 步骤 2：4 维评分
 
-**评分公式**：[score.rs:152-168](../../crates/hippocampus-core/src/score.rs#L152-L168)
+**评分公式**：[score.rs:152-168](../../crates/memory-center-core/src/score.rs#L152-L168)
 
 ```rust
 // 时效性：score = 100 * 0.5^(age_days / 7)
@@ -685,7 +685,7 @@ for (file, _) in &scored {
 }
 ```
 
-**高价值 Turn 判定**：[compact.rs:414-431](../../crates/hippocampus-core/src/compact.rs#L414-L431)
+**高价值 Turn 判定**：[compact.rs:414-431](../../crates/memory-center-core/src/compact.rs#L414-L431)
 
 含以下标签的 turn 被保留：
 - `Tag::ToolCall`（工具调用信息）
@@ -826,7 +826,7 @@ sessions/
   - 线索锚点：JWT, PostgreSQL, Axum, Stripe, RBAC, Redis
 ```
 
-**渲染规则**：monthly 钩子 `is_rich=true`，全展开（abstract + key_facts + key_entities + clue_anchors）。详见 [retrieve.rs:156-240](../../crates/hippocampus-core/src/retrieve.rs#L156-L240)。
+**渲染规则**：monthly 钩子 `is_rich=true`，全展开（abstract + key_facts + key_entities + clue_anchors）。详见 [retrieve.rs:156-240](../../crates/memory-center-core/src/retrieve.rs#L156-L240)。
 
 ---
 
@@ -843,14 +843,14 @@ sessions/
 
 ### 8.2 LLM 上下文负载对比
 
-| 场景 | 无 Hippocampus | 有 Hippocampus（仅 prompt） | 有 Hippocampus（prompt + 按需 retrieve） |
+| 场景 | 无 MemoryCenter | 有 MemoryCenter（仅 prompt） | 有 MemoryCenter（prompt + 按需 retrieve） |
 |------|---------------|--------------------------|---------------------------------------|
 | Week 1 首次会话 | 0 token | 0 token（空 prompt） | 0 token |
 | Week 2 周二 | 1.63M token（全量历史） | ~500 token（6 个摘要行） | ~15K token（1 个 retrieve + 摘要） |
 | Week 4 末（月末） | 4.51M token（超出窗口） | ~800 token（13 个摘要行） | ~15K token（1 个 retrieve + 摘要） |
 
 **结论**：
-- **无 Hippocampus**：4 周后历史 token 远超任何 LLM 上下文窗口（4.51M）
+- **无 MemoryCenter**：4 周后历史 token 远超任何 LLM 上下文窗口（4.51M）
 - **仅 prompt**：始终 <1K token，但只有摘要级信息
 - **prompt + retrieve**：按需加载，单次 ~15K token，完美适配 200K 上下文窗口
 
@@ -942,13 +942,13 @@ sessions/
 
 | 章节 | 代码位置 | 用途 |
 |------|---------|------|
-| §1 归档 | [archive.rs:138-200](../../crates/hippocampus-core/src/archive.rs#L138-L200) | Archiver::archive() |
-| §2 检索 | [retrieve.rs:248-269](../../crates/hippocampus-core/src/retrieve.rs#L248-L269) | Retriever::retrieve_memory() |
-| §3 硬上限 | [archive.rs:138-200](../../crates/hippocampus-core/src/archive.rs#L138-L200) | was_over_limit 判定 |
-| §4 冲突检测 | [conflict.rs](../../crates/hippocampus-core/src/conflict.rs) | ConflictDetector trait |
-| §5 weekly_merge | [compact.rs:136-269](../../crates/hippocampus-core/src/compact.rs#L136-L269) | Compactor::weekly_merge() |
-| §7 monthly_evict | [compact.rs:285-404](../../crates/hippocampus-core/src/compact.rs#L285-L404) | Compactor::monthly_evict() |
-| §7 评分 | [score.rs:152-168](../../crates/hippocampus-core/src/score.rs#L152-L168) | DefaultScorer::score() |
+| §1 归档 | [archive.rs:138-200](../../crates/memory-center-core/src/archive.rs#L138-L200) | Archiver::archive() |
+| §2 检索 | [retrieve.rs:248-269](../../crates/memory-center-core/src/retrieve.rs#L248-L269) | Retriever::retrieve_memory() |
+| §3 硬上限 | [archive.rs:138-200](../../crates/memory-center-core/src/archive.rs#L138-L200) | was_over_limit 判定 |
+| §4 冲突检测 | [conflict.rs](../../crates/memory-center-core/src/conflict.rs) | ConflictDetector trait |
+| §5 weekly_merge | [compact.rs:136-269](../../crates/memory-center-core/src/compact.rs#L136-L269) | Compactor::weekly_merge() |
+| §7 monthly_evict | [compact.rs:285-404](../../crates/memory-center-core/src/compact.rs#L285-L404) | Compactor::monthly_evict() |
+| §7 评分 | [score.rs:152-168](../../crates/memory-center-core/src/score.rs#L152-L168) | DefaultScorer::score() |
 
 ### 11.3 复现推演的方法
 
@@ -962,4 +962,4 @@ sessions/
 6. 用 `retriever.get_summaries()` 验证索引演化
 7. 用 `retriever.render_to_system_prompt()` 验证 prompt 渲染
 
-参考测试：[crates/hippocampus-core/tests/integration_test.rs](../../crates/hippocampus-core/tests/integration_test.rs)
+参考测试：[crates/memory-center-core/tests/integration_test.rs](../../crates/memory-center-core/tests/integration_test.rs)

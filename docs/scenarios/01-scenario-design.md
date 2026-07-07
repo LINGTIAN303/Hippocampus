@@ -9,7 +9,7 @@
 
 - **用户**：独立开发者小林
 - **技术水平**：熟悉 Rust + Axum，5 年后端经验
-- **使用工具**：集成 Hippocampus MCP Server 的 Claude Code
+- **使用工具**：集成 MemoryCenter MCP Server 的 Claude Code
 - **开发习惯**：长会话（4+ 小时）、跨会话频繁、需要追溯历史决策
 
 ### 项目设定
@@ -22,7 +22,7 @@
 | 项目 ID | `shop-backend` | 用于 project 级聚合索引 |
 | 接入方式 | MCP Server（stdio） | Claude Code 自动拉起子进程 |
 
-### Hippocampus 配置
+### MemoryCenter 配置
 
 | 配置项 | 值 | 说明 |
 |--------|----|----|
@@ -60,7 +60,7 @@
 ### 用户画像
 
 - **用户**：数据科学家小王
-- **使用工具**：LlamaIndex + Hippocampus ChatStore 适配器
+- **使用工具**：LlamaIndex + MemoryCenter ChatStore 适配器
 - **场景特点**：多用户并发查询、需要跨会话保留用户偏好
 
 ### 项目设定
@@ -68,11 +68,11 @@
 | 参数 | 值 | 说明 |
 |------|----|----|
 | 项目名 | `customer-service-bot` | 客服机器人 |
-| 技术栈 | Python + LlamaIndex + Hippocampus Python 绑定 | RAG 应用 |
-| 接入方式 | Python 原生绑定（PyO3） | 直接 `import hippocampus_python` |
-| 并发模型 | 多实例（每会话一个 Hippocampus 对象） | GIL 约束下的串行调用 |
+| 技术栈 | Python + LlamaIndex + MemoryCenter Python 绑定 | RAG 应用 |
+| 接入方式 | Python 原生绑定（PyO3） | 直接 `import memory_center_python` |
+| 并发模型 | 多实例（每会话一个 MemoryCenter 对象） | GIL 约束下的串行调用 |
 
-### Hippocampus 配置
+### MemoryCenter 配置
 
 | 配置项 | 值 | 说明 |
 |--------|----|----|
@@ -95,7 +95,7 @@
 ### 用户画像
 
 - **用户**：AI 平台工程师
-- **使用工具**：LangGraph + Hippocampus HTTP REST API
+- **使用工具**：LangGraph + MemoryCenter HTTP REST API
 - **场景特点**：多个 Agent 共享同一记忆库，需要隔离 + 共享
 
 ### 项目设定
@@ -103,11 +103,11 @@
 | 参数 | 值 | 说明 |
 |------|----|----|
 | 项目名 | `multi-agent-platform` | 多 Agent 协作平台 |
-| 技术栈 | Python + LangGraph + Hippocampus HTTP REST | 分布式 |
+| 技术栈 | Python + LangGraph + MemoryCenter HTTP REST | 分布式 |
 | 接入方式 | HTTP REST API | 远程访问，多语言客户端 |
-| 部署 | hippocampus-server 多实例 + 负载均衡 | 水平扩展 |
+| 部署 | memory-center-server 多实例 + 负载均衡 | 水平扩展 |
 
-### Hippocampus 配置
+### MemoryCenter 配置
 
 | 配置项 | 值 | 说明 |
 |--------|----|----|
@@ -130,7 +130,7 @@
 ### 用户画像
 
 - **用户**：桌面应用开发者
-- **使用工具**：Tauri + Hippocampus C ABI
+- **使用工具**：Tauri + MemoryCenter C ABI
 - **场景特点**：零外部依赖、单二进制部署、本地隐私
 
 ### 项目设定
@@ -138,11 +138,11 @@
 | 参数 | 值 | 说明 |
 |------|----|----|
 | 项目名 | `local-memo-app` | 本地笔记 + AI 助手应用 |
-| 技术栈 | Tauri (Rust) + Hippocampus C ABI | 桌面应用 |
+| 技术栈 | Tauri (Rust) + MemoryCenter C ABI | 桌面应用 |
 | 接入方式 | C ABI 直接嵌入宿主进程 | 零外部依赖 |
-| 部署 | 单二进制（hippocampus.dll 随应用分发） | 隐私优先 |
+| 部署 | 单二进制（memory_center.dll 随应用分发） | 隐私优先 |
 
-### Hippocampus 配置
+### MemoryCenter 配置
 
 | 配置项 | 值 | 说明 |
 |--------|----|----|
@@ -164,7 +164,7 @@
 ### 用户画像
 
 - **用户**：金融企业合规审计员
-- **使用工具**：Hippocampus HTTP REST API + 审计脚本
+- **使用工具**：MemoryCenter HTTP REST API + 审计脚本
 - **场景特点**：完整对话保真归档、不可篡改、可追溯
 
 ### 项目设定
@@ -172,11 +172,11 @@
 | 参数 | 值 | 说明 |
 |------|----|----|
 | 项目名 | `compliance-archive` | 合规审计系统 |
-| 技术栈 | Rust + Hippocampus HTTP REST + 审计工具链 | 企业级 |
+| 技术栈 | Rust + MemoryCenter HTTP REST + 审计工具链 | 企业级 |
 | 接入方式 | HTTP REST API | 集成现有审计系统 |
-| 部署 | hippocampus-server + 定期备份 | 高可用 |
+| 部署 | memory-center-server + 定期备份 | 高可用 |
 
-### Hippocampus 配置
+### MemoryCenter 配置
 
 | 配置项 | 值 | 说明 |
 |--------|----|----|
@@ -199,7 +199,7 @@
 ### 用户画像
 
 - **用户**：独立开发者小李
-- **使用工具**：Codex CLI（GPT-5.5）+ Hippocampus MCP Server
+- **使用工具**：Codex CLI（GPT-5.5）+ MemoryCenter MCP Server
 - **场景特点**：从零开始生产完整项目，7 天短周期高密度开发
 
 ### 项目设定
@@ -213,7 +213,7 @@
 | Agent 工具 | Codex CLI（GPT-5.5） | 支持 MCP 协议 |
 | 预计周期 | 7 天 | 模拟真实开发节奏 |
 
-### Hippocampus 配置
+### MemoryCenter 配置
 
 | 配置项 | 值 | 说明 |
 |--------|----|----|
@@ -262,7 +262,7 @@
 |------|----|----|
 | ... | ... | ... |
 
-### Hippocampus 配置
+### MemoryCenter 配置
 | 配置项 | 值 | 说明 |
 |--------|----|----|
 | ... | ... | ... |

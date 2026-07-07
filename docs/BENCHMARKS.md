@@ -1,21 +1,21 @@
 # 性能基准测试
 
-Hippocampus 使用 [criterion](https://github.com/bheisrow/criterion.rs) 进行性能基准测试，覆盖归档、检索、周期任务三大核心操作。
+MemoryCenter 使用 [criterion](https://github.com/bheisrow/criterion.rs) 进行性能基准测试，覆盖归档、检索、周期任务三大核心操作。
 
 ## 运行
 
 ```bash
 # 运行所有基准测试（约 2-5 分钟，取决于硬件）
-cargo bench -p hippocampus-core
+cargo bench -p memory-center-core
 
 # 只运行归档基准
-cargo bench -p hippocampus-core -- archive
+cargo bench -p memory-center-core -- archive
 
 # 只运行检索基准
-cargo bench -p hippocampus-core -- retrieve
+cargo bench -p memory-center-core -- retrieve
 
 # 只运行周期任务基准
-cargo bench -p hippocampus-core -- compaction
+cargo bench -p memory-center-core -- compaction
 ```
 
 ## 报告查看

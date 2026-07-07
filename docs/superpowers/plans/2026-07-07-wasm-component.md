@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 将 Hippocampus 核心逻辑编译为 WASM，提供 MemoryStorage + JsStorage 双存储实现 + HippocampusCore JS API
+**Goal:** 将 MemoryCenter 核心逻辑编译为 WASM，提供 MemoryStorage + JsStorage 双存储实现 + MemoryCenterCore JS API
 
-**Architecture:** 纵向拆分 hippocampus-core 为 core-logic（纯逻辑 + Storage trait，可编译 WASM）+ core（facade，重导出原生 IO 实现）；新建 hippocampus-wasm crate 提供 wasm-bindgen 绑定
+**Architecture:** 纵向拆分 memory-center-core 为 core-logic（纯逻辑 + Storage trait，可编译 WASM）+ core（facade，重导出原生 IO 实现）；新建 memory-center-wasm crate 提供 wasm-bindgen 绑定
 
 **Tech Stack:** Rust 1.88 / tokio sync / wasm-bindgen / serde-wasm-bindgen / wasm-bindgen-futures / wasm-pack
 
@@ -14,7 +14,7 @@
 
 ## 文件结构
 
-### 新建 crate 1: `crates/hippocampus-core-logic`
+### 新建 crate 1: `crates/memory-center-core-logic`
 - `Cargo.toml` — 无原生 IO 依赖
 - `src/lib.rs` — 模块导出
 - `src/model.rs` — 从 core 迁移（纯数据结构）
@@ -35,46 +35,46 @@
 - `src/semantic.rs` — 从 core 迁移
 - `tests/mock_storage.rs` — MockStorage 测试辅助
 
-### 新建 crate 2: `crates/hippocampus-wasm`
+### 新建 crate 2: `crates/memory-center-wasm`
 - `Cargo.toml` — wasm-bindgen + serde-wasm-bindgen
 - `src/lib.rs` — WASM 入口 + 导出类
 - `src/error.rs` — Error → JsValue 转换
 - `src/memory_storage.rs` — MemoryStorage 实现
 - `src/js_storage.rs` — JsStorage 注入式实现
-- `src/bindings.rs` — HippocampusCore + 数据类型绑定
+- `src/bindings.rs` — MemoryCenterCore + 数据类型绑定
 - `tests/memory_storage.rs` — wasm-pack 测试
 - `tests/js_storage.rs` — wasm-pack 测试
-- `tests/api.rs` — HippocampusCore API 测试
+- `tests/api.rs` — MemoryCenterCore API 测试
 
 ### 修改文件
 - `Cargo.toml`（workspace） — members 新增 + workspace.dependencies 新增 wasm 相关
-- `crates/hippocampus-core/Cargo.toml` — 新增 core-logic 依赖
-- `crates/hippocampus-core/src/lib.rs` — 改为 facade
-- `crates/hippocampus-core/src/storage.rs` — 删除 trait 定义，保留 LocalStorage
+- `crates/memory-center-core/Cargo.toml` — 新增 core-logic 依赖
+- `crates/memory-center-core/src/lib.rs` — 改为 facade
+- `crates/memory-center-core/src/storage.rs` — 删除 trait 定义，保留 LocalStorage
 - `CHANGELOG.md` — 新增 v2.35 条目
 
 ---
 
-## Task 1: 新建 hippocampus-core-logic crate 骨架
+## Task 1: 新建 memory-center-core-logic crate 骨架
 
 **Files:**
-- Create: `crates/hippocampus-core-logic/Cargo.toml`
-- Create: `crates/hippocampus-core-logic/src/lib.rs`
+- Create: `crates/memory-center-core-logic/Cargo.toml`
+- Create: `crates/memory-center-core-logic/src/lib.rs`
 - Modify: `Cargo.toml`（workspace）
 
 - [ ] **Step 1: 新建 Cargo.toml**
 
 ```toml
-# crates/hippocampus-core-logic/Cargo.toml
+# crates/memory-center-core-logic/Cargo.toml
 [package]
-name = "hippocampus-core-logic"
+name = "memory-center-core-logic"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Hippocampus 核心逻辑 - 纯逻辑 + Storage trait（WASM 兼容）"
+description = "MemoryCenter 核心逻辑 - 纯逻辑 + Storage trait（WASM 兼容）"
 
 [dependencies]
 serde.workspace = true
@@ -98,8 +98,8 @@ tempfile = "3.0"
 - [ ] **Step 2: 新建空 lib.rs**
 
 ```rust
-// crates/hippocampus-core-logic/src/lib.rs
-//! # Hippocampus Core Logic
+// crates/memory-center-core-logic/src/lib.rs
+//! # MemoryCenter Core Logic
 //!
 //! 核心逻辑 + Storage trait 定义，无原生 IO 依赖，可编译为 WASM。
 
@@ -131,22 +131,22 @@ pub type Result<T> = std::result::Result<T, Error>;
 ```toml
 [workspace]
 members = [
-    "crates/hippocampus-core",
-    "crates/hippocampus-core-logic",  # 新增
+    "crates/memory-center-core",
+    "crates/memory-center-core-logic",  # 新增
     # ... 其他不变
 ]
 ```
 
 - [ ] **Step 4: 验证空 crate 编译**
 
-Run: `cargo build -p hippocampus-core-logic`
+Run: `cargo build -p memory-center-core-logic`
 Expected: 编译通过（无模块依赖）
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/hippocampus-core-logic/ Cargo.toml
-git commit -m "feat(v2.35): 新建 hippocampus-core-logic crate 骨架"
+git add crates/memory-center-core-logic/ Cargo.toml
+git commit -m "feat(v2.35): 新建 memory-center-core-logic crate 骨架"
 ```
 
 ---
@@ -154,21 +154,21 @@ git commit -m "feat(v2.35): 新建 hippocampus-core-logic crate 骨架"
 ## Task 2: 迁移纯数据/算法模块
 
 **Files:**
-- Create: `crates/hippocampus-core-logic/src/model.rs`（从 `crates/hippocampus-core/src/model.rs` 复制）
-- Create: `crates/hippocampus-core-logic/src/context_parser.rs`（复制）
-- Create: `crates/hippocampus-core-logic/src/serialization.rs`（复制）
-- Create: `crates/hippocampus-core-logic/src/migrator.rs`（复制）
-- Create: `crates/hippocampus-core-logic/src/score.rs`（复制）
-- Create: `crates/hippocampus-core-logic/src/conflict.rs`（复制）
-- Create: `crates/hippocampus-core-logic/src/heuristic.rs`（复制）
-- Create: `crates/hippocampus-core-logic/src/generate.rs`（复制）
-- Create: `crates/hippocampus-core-logic/src/vector.rs`（复制）
-- Create: `crates/hippocampus-core-logic/src/bm25.rs`（复制）
-- Modify: `crates/hippocampus-core-logic/src/lib.rs`
+- Create: `crates/memory-center-core-logic/src/model.rs`（从 `crates/memory-center-core/src/model.rs` 复制）
+- Create: `crates/memory-center-core-logic/src/context_parser.rs`（复制）
+- Create: `crates/memory-center-core-logic/src/serialization.rs`（复制）
+- Create: `crates/memory-center-core-logic/src/migrator.rs`（复制）
+- Create: `crates/memory-center-core-logic/src/score.rs`（复制）
+- Create: `crates/memory-center-core-logic/src/conflict.rs`（复制）
+- Create: `crates/memory-center-core-logic/src/heuristic.rs`（复制）
+- Create: `crates/memory-center-core-logic/src/generate.rs`（复制）
+- Create: `crates/memory-center-core-logic/src/vector.rs`（复制）
+- Create: `crates/memory-center-core-logic/src/bm25.rs`（复制）
+- Modify: `crates/memory-center-core-logic/src/lib.rs`
 
 - [ ] **Step 1: 复制纯逻辑模块**
 
-从 `crates/hippocampus-core/src/` 复制以下文件到 `crates/hippocampus-core-logic/src/`（内容原样保留）：
+从 `crates/memory-center-core/src/` 复制以下文件到 `crates/memory-center-core-logic/src/`（内容原样保留）：
 - `model.rs`
 - `context_parser.rs`
 - `serialization.rs`
@@ -185,8 +185,8 @@ git commit -m "feat(v2.35): 新建 hippocampus-core-logic crate 骨架"
 - [ ] **Step 2: 更新 lib.rs 导出模块**
 
 ```rust
-// crates/hippocampus-core-logic/src/lib.rs
-//! # Hippocampus Core Logic
+// crates/memory-center-core-logic/src/lib.rs
+//! # MemoryCenter Core Logic
 //!
 //! 核心逻辑 + Storage trait 定义，无原生 IO 依赖，可编译为 WASM。
 
@@ -252,18 +252,18 @@ pub mod vector;
 
 - [ ] **Step 3: 验证编译**
 
-Run: `cargo build -p hippocampus-core-logic`
+Run: `cargo build -p memory-center-core-logic`
 Expected: 编译通过（仅纯逻辑模块）
 
 - [ ] **Step 4: 验证单元测试迁移**
 
-Run: `cargo test -p hippocampus-core-logic --lib`
+Run: `cargo test -p memory-center-core-logic --lib`
 Expected: 迁移的模块内嵌测试通过
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/hippocampus-core-logic/
+git add crates/memory-center-core-logic/
 git commit -m "feat(v2.35): 迁移纯数据/算法模块到 core-logic"
 ```
 
@@ -272,13 +272,13 @@ git commit -m "feat(v2.35): 迁移纯数据/算法模块到 core-logic"
 ## Task 3: 拆分 storage.rs（trait → core-logic）
 
 **Files:**
-- Create: `crates/hippocampus-core-logic/src/storage.rs`（仅 trait + SessionMeta）
-- Modify: `crates/hippocampus-core/src/storage.rs`（删除 trait，保留 LocalStorage）
-- Modify: `crates/hippocampus-core-logic/src/lib.rs`（启用 storage 导出）
+- Create: `crates/memory-center-core-logic/src/storage.rs`（仅 trait + SessionMeta）
+- Modify: `crates/memory-center-core/src/storage.rs`（删除 trait，保留 LocalStorage）
+- Modify: `crates/memory-center-core-logic/src/lib.rs`（启用 storage 导出）
 
 - [ ] **Step 1: 新建 core-logic/src/storage.rs（trait + SessionMeta 部分）**
 
-从 `crates/hippocampus-core/src/storage.rs` 复制以下部分到 `crates/hippocampus-core-logic/src/storage.rs`：
+从 `crates/memory-center-core/src/storage.rs` 复制以下部分到 `crates/memory-center-core-logic/src/storage.rs`：
 - `SessionMeta` 结构体（line 63-72）
 - `Storage` trait 定义（line 96-560，所有 trait 方法含默认实现）
 - **不要**复制 `LocalStorage` 结构体及其实现
@@ -288,7 +288,7 @@ git commit -m "feat(v2.35): 迁移纯数据/算法模块到 core-logic"
 //! # Storage trait 定义
 //!
 //! 可插拔存储后端 trait，无原生 IO 依赖，WASM 兼容。
-//! 具体实现（LocalStorage / SqliteStorage / CachedStorage）在 hippocampus-core crate。
+//! 具体实现（LocalStorage / SqliteStorage / CachedStorage）在 memory-center-core crate。
 
 use crate::model::{ArchivePeriod, IndexDocument, IndexHook, MemoryFile, MemoryUpdateRecord};
 use chrono::{DateTime, Utc};
@@ -307,18 +307,18 @@ pub trait Storage: Send + Sync { /* ... */ }
 - [ ] **Step 2: 启用 lib.rs 中的 storage 导出**
 
 ```rust
-// crates/hippocampus-core-logic/src/lib.rs
+// crates/memory-center-core-logic/src/lib.rs
 pub mod storage;  // 取消注释
 ```
 
 - [ ] **Step 3: 验证 core-logic 编译**
 
-Run: `cargo build -p hippocampus-core-logic`
+Run: `cargo build -p memory-center-core-logic`
 Expected: 编译通过
 
-- [ ] **Step 4: 修改 hippocampus-core/src/storage.rs（删除 trait，保留 LocalStorage）**
+- [ ] **Step 4: 修改 memory-center-core/src/storage.rs（删除 trait，保留 LocalStorage）**
 
-在 `crates/hippocampus-core/src/storage.rs` 中：
+在 `crates/memory-center-core/src/storage.rs` 中：
 - 删除 `SessionMeta` 结构体定义（已移到 core-logic）
 - 删除 `Storage` trait 定义（已移到 core-logic）
 - 保留 `LocalStorage` 结构体及其 `impl Storage for LocalStorage` 实现
@@ -327,10 +327,10 @@ Expected: 编译通过
 ```rust
 //! # LocalStorage 实现
 //!
-//! 本地文件树存储后端。Storage trait 定义在 hippocampus-core-logic crate。
+//! 本地文件树存储后端。Storage trait 定义在 memory-center-core-logic crate。
 
 use crate::model::{ArchivePeriod, IndexDocument, IndexHook, MemoryFile};
-use hippocampus_core_logic::storage::{SessionMeta, Storage};  // 从 core-logic 引入
+use memory_center_core_logic::storage::{SessionMeta, Storage};  // 从 core-logic 引入
 use chrono::{DateTime, Datelike, NaiveDateTime, Utc};
 use dashmap::DashMap;
 use std::path::{Path, PathBuf};
@@ -338,55 +338,55 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 ```
 
-- [ ] **Step 5: 修改 hippocampus-core/src/lib.rs 重导出 Storage trait**
+- [ ] **Step 5: 修改 memory-center-core/src/lib.rs 重导出 Storage trait**
 
 ```rust
-// crates/hippocampus-core/src/lib.rs
+// crates/memory-center-core/src/lib.rs
 // 从 core-logic 重导出 trait 和纯逻辑
-pub use hippocampus_core_logic::*;
-// 显式重导出 Storage trait 和 SessionMeta（保持 use hippocampus_core::storage::Storage 可用）
-pub use hippocampus_core_logic::storage::{Storage, SessionMeta};
+pub use memory_center_core_logic::*;
+// 显式重导出 Storage trait 和 SessionMeta（保持 use memory_center_core::storage::Storage 可用）
+pub use memory_center_core_logic::storage::{Storage, SessionMeta};
 ```
 
-- [ ] **Step 6: 修改 hippocampus-core/Cargo.toml 新增 core-logic 依赖**
+- [ ] **Step 6: 修改 memory-center-core/Cargo.toml 新增 core-logic 依赖**
 
 ```toml
 [dependencies]
-hippocampus-core-logic = { path = "../hippocampus-core-logic" }
+memory-center-core-logic = { path = "../memory-center-core-logic" }
 # 其他依赖不变
 ```
 
-- [ ] **Step 7: 验证 hippocampus-core 编译（预期失败，因为 sqlite.rs/cache.rs 等也引用 Storage trait）**
+- [ ] **Step 7: 验证 memory-center-core 编译（预期失败，因为 sqlite.rs/cache.rs 等也引用 Storage trait）**
 
-Run: `cargo build -p hippocampus-core`
-Expected: 编译失败，sqlite.rs / cache.rs 等需要 `use hippocampus_core_logic::storage::Storage`
+Run: `cargo build -p memory-center-core`
+Expected: 编译失败，sqlite.rs / cache.rs 等需要 `use memory_center_core_logic::storage::Storage`
 
 - [ ] **Step 8: 修复 sqlite.rs / sqlite_vector.rs / cache.rs 的 Storage 引用**
 
-在 `crates/hippocampus-core/src/sqlite.rs`、`sqlite_vector.rs`、`cache.rs` 中，找到 `use crate::storage::Storage` 改为：
+在 `crates/memory-center-core/src/sqlite.rs`、`sqlite_vector.rs`、`cache.rs` 中，找到 `use crate::storage::Storage` 改为：
 
 ```rust
-use hippocampus_core_logic::storage::Storage;
-// 或（通过 hippocampus-core 的重导出）
+use memory_center_core_logic::storage::Storage;
+// 或（通过 memory-center-core 的重导出）
 use crate::Storage;
 ```
 
 推荐用第二种（通过 facade 重导出），保持 crate 内一致。
 
-- [ ] **Step 9: 验证 hippocampus-core 全量编译**
+- [ ] **Step 9: 验证 memory-center-core 全量编译**
 
-Run: `cargo build -p hippocampus-core`
+Run: `cargo build -p memory-center-core`
 Expected: 编译通过
 
-- [ ] **Step 10: 验证 hippocampus-core 单元测试**
+- [ ] **Step 10: 验证 memory-center-core 单元测试**
 
-Run: `cargo test -p hippocampus-core`
+Run: `cargo test -p memory-center-core`
 Expected: 所有现有测试通过（无回归）
 
 - [ ] **Step 11: Commit**
 
 ```bash
-git add crates/hippocampus-core-logic/src/storage.rs crates/hippocampus-core-logic/src/lib.rs crates/hippocampus-core/
+git add crates/memory-center-core-logic/src/storage.rs crates/memory-center-core-logic/src/lib.rs crates/memory-center-core/
 git commit -m "feat(v2.35): 拆分 storage.rs，trait 移到 core-logic"
 ```
 
@@ -395,17 +395,17 @@ git commit -m "feat(v2.35): 拆分 storage.rs，trait 移到 core-logic"
 ## Task 4: 迁移业务逻辑模块
 
 **Files:**
-- Create: `crates/hippocampus-core-logic/src/archive.rs`（从 core 复制）
-- Create: `crates/hippocampus-core-logic/src/retrieve.rs`（从 core 复制）
-- Create: `crates/hippocampus-core-logic/src/compact.rs`（从 core 复制）
-- Create: `crates/hippocampus-core-logic/src/hybrid.rs`（从 core 复制）
-- Create: `crates/hippocampus-core-logic/src/semantic.rs`（从 core 复制）
-- Modify: `crates/hippocampus-core-logic/src/lib.rs`（启用所有模块导出）
-- Modify: `crates/hippocampus-core/src/lib.rs`（删除被迁移模块，保留 facade）
+- Create: `crates/memory-center-core-logic/src/archive.rs`（从 core 复制）
+- Create: `crates/memory-center-core-logic/src/retrieve.rs`（从 core 复制）
+- Create: `crates/memory-center-core-logic/src/compact.rs`（从 core 复制）
+- Create: `crates/memory-center-core-logic/src/hybrid.rs`（从 core 复制）
+- Create: `crates/memory-center-core-logic/src/semantic.rs`（从 core 复制）
+- Modify: `crates/memory-center-core-logic/src/lib.rs`（启用所有模块导出）
+- Modify: `crates/memory-center-core/src/lib.rs`（删除被迁移模块，保留 facade）
 
 - [ ] **Step 1: 复制业务逻辑模块到 core-logic**
 
-从 `crates/hippocampus-core/src/` 复制以下文件到 `crates/hippocampus-core-logic/src/`（内容原样保留）：
+从 `crates/memory-center-core/src/` 复制以下文件到 `crates/memory-center-core-logic/src/`（内容原样保留）：
 - `archive.rs`
 - `retrieve.rs`
 - `compact.rs`
@@ -417,7 +417,7 @@ git commit -m "feat(v2.35): 拆分 storage.rs，trait 移到 core-logic"
 - [ ] **Step 2: 启用 lib.rs 所有模块导出**
 
 ```rust
-// crates/hippocampus-core-logic/src/lib.rs
+// crates/memory-center-core-logic/src/lib.rs
 pub mod archive;
 pub mod bm25;
 pub mod compact;
@@ -438,23 +438,23 @@ pub mod vector;
 
 - [ ] **Step 3: 验证 core-logic 编译**
 
-Run: `cargo build -p hippocampus-core-logic`
+Run: `cargo build -p memory-center-core-logic`
 Expected: 编译通过
 
-- [ ] **Step 4: 修改 hippocampus-core/src/lib.rs 删除被迁移模块**
+- [ ] **Step 4: 修改 memory-center-core/src/lib.rs 删除被迁移模块**
 
 ```rust
-// crates/hippocampus-core/src/lib.rs
-//! # Hippocampus Core（Facade）
+// crates/memory-center-core/src/lib.rs
+//! # MemoryCenter Core（Facade）
 //!
-//! 向后兼容 facade：重导出 hippocampus-core-logic 的所有纯逻辑 + Storage trait，
+//! 向后兼容 facade：重导出 memory-center-core-logic 的所有纯逻辑 + Storage trait，
 //! 并保留原生 IO 实现（LocalStorage / SqliteStorage / CachedStorage）。
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs, rust_2018_idioms)]
 
 // 从 core-logic 重导出所有纯逻辑 + trait
-pub use hippocampus_core_logic::*;
+pub use memory_center_core_logic::*;
 
 // 原生 IO 实现（模块路径不变）
 pub mod storage;  // LocalStorage
@@ -462,49 +462,49 @@ pub mod sqlite;
 pub mod sqlite_vector;
 pub mod cache;
 
-// 显式重导出 Storage trait（保持 use hippocampus_core::storage::Storage 可用）
-pub use hippocampus_core_logic::storage::{Storage, SessionMeta};
+// 显式重导出 Storage trait（保持 use memory_center_core::storage::Storage 可用）
+pub use memory_center_core_logic::storage::{Storage, SessionMeta};
 pub use storage::LocalStorage;
 ```
 
-- [ ] **Step 5: 删除 hippocampus-core/src/ 中已迁移的文件**
+- [ ] **Step 5: 删除 memory-center-core/src/ 中已迁移的文件**
 
 删除以下文件（已迁移到 core-logic）：
-- `crates/hippocampus-core/src/model.rs`
-- `crates/hippocampus-core/src/context_parser.rs`
-- `crates/hippocampus-core/src/serialization.rs`
-- `crates/hippocampus-core/src/migrator.rs`
-- `crates/hippocampus-core/src/score.rs`
-- `crates/hippocampus-core/src/conflict.rs`
-- `crates/hippocampus-core/src/heuristic.rs`
-- `crates/hippocampus-core/src/generate.rs`
-- `crates/hippocampus-core/src/vector.rs`
-- `crates/hippocampus-core/src/bm25.rs`
-- `crates/hippocampus-core/src/archive.rs`
-- `crates/hippocampus-core/src/retrieve.rs`
-- `crates/hippocampus-core/src/compact.rs`
-- `crates/hippocampus-core/src/hybrid.rs`
-- `crates/hippocampus-core/src/semantic.rs`
+- `crates/memory-center-core/src/model.rs`
+- `crates/memory-center-core/src/context_parser.rs`
+- `crates/memory-center-core/src/serialization.rs`
+- `crates/memory-center-core/src/migrator.rs`
+- `crates/memory-center-core/src/score.rs`
+- `crates/memory-center-core/src/conflict.rs`
+- `crates/memory-center-core/src/heuristic.rs`
+- `crates/memory-center-core/src/generate.rs`
+- `crates/memory-center-core/src/vector.rs`
+- `crates/memory-center-core/src/bm25.rs`
+- `crates/memory-center-core/src/archive.rs`
+- `crates/memory-center-core/src/retrieve.rs`
+- `crates/memory-center-core/src/compact.rs`
+- `crates/memory-center-core/src/hybrid.rs`
+- `crates/memory-center-core/src/semantic.rs`
 
-- [ ] **Step 6: 验证 hippocampus-core 编译**
+- [ ] **Step 6: 验证 memory-center-core 编译**
 
-Run: `cargo build -p hippocampus-core`
+Run: `cargo build -p memory-center-core`
 Expected: 编译通过
 
-- [ ] **Step 7: 验证 hippocampus-core 单元测试**
+- [ ] **Step 7: 验证 memory-center-core 单元测试**
 
-Run: `cargo test -p hippocampus-core`
+Run: `cargo test -p memory-center-core`
 Expected: 所有现有测试通过（无回归）
 
 - [ ] **Step 8: 验证下游 crate 编译**
 
-Run: `cargo build -p hippocampus-server -p hippocampus-mcp`
+Run: `cargo build -p memory-center-server -p memory-center-mcp`
 Expected: 编译通过（facade 重导出保证向后兼容）
 
 - [ ] **Step 9: Commit**
 
 ```bash
-git add crates/hippocampus-core-logic/ crates/hippocampus-core/
+git add crates/memory-center-core-logic/ crates/memory-center-core/
 git commit -m "feat(v2.35): 迁移业务逻辑模块到 core-logic，core 改为 facade"
 ```
 
@@ -513,18 +513,18 @@ git commit -m "feat(v2.35): 迁移业务逻辑模块到 core-logic，core 改为
 ## Task 5: 新增 MockStorage 测试辅助
 
 **Files:**
-- Create: `crates/hippocampus-core-logic/tests/mock_storage.rs`
-- Create: `crates/hippocampus-core-logic/tests/mock_storage_basic.rs`
+- Create: `crates/memory-center-core-logic/tests/mock_storage.rs`
+- Create: `crates/memory-center-core-logic/tests/mock_storage_basic.rs`
 
 - [ ] **Step 1: 写失败测试 — MockStorage 基础 CRUD**
 
 ```rust
-// crates/hippocampus-core-logic/tests/mock_storage_basic.rs
+// crates/memory-center-core-logic/tests/mock_storage_basic.rs
 //! MockStorage 基础 CRUD 测试
 
-use hippocampus_core_logic::model::*;
-use hippocampus_core_logic::storage::{Storage, SessionMeta};
-use hippocampus_core_logic::tests::mock_storage::MockStorage;
+use memory_center_core_logic::model::*;
+use memory_center_core_logic::storage::{Storage, SessionMeta};
+use memory_center_core_logic::tests::mock_storage::MockStorage;
 use chrono::Utc;
 use uuid::Uuid;
 
@@ -600,18 +600,18 @@ async fn test_mock_storage_append_hook() {
 
 - [ ] **Step 2: 运行测试验证失败**
 
-Run: `cargo test -p hippocampus-core-logic --test mock_storage_basic`
+Run: `cargo test -p memory-center-core-logic --test mock_storage_basic`
 Expected: FAIL（mock_storage 模块不存在）
 
 - [ ] **Step 3: 实现 MockStorage**
 
 ```rust
-// crates/hippocampus-core-logic/tests/mock_storage.rs
+// crates/memory-center-core-logic/tests/mock_storage.rs
 //! MockStorage 测试辅助 - 纯内存 Storage 实现
 
-use hippocampus_core_logic::model::*;
-use hippocampus_core_logic::storage::{Storage, SessionMeta};
-use hippocampus_core_logic::{Error, Result};
+use memory_center_core_logic::model::*;
+use memory_center_core_logic::storage::{Storage, SessionMeta};
+use memory_center_core_logic::{Error, Result};
 use std::collections::HashMap;
 use tokio::sync::RwLock;
 
@@ -710,7 +710,7 @@ impl Storage for MockStorage {
 - [ ] **Step 4: 在 lib.rs 添加 tests 模块入口**
 
 ```rust
-// crates/hippocampus-core-logic/src/lib.rs 末尾添加
+// crates/memory-center-core-logic/src/lib.rs 末尾添加
 #[cfg(test)]
 pub mod tests {
     // 测试辅助模块入口（实际文件在 tests/ 目录）
@@ -725,13 +725,13 @@ mod mock_storage;  // 引入同目录的 mock_storage.rs
 
 - [ ] **Step 5: 运行测试验证通过**
 
-Run: `cargo test -p hippocampus-core-logic --test mock_storage_basic`
+Run: `cargo test -p memory-center-core-logic --test mock_storage_basic`
 Expected: 3 个测试通过
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add crates/hippocampus-core-logic/tests/
+git add crates/memory-center-core-logic/tests/
 git commit -m "test(v2.35): 新增 MockStorage 测试辅助"
 ```
 
@@ -740,9 +740,9 @@ git commit -m "test(v2.35): 新增 MockStorage 测试辅助"
 ## Task 6: WASM 编译验证 + 兼容性修复
 
 **Files:**
-- Modify: `crates/hippocampus-core-logic/Cargo.toml`（feature flag）
-- Modify: `crates/hippocampus-core-logic/src/bm25.rs`（条件编译）
-- Modify: `crates/hippocampus-core-logic/src/lib.rs`（条件编译）
+- Modify: `crates/memory-center-core-logic/Cargo.toml`（feature flag）
+- Modify: `crates/memory-center-core-logic/src/bm25.rs`（条件编译）
+- Modify: `crates/memory-center-core-logic/src/lib.rs`（条件编译）
 
 - [ ] **Step 1: 添加 wasm target**
 
@@ -750,13 +750,13 @@ Run: `rustup target add wasm32-unknown-unknown`
 
 - [ ] **Step 2: 验证 core-logic WASM 编译（预期失败）**
 
-Run: `cargo build -p hippocampus-core-logic --target wasm32-unknown-unknown`
+Run: `cargo build -p memory-center-core-logic --target wasm32-unknown-unknown`
 Expected: 编译失败，记录错误信息（可能 jieba-rs / dashmap 不兼容）
 
 - [ ] **Step 3: 添加 feature flag 到 Cargo.toml**
 
 ```toml
-# crates/hippocampus-core-logic/Cargo.toml
+# crates/memory-center-core-logic/Cargo.toml
 [features]
 default = ["native"]
 native = ["dep:jieba-rs", "dep:dashmap"]
@@ -772,7 +772,7 @@ dashmap = { workspace = true, optional = true }
 - [ ] **Step 4: 修改 lib.rs 条件编译**
 
 ```rust
-// crates/hippocampus-core-logic/src/lib.rs
+// crates/memory-center-core-logic/src/lib.rs
 #[cfg(feature = "native")]
 pub mod bm25;  // 依赖 jieba-rs
 #[cfg(not(feature = "native"))]
@@ -783,7 +783,7 @@ pub mod bm25;  // 简化版（无 jieba-rs），Task 6 Step 5 实现
 
 - [ ] **Step 5: 创建 WASM 版 bm25.rs（简易分词）**
 
-如果 jieba-rs 不兼容 WASM，创建 `crates/hippocampus-core-logic/src/bm25_wasm.rs`（简易字符分词版）：
+如果 jieba-rs 不兼容 WASM，创建 `crates/memory-center-core-logic/src/bm25_wasm.rs`（简易字符分词版）：
 
 ```rust
 //! WASM 版 BM25 检索（简易字符分词，无 jieba-rs）
@@ -855,32 +855,32 @@ pub mod bm25 {
 
 如果 dashmap 不兼容 WASM，在引用 dashmap 的模块（如 storage.rs 的 LocalStorage 已迁移到 core，core-logic 内应无 dashmap 引用。如有，用 `HashMap + RwLock` 替换）。
 
-Run: `cargo build -p hippocampus-core-logic --target wasm32-unknown-unknown --no-default-features --features wasm`
+Run: `cargo build -p memory-center-core-logic --target wasm32-unknown-unknown --no-default-features --features wasm`
 Expected: 编译通过
 
 - [ ] **Step 7: 验证 native 模式仍正常**
 
-Run: `cargo build -p hippocampus-core-logic`
+Run: `cargo build -p memory-center-core-logic`
 Expected: 编译通过（default features = native）
 
-Run: `cargo test -p hippocampus-core-logic`
+Run: `cargo test -p memory-center-core-logic`
 Expected: 所有测试通过
 
 - [ ] **Step 8: Commit**
 
 ```bash
-git add crates/hippocampus-core-logic/
+git add crates/memory-center-core-logic/
 git commit -m "feat(v2.35): WASM 编译验证 + feature flag 兼容性修复"
 ```
 
 ---
 
-## Task 7: 新建 hippocampus-wasm crate 骨架 + error 模块
+## Task 7: 新建 memory-center-wasm crate 骨架 + error 模块
 
 **Files:**
-- Create: `crates/hippocampus-wasm/Cargo.toml`
-- Create: `crates/hippocampus-wasm/src/lib.rs`
-- Create: `crates/hippocampus-wasm/src/error.rs`
+- Create: `crates/memory-center-wasm/Cargo.toml`
+- Create: `crates/memory-center-wasm/src/lib.rs`
+- Create: `crates/memory-center-wasm/src/error.rs`
 - Modify: `Cargo.toml`（workspace 注册 + 新增 wasm 相关依赖）
 
 - [ ] **Step 1: 在 workspace Cargo.toml 新增 wasm 相关依赖**
@@ -898,28 +898,28 @@ wasm-bindgen-futures = "0.4"
 ```toml
 members = [
     # ... 其他
-    "crates/hippocampus-wasm",
+    "crates/memory-center-wasm",
 ]
 ```
 
-- [ ] **Step 2: 新建 hippocampus-wasm/Cargo.toml**
+- [ ] **Step 2: 新建 memory-center-wasm/Cargo.toml**
 
 ```toml
 [package]
-name = "hippocampus-wasm"
+name = "memory-center-wasm"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Hippocampus WASM 绑定 - 浏览器/Edge/多语言嵌入"
+description = "MemoryCenter WASM 绑定 - 浏览器/Edge/多语言嵌入"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-hippocampus-core-logic = { path = "../hippocampus-core-logic", default-features = false, features = ["wasm"] }
+memory-center-core-logic = { path = "../memory-center-core-logic", default-features = false, features = ["wasm"] }
 wasm-bindgen.workspace = true
 js-sys.workspace = true
 serde = { workspace = true }
@@ -939,7 +939,7 @@ wasm-bindgen-test = "0.3"
 ```rust
 //! Error → JsValue 转换
 
-use hippocampus_core_logic::Error;
+use memory_center_core_logic::Error;
 use wasm_bindgen::JsValue;
 
 /// 将 core-logic Error 转换为 JS Error 对象
@@ -969,9 +969,9 @@ pub fn js_to_error_message(js: &JsValue) -> String {
 - [ ] **Step 4: 新建 src/lib.rs**
 
 ```rust
-//! # Hippocampus WASM
+//! # MemoryCenter WASM
 //!
-//! WASM 绑定层：将 hippocampus-core-logic 编译为 WASM，提供 JS 调用 API。
+//! WASM 绑定层：将 memory-center-core-logic 编译为 WASM，提供 JS 调用 API。
 
 #![forbid(unsafe_code)]
 
@@ -982,32 +982,32 @@ pub mod bindings;
 
 pub use memory_storage::MemoryStorage;
 pub use js_storage::JsStorage;
-pub use bindings::HippocampusCore;
+pub use bindings::MemoryCenterCore;
 ```
 
 - [ ] **Step 5: 新建空占位模块**
 
 ```rust
-// crates/hippocampus-wasm/src/memory_storage.rs
+// crates/memory-center-wasm/src/memory_storage.rs
 //! MemoryStorage 实现（Task 8 填充）
 
-// crates/hippocampus-wasm/src/js_storage.rs
+// crates/memory-center-wasm/src/js_storage.rs
 //! JsStorage 注入式实现（Task 9 填充）
 
-// crates/hippocampus-wasm/src/bindings.rs
-//! HippocampusCore 绑定（Task 10 填充）
+// crates/memory-center-wasm/src/bindings.rs
+//! MemoryCenterCore 绑定（Task 10 填充）
 ```
 
 - [ ] **Step 6: 验证 WASM crate 编译**
 
-Run: `cargo build -p hippocampus-wasm --target wasm32-unknown-unknown`
+Run: `cargo build -p memory-center-wasm --target wasm32-unknown-unknown`
 Expected: 编译通过（空占位模块）
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add crates/hippocampus-wasm/ Cargo.toml
-git commit -m "feat(v2.35): 新建 hippocampus-wasm crate 骨架 + error 模块"
+git add crates/memory-center-wasm/ Cargo.toml
+git commit -m "feat(v2.35): 新建 memory-center-wasm crate 骨架 + error 模块"
 ```
 
 ---
@@ -1015,16 +1015,16 @@ git commit -m "feat(v2.35): 新建 hippocampus-wasm crate 骨架 + error 模块"
 ## Task 8: 实现 MemoryStorage
 
 **Files:**
-- Modify: `crates/hippocampus-wasm/src/memory_storage.rs`
-- Create: `crates/hippocampus-wasm/tests/memory_storage.rs`
+- Modify: `crates/memory-center-wasm/src/memory_storage.rs`
+- Create: `crates/memory-center-wasm/tests/memory_storage.rs`
 
 - [ ] **Step 1: 写失败测试 — MemoryStorage 基础 CRUD**
 
 ```rust
-// crates/hippocampus-wasm/tests/memory_storage.rs
+// crates/memory-center-wasm/tests/memory_storage.rs
 //! MemoryStorage 基础 CRUD 测试
 
-use hippocampus_wasm::MemoryStorage;
+use memory_center_wasm::MemoryStorage;
 use wasm_bindgen_test::*;
 
 wasm_bindgen_test_configure!(run_in_node);
@@ -1054,21 +1054,21 @@ async fn test_memory_storage_raw_context() {
 
 - [ ] **Step 2: 运行测试验证失败**
 
-Run: `wasm-pack test -p hippocampus-wasm --node`
+Run: `wasm-pack test -p memory-center-wasm --node`
 Expected: FAIL（MemoryStorage::new 等方法未实现）
 
 - [ ] **Step 3: 实现 MemoryStorage**
 
 ```rust
-// crates/hippocampus-wasm/src/memory_storage.rs
+// crates/memory-center-wasm/src/memory_storage.rs
 //! MemoryStorage - 纯内存 Storage 实现
 //!
 //! 所有数据进程内存储，重启丢失。
 //! 用于 demo / 测试 / 无状态计算 / 其他实现的 fallback。
 
-use hippocampus_core_logic::model::*;
-use hippocampus_core_logic::storage::{Storage, SessionMeta};
-use hippocampus_core_logic::{Error, Result};
+use memory_center_core_logic::model::*;
+use memory_center_core_logic::storage::{Storage, SessionMeta};
+use memory_center_core_logic::{Error, Result};
 use std::collections::HashMap;
 use tokio::sync::RwLock;
 use wasm_bindgen::prelude::*;
@@ -1176,13 +1176,13 @@ impl Storage for MemoryStorage {
 
 - [ ] **Step 4: 运行测试验证通过**
 
-Run: `wasm-pack test -p hippocampus-wasm --node`
+Run: `wasm-pack test -p memory-center-wasm --node`
 Expected: 4 个测试通过
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/hippocampus-wasm/src/memory_storage.rs crates/hippocampus-wasm/tests/memory_storage.rs
+git add crates/memory-center-wasm/src/memory_storage.rs crates/memory-center-wasm/tests/memory_storage.rs
 git commit -m "feat(v2.35): 实现 MemoryStorage + 测试"
 ```
 
@@ -1191,16 +1191,16 @@ git commit -m "feat(v2.35): 实现 MemoryStorage + 测试"
 ## Task 9: 实现 JsStorage（注入式绑定）
 
 **Files:**
-- Modify: `crates/hippocampus-wasm/src/js_storage.rs`
-- Create: `crates/hippocampus-wasm/tests/js_storage.rs`
+- Modify: `crates/memory-center-wasm/src/js_storage.rs`
+- Create: `crates/memory-center-wasm/tests/js_storage.rs`
 
 - [ ] **Step 1: 写失败测试 — JsStorage 回调机制**
 
 ```rust
-// crates/hippocampus-wasm/tests/js_storage.rs
+// crates/memory-center-wasm/tests/js_storage.rs
 //! JsStorage 注入式绑定测试
 
-use hippocampus_wasm::JsStorage;
+use memory_center_wasm::JsStorage;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_test::*;
 
@@ -1222,21 +1222,21 @@ async fn test_js_storage_callback_error() {
 
 - [ ] **Step 2: 运行测试验证失败**
 
-Run: `wasm-pack test -p hippocampus-wasm --node --test js_storage`
+Run: `wasm-pack test -p memory-center-wasm --node --test js_storage`
 Expected: FAIL
 
 - [ ] **Step 3: 实现 JsStorage**
 
 ```rust
-// crates/hippocampus-wasm/src/js_storage.rs
+// crates/memory-center-wasm/src/js_storage.rs
 //! JsStorage - 注入式 Storage 实现
 //!
 //! JS 调用方实现 Storage trait 的所有方法，通过回调注入。
 //! 适用于 IndexedDB / Workers KV / fetch 到远程服务等场景。
 
-use hippocampus_core_logic::model::*;
-use hippocampus_core_logic::storage::{Storage, SessionMeta};
-use hippocampus_core_logic::{Error, Result};
+use memory_center_core_logic::model::*;
+use memory_center_core_logic::storage::{Storage, SessionMeta};
+use memory_center_core_logic::{Error, Result};
 use js_sys::Function;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
@@ -1394,77 +1394,77 @@ impl Storage for JsStorage {
 
 - [ ] **Step 4: 运行测试验证通过**
 
-Run: `wasm-pack test -p hippocampus-wasm --node --test js_storage`
+Run: `wasm-pack test -p memory-center-wasm --node --test js_storage`
 Expected: 2 个测试通过
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/hippocampus-wasm/src/js_storage.rs crates/hippocampus-wasm/tests/js_storage.rs
+git add crates/memory-center-wasm/src/js_storage.rs crates/memory-center-wasm/tests/js_storage.rs
 git commit -m "feat(v2.35): 实现 JsStorage 注入式绑定 + 测试"
 ```
 
 ---
 
-## Task 10: HippocampusCore 绑定 + WASM 测试 + 部署
+## Task 10: MemoryCenterCore 绑定 + WASM 测试 + 部署
 
 **Files:**
-- Modify: `crates/hippocampus-wasm/src/bindings.rs`
-- Create: `crates/hippocampus-wasm/tests/api.rs`
+- Modify: `crates/memory-center-wasm/src/bindings.rs`
+- Create: `crates/memory-center-wasm/tests/api.rs`
 - Modify: `CHANGELOG.md`
 - Modify: `docs/superpowers/specs/2026-07-07-wasm-component-design.md`（标记已完成）
 
-- [ ] **Step 1: 写失败测试 — HippocampusCore API 端到端**
+- [ ] **Step 1: 写失败测试 — MemoryCenterCore API 端到端**
 
 ```rust
-// crates/hippocampus-wasm/tests/api.rs
-//! HippocampusCore API 端到端测试
+// crates/memory-center-wasm/tests/api.rs
+//! MemoryCenterCore API 端到端测试
 
-use hippocampus_wasm::{HippocampusCore, MemoryStorage};
+use memory_center_wasm::{MemoryCenterCore, MemoryStorage};
 use wasm_bindgen_test::*;
 
 wasm_bindgen_test_configure!(run_in_node);
 
 #[wasm_bindgen_test]
-async fn test_hippocampus_core_archive_and_retrieve() {
+async fn test_memory_center_core_archive_and_retrieve() {
     let storage = MemoryStorage::new();
-    let core = HippocampusCore::new(Box::new(storage));
+    let core = MemoryCenterCore::new(Box::new(storage));
     // 调用 archive → 返回 hook_id → 调用 retrieve → 验证能找到
 }
 
 #[wasm_bindgen_test]
-async fn test_hippocampus_core_list_memories() {
+async fn test_memory_center_core_list_memories() {
     // 归档多条记忆 → list_memories → 验证数量
 }
 ```
 
 - [ ] **Step 2: 运行测试验证失败**
 
-Run: `wasm-pack test -p hippocampus-wasm --node --test api`
+Run: `wasm-pack test -p memory-center-wasm --node --test api`
 Expected: FAIL
 
-- [ ] **Step 3: 实现 HippocampusCore 绑定**
+- [ ] **Step 3: 实现 MemoryCenterCore 绑定**
 
 ```rust
-// crates/hippocampus-wasm/src/bindings.rs
-//! HippocampusCore - WASM 主入口绑定
+// crates/memory-center-wasm/src/bindings.rs
+//! MemoryCenterCore - WASM 主入口绑定
 
 use crate::error::error_to_js;
-use hippocampus_core_logic::archive::{Archiver, ArchiveConfig};
-use hippocampus_core_logic::model::*;
-use hippocampus_core_logic::storage::Storage;
+use memory_center_core_logic::archive::{Archiver, ArchiveConfig};
+use memory_center_core_logic::model::*;
+use memory_center_core_logic::storage::Storage;
 use std::sync::Arc;
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen]
-pub struct HippocampusCore {
+pub struct MemoryCenterCore {
     storage: Arc<dyn Storage>,
 }
 
 #[wasm_bindgen]
-impl HippocampusCore {
+impl MemoryCenterCore {
     #[wasm_bindgen(constructor)]
-    pub fn new(storage: JsValue) -> Result<HippocampusCore, JsValue> {
+    pub fn new(storage: JsValue) -> Result<MemoryCenterCore, JsValue> {
         // 从 JsValue 提取 Storage trait 对象
         // storage 是 MemoryStorage 或 JsStorage 的 wasm_bindgen 实例
         let storage_ref: Arc<dyn Storage> = if storage.is_instance_of::<crate::MemoryStorage>() {
@@ -1476,7 +1476,7 @@ impl HippocampusCore {
         } else {
             return Err(JsValue::from("storage 参数必须是 MemoryStorage 或 JsStorage 实例"));
         };
-        Ok(HippocampusCore { storage: storage_ref })
+        Ok(MemoryCenterCore { storage: storage_ref })
     }
 
     /// 归档轮次，返回 hook_id
@@ -1534,7 +1534,7 @@ impl HippocampusCore {
 
 - [ ] **Step 4: 运行测试验证通过**
 
-Run: `wasm-pack test -p hippocampus-wasm --node`
+Run: `wasm-pack test -p memory-center-wasm --node`
 Expected: 所有测试通过
 
 - [ ] **Step 5: 全量回归测试**
@@ -1542,16 +1542,16 @@ Expected: 所有测试通过
 Run: `cargo test --workspace`
 Expected: 全量通过（除 WASM crate，需 wasm-pack test 单独验证）
 
-Run: `cargo build -p hippocampus-core-logic --target wasm32-unknown-unknown --no-default-features --features wasm`
+Run: `cargo build -p memory-center-core-logic --target wasm32-unknown-unknown --no-default-features --features wasm`
 Expected: 编译通过
 
-Run: `cargo build -p hippocampus-wasm --target wasm32-unknown-unknown`
+Run: `cargo build -p memory-center-wasm --target wasm32-unknown-unknown`
 Expected: 编译通过
 
 - [ ] **Step 6: 构建 WASM pkg**
 
-Run: `wasm-pack build crates/hippocampus-wasm --target web`
-Expected: 生成 `crates/hippocampus-wasm/pkg/` 目录
+Run: `wasm-pack build crates/memory-center-wasm --target web`
+Expected: 生成 `crates/memory-center-wasm/pkg/` 目录
 
 - [ ] **Step 7: 更新 CHANGELOG.md**
 
@@ -1561,25 +1561,25 @@ Expected: 生成 `crates/hippocampus-wasm/pkg/` 目录
 ## v2.35 - WASM 组件支持（2026-07-07）
 
 ### 新增
-- 新建 `hippocampus-core-logic` crate：纯逻辑 + Storage trait，可编译为 WASM
-- 新建 `hippocampus-wasm` crate：wasm-bindgen 绑定 + MemoryStorage + JsStorage
-- `hippocampus-core` 改为 facade：重导出 core-logic + 保留原生 IO 实现
+- 新建 `memory-center-core-logic` crate：纯逻辑 + Storage trait，可编译为 WASM
+- 新建 `memory-center-wasm` crate：wasm-bindgen 绑定 + MemoryStorage + JsStorage
+- `memory-center-core` 改为 facade：重导出 core-logic + 保留原生 IO 实现
 - MemoryStorage：纯内存 Storage 实现（demo/测试/fallback）
 - JsStorage：注入式 Storage 实现（JS 调用方实现存储后端）
-- HippocampusCore JS API：archive / listMemories / readMemory / readIndex
+- MemoryCenterCore JS API：archive / listMemories / readMemory / readIndex
 - feature flag：`native`（jieba-rs+dashmap）/ `wasm`（简易分词）
 
 ### 架构
 - 三层架构：WASM 绑定层 → core-logic → core facade
-- 向后兼容：现有 `use hippocampus_core::*` 代码无需修改
+- 向后兼容：现有 `use memory_center_core::*` 代码无需修改
 - WASM target：wasm32-unknown-unknown
 ```
 
 - [ ] **Step 8: Commit**
 
 ```bash
-git add crates/hippocampus-wasm/ CHANGELOG.md
-git commit -m "feat(v2.35): HippocampusCore 绑定 + 全量测试 + CHANGELOG"
+git add crates/memory-center-wasm/ CHANGELOG.md
+git commit -m "feat(v2.35): MemoryCenterCore 绑定 + 全量测试 + CHANGELOG"
 ```
 
 - [ ] **Step 9: 推送部署**
@@ -1592,7 +1592,7 @@ git push production main
 
 - [ ] **Step 10: 更新 project_memory.md**
 
-调用 `mcp_hippocampus.update_project_memory` 更新 task_state 章节，然后用 Write 工具写入 Trae 的 project_memory.md。
+调用 `mcp_memory-center.update_project_memory` 更新 task_state 章节，然后用 Write 工具写入 Trae 的 project_memory.md。
 
 ---
 
@@ -1623,7 +1623,7 @@ git push production main
 
 ### Type consistency 检查
 
-- `MemoryStorage` / `JsStorage` / `HippocampusCore` 在所有 Task 中名称一致
+- `MemoryStorage` / `JsStorage` / `MemoryCenterCore` 在所有 Task 中名称一致
 - `Storage` trait 方法签名与 Task 3 定义一致
 - `ArchiveConfig` 用结构体字面量（与 v2.34 经验一致，非 builder）
 - `Archiver::archive()` 返回 `(MemoryFile, IndexHook)`（与 v2.34 一致）

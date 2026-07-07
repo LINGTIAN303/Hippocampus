@@ -7,7 +7,7 @@
 //! - **合并到 HTTP Server**：与 REST API 共享同一个 Axum 服务，无需独立进程
 //! - **复用 bootstrap**：调用 `memory_center_mcp::bootstrap` 的 `build_*` 函数，
 //!   与 stdio 模式保持一致的组件构造逻辑
-//! - **Session 模式**：环境变量驱动（`memory_center_mcp_STATEFUL`，默认 true）
+//! - **Session 模式**：环境变量驱动（`MEMORY_CENTER_MCP_STATEFUL`，默认 true）
 //!   - true：`LocalSessionManager`（有状态，支持 session 管理 + SSE 流）
 //!   - false：`NeverSessionManager`（无状态，每次请求独立，JSON 响应）
 //! - **安全防护**：allowed_hosts（DNS rebinding）+ allowed_origins（CORS）
@@ -16,10 +16,10 @@
 //!
 //! | 环境变量 | 说明 | 默认值 |
 //! |---------|------|--------|
-//! | `memory_center_mcp_ENABLED` | 是否启用 MCP Streamable HTTP 端点 | `false`（需显式启用） |
-//! | `memory_center_mcp_STATEFUL` | 是否启用 session 模式 | `true` |
-//! | `memory_center_mcp_ALLOWED_HOSTS` | 允许的 Host 列表（逗号分隔） | `localhost,127.0.0.1,::1` |
-//! | `memory_center_mcp_ALLOWED_ORIGINS` | 允许的 Origin 列表（逗号分隔） | 空（不校验 Origin） |
+//! | `MEMORY_CENTER_MCP_ENABLED` | 是否启用 MCP Streamable HTTP 端点 | `false`（需显式启用） |
+//! | `MEMORY_CENTER_MCP_STATEFUL` | 是否启用 session 模式 | `true` |
+//! | `MEMORY_CENTER_MCP_ALLOWED_HOSTS` | 允许的 Host 列表（逗号分隔） | `localhost,127.0.0.1,::1` |
+//! | `MEMORY_CENTER_MCP_ALLOWED_ORIGINS` | 允许的 Origin 列表（逗号分隔） | 空（不校验 Origin） |
 //!
 //! ## 路由挂载
 //!
@@ -82,16 +82,16 @@ impl McpConfig {
     /// 从环境变量读取配置
     ///
     /// 读取的环境变量：
-    /// - `memory_center_mcp_STATEFUL`：bool，默认 `true`
-    /// - `memory_center_mcp_ALLOWED_HOSTS`：逗号分隔，默认 `localhost,127.0.0.1,::1`
-    /// - `memory_center_mcp_ALLOWED_ORIGINS`：逗号分隔，默认空
+    /// - `MEMORY_CENTER_MCP_STATEFUL`：bool，默认 `true`
+    /// - `MEMORY_CENTER_MCP_ALLOWED_HOSTS`：逗号分隔，默认 `localhost,127.0.0.1,::1`
+    /// - `MEMORY_CENTER_MCP_ALLOWED_ORIGINS`：逗号分隔，默认空
     pub fn from_env(storage_root: PathBuf) -> Self {
-        let stateful_mode = std::env::var("memory_center_mcp_STATEFUL")
+        let stateful_mode = std::env::var("MEMORY_CENTER_MCP_STATEFUL")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(true);
 
-        let allowed_hosts = std::env::var("memory_center_mcp_ALLOWED_HOSTS")
+        let allowed_hosts = std::env::var("MEMORY_CENTER_MCP_ALLOWED_HOSTS")
             .ok()
             .map(|s| {
                 s.split(',')
@@ -107,7 +107,7 @@ impl McpConfig {
                 ]
             });
 
-        let allowed_origins = std::env::var("memory_center_mcp_ALLOWED_ORIGINS")
+        let allowed_origins = std::env::var("MEMORY_CENTER_MCP_ALLOWED_ORIGINS")
             .ok()
             .map(|s| {
                 s.split(',')

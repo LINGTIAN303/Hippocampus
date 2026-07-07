@@ -107,8 +107,8 @@ pre_compress:    压缩前一次性 dump 整个上下文,不漏任何信息
 
 ### 3.3 双端落地
 
-- MCP 工具（`crates/hippocampus-mcp/src/lib.rs`）— Agent 客户端调用
-- HTTP 端点（`crates/hippocampus-server/src/handlers.rs`）— 外部程序调用
+- MCP 工具（`crates/memory-center-mcp/src/lib.rs`）— Agent 客户端调用
+- HTTP 端点（`crates/memory-center-server/src/handlers.rs`）— 外部程序调用
 
 ---
 
@@ -254,7 +254,7 @@ LLM/客户端 调用 pre_compress_hook
 
 ### 6.1 IndexHook 扩展
 
-**文件**：`crates/hippocampus-models/src/lib.rs`
+**文件**：`crates/memory-center-models/src/lib.rs`
 
 ```rust
 pub struct IndexHook {
@@ -282,7 +282,7 @@ pub struct IndexHook {
 
 ### 6.2 Storage trait 扩展
 
-**文件**：`crates/hippocampus-core/src/storage.rs`
+**文件**：`crates/memory-center-core/src/storage.rs`
 
 ```rust
 pub trait Storage: Send + Sync {
@@ -332,7 +332,7 @@ async fn write_raw_context(&self, ...) -> Result<String, StorageError> {
 
 ### 6.4 SqliteStorage 迁移
 
-**文件**：`crates/hippocampus-core/src/sqlite.rs`
+**文件**：`crates/memory-center-core/src/sqlite.rs`
 
 ```sql
 -- 新增表
@@ -412,7 +412,7 @@ full_context 传入
 
 ### 8.1 单元测试
 
-**raw_context 存取**（`crates/hippocampus-core/src/storage.rs` 附近）：
+**raw_context 存取**（`crates/memory-center-core/src/storage.rs` 附近）：
 - `test_write_raw_context_creates_file`
 - `test_read_raw_context_returns_content`
 - `test_delete_raw_context_removes_file`
@@ -430,7 +430,7 @@ full_context 传入
 
 ### 8.2 解析器测试
 
-**新模块**：`crates/hippocampus-core/src/context_parser.rs`
+**新模块**：`crates/memory-center-core/src/context_parser.rs`
 
 **JSON 格式识别**：
 - `test_parse_json_array_of_turns`（标准 `[{user_message, llm_message}]`）
@@ -448,7 +448,7 @@ full_context 传入
 
 ### 8.3 集成测试
 
-**MCP 端**（`crates/hippocampus-mcp/tests/pre_compress_integration.rs`，新增）：
+**MCP 端**（`crates/memory-center-mcp/tests/pre_compress_integration.rs`，新增）：
 
 **完整流程**：
 - `test_pre_compress_hook_with_json_context`（JSON 输入完整归档）
@@ -461,7 +461,7 @@ full_context 传入
 - `test_pre_compress_hook_archiver_failure_falls_back_to_raw_only`
 - `test_pre_compress_hook_scenario_detect_failure_does_not_block`
 
-**HTTP 端**（`crates/hippocampus-server/tests/http_integration.rs`，修改）：
+**HTTP 端**（`crates/memory-center-server/tests/http_integration.rs`，修改）：
 - `test_http_pre_compress_endpoint`
 - `test_http_pre_compress_with_invalid_session_id_returns_400`
 - `test_http_pre_compress_with_invalid_preset_returns_400`
@@ -484,20 +484,20 @@ full_context 传入
 
 | 文件 | 变更类型 | 说明 |
 |------|---------|------|
-| `crates/hippocampus-models/src/lib.rs` | 修改 | IndexHook 新增 2 字段 |
-| `crates/hippocampus-core/src/storage.rs` | 修改 | Storage trait 新增 3 方法 + 默认实现 |
-| `crates/hippocampus-core/src/local.rs` | 修改 | LocalStorage 实现 3 方法 |
-| `crates/hippocampus-core/src/sqlite.rs` | 修改 | SqliteStorage 实现 3 方法 + 迁移 |
-| `crates/hippocampus-core/src/cache.rs` | 修改 | CachedStorage 透传 |
-| `crates/hippocampus-core/src/context_parser.rs` | **新增** | 解析器（JSON / 分隔符识别） |
-| `crates/hippocampus-mcp/src/lib.rs` | 修改 | 新增 pre_compress_hook 工具 |
-| `crates/hippocampus-server/src/handlers.rs` | 修改 | 新增 HTTP 端点 |
-| `crates/hippocampus-mcp/tests/pre_compress_integration.rs` | **新增** | MCP 集成测试 |
-| `crates/hippocampus-server/tests/http_integration.rs` | 修改 | HTTP 集成测试 |
+| `crates/memory-center-models/src/lib.rs` | 修改 | IndexHook 新增 2 字段 |
+| `crates/memory-center-core/src/storage.rs` | 修改 | Storage trait 新增 3 方法 + 默认实现 |
+| `crates/memory-center-core/src/local.rs` | 修改 | LocalStorage 实现 3 方法 |
+| `crates/memory-center-core/src/sqlite.rs` | 修改 | SqliteStorage 实现 3 方法 + 迁移 |
+| `crates/memory-center-core/src/cache.rs` | 修改 | CachedStorage 透传 |
+| `crates/memory-center-core/src/context_parser.rs` | **新增** | 解析器（JSON / 分隔符识别） |
+| `crates/memory-center-mcp/src/lib.rs` | 修改 | 新增 pre_compress_hook 工具 |
+| `crates/memory-center-server/src/handlers.rs` | 修改 | 新增 HTTP 端点 |
+| `crates/memory-center-mcp/tests/pre_compress_integration.rs` | **新增** | MCP 集成测试 |
+| `crates/memory-center-server/tests/http_integration.rs` | 修改 | HTTP 集成测试 |
 
 ### 9.1 不涉及（YAGNI）
 
-- ❌ Python 绑定（`crates/hippocampus-python`）— Python 端无压缩前场景需求
+- ❌ Python 绑定（`crates/memory-center-python`）— Python 端无压缩前场景需求
 - ❌ compaction / batch_* 工具 — pre_compress_hook 只新增工具,不修改现有
 
 ---
@@ -518,7 +518,7 @@ full_context 传入
 - 长任务执行中预判上下文即将超限
 
 调用方式:
-hippocampus.pre_compress_hook(
+memory-center.pre_compress_hook(
     session_id="trae-myapp-20260707",
     full_context="<完整对话上下文>",
     estimated_tokens=180000,  # 可选
@@ -531,8 +531,8 @@ pre_compress_hook 与 archive 的区别:
 
 ### 10.2 Rules 文件同步
 
-- `.trae/rules/hippocampus-archive.md` — 新增「pre_compress_hook 调用时机」章节
-- `.catpaw/rules/hippocampus-archive.md` — 同步
+- `.trae/rules/memory-center-archive.md` — 新增「pre_compress_hook 调用时机」章节
+- `.catpaw/rules/memory-center-archive.md` — 同步
 - `docs/onboarding/rules/*.md` — 同步
 
 ---
@@ -579,7 +579,7 @@ pre_compress_hook 与 archive 的区别:
 2. **检索增强**：让 semantic_search 能检索 raw_context 内容
 3. **客户端原生集成**：给 Trae 提 feature request,让 onContextCompress 事件自动调用
 4. **raw_context 压缩存储**：大文件用 gzip 压缩
-5. **Python 绑定**：若 Python 端有需求,再补 PyHippocampus.pre_compress_hook
+5. **Python 绑定**：若 Python 端有需求,再补 PyMemoryCenter.pre_compress_hook
 
 ---
 

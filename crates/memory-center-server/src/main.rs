@@ -9,10 +9,10 @@
 //!
 //! | 环境变量 | 说明 | 默认值 |
 //! |---------|------|--------|
-//! | `memory_center_mcp_ENABLED` | 是否启用 MCP Streamable HTTP 端点 | `false`（需显式启用） |
-//! | `memory_center_mcp_STATEFUL` | 是否启用 session 模式 | `true` |
-//! | `memory_center_mcp_ALLOWED_HOSTS` | 允许的 Host 列表（逗号分隔） | `localhost,127.0.0.1,::1` |
-//! | `memory_center_mcp_ALLOWED_ORIGINS` | 允许的 Origin 列表（逗号分隔） | 空（不校验 Origin） |
+//! | `MEMORY_CENTER_MCP_ENABLED` | 是否启用 MCP Streamable HTTP 端点 | `false`（需显式启用） |
+//! | `MEMORY_CENTER_MCP_STATEFUL` | 是否启用 session 模式 | `true` |
+//! | `MEMORY_CENTER_MCP_ALLOWED_HOSTS` | 允许的 Host 列表（逗号分隔） | `localhost,127.0.0.1,::1` |
+//! | `MEMORY_CENTER_MCP_ALLOWED_ORIGINS` | 允许的 Origin 列表（逗号分隔） | 空（不校验 Origin） |
 //!
 //! - 未启用：仅 REST API 可用（向后兼容）
 //! - 已启用：`/mcp` 端点支持 POST（请求）、GET（SSE 流）、DELETE（关闭 session）
@@ -118,7 +118,7 @@ async fn main() {
     let app = create_router(state).layer(TraceLayer::new_for_http());
 
     // v2.36：MCP Streamable HTTP 端点（环境变量驱动，默认不启用）
-    let app = if std::env::var("memory_center_mcp_ENABLED")
+    let app = if std::env::var("MEMORY_CENTER_MCP_ENABLED")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(false)
@@ -132,7 +132,7 @@ async fn main() {
         );
         mount_mcp_route(app, &mcp_config)
     } else {
-        tracing::info!("MCP Streamable HTTP 端点未启用（设置 memory_center_mcp_ENABLED=true 启用）");
+        tracing::info!("MCP Streamable HTTP 端点未启用（设置 MEMORY_CENTER_MCP_ENABLED=true 启用）");
         app
     };
 
@@ -155,7 +155,7 @@ async fn main() {
     tracing::info!("  POST   /api/v1/sessions/{{sid}}/compaction");
     tracing::info!("  POST   /api/v1/sessions/{{sid}}/search");
     tracing::info!("  GET    /api/v1/sessions/{{sid}}/memories/{{hook_id}}/conflicts");
-    tracing::info!("  POST/GET/DELETE  /mcp  (v2.36 MCP Streamable HTTP，需启用 memory_center_mcp_ENABLED)");
+    tracing::info!("  POST/GET/DELETE  /mcp  (v2.36 MCP Streamable HTTP，需启用 MEMORY_CENTER_MCP_ENABLED)");
 
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();

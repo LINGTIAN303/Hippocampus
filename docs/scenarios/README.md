@@ -1,4 +1,4 @@
-# Hippocampus 推演文档集
+# MemoryCenter 推演文档集
 
 > 记录项目在真实场景中被使用的流程，以及内部代码逻辑被调用的全过程。
 > 本文档集用于辅助后续开发、验证架构合理性、辅助新场景接入设计。
@@ -8,7 +8,7 @@
 1. **架构验证**：通过真实场景推演，验证三层架构（Core / Interface / Bindings）的合理性
 2. **开发指引**：新功能开发时，可参照已有场景的调用链快速定位修改点
 3. **场景设计**：为新接入场景（RAG 框架 / 多 Agent 编排 / 嵌入式应用）提供参考模板
-4. **教学参考**：帮助理解 Hippocampus 内部代码逻辑如何被层层调用
+4. **教学参考**：帮助理解 MemoryCenter 内部代码逻辑如何被层层调用
 
 ## 文档目录
 
@@ -17,7 +17,7 @@
 | [01-scenario-design.md](./01-scenario-design.md) | 场景设定集 | 列出所有推演场景的设定参数、用户画像、配置项 |
 | [02-internal-call-flow.md](./02-internal-call-flow.md) | 内部代码逻辑调用过程 | 5 个核心操作从接口层到 Core 的完整调用链（含代码引用） |
 | [03-mcp-coding-assistant.md](./03-mcp-coding-assistant.md) | AI 编程助手 MCP 场景 4 周推演 | 跨 4 周的记忆生命周期演化全过程 |
-| [04-agent-coding-workflow.md](./04-agent-coding-workflow.md) | Agent 编程工具全流程推演 | Codex + GPT-5.5 从零生产项目 7 天全流程，Hippocampus 在 Agent 工作流中的定位 |
+| [04-agent-coding-workflow.md](./04-agent-coding-workflow.md) | Agent 编程工具全流程推演 | Codex + GPT-5.5 从零生产项目 7 天全流程，MemoryCenter 在 Agent 工作流中的定位 |
 
 ## 阅读顺序建议
 

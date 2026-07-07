@@ -2,17 +2,17 @@
 
 **状态**：设计已确认，待写实施计划
 **创建日期**：2026-07-06
-**所属 crate**：hippocampus-presets / hippocampus-core
+**所属 crate**：memory-center-presets / memory-center-core
 **版本**：v2.33
 
 ## 1. 背景与动机
 
 ### 1.1 现状痛点
 
-当前场景识别机制（[detect.rs:305-308](../../../crates/hippocampus-presets/src/detect.rs#L305-L308)）：
+当前场景识别机制（[detect.rs:305-308](../../../crates/memory-center-presets/src/detect.rs#L305-L308)）：
 
 - 启动时 `resolve_scenario_name(family)` 仅根据 Agent family 推导场景
-- 或读环境变量 `HIPPOCAMPUS_PRESET_SCENARIO`
+- 或读环境变量 `MEMORY_CENTER_PRESET_SCENARIO`
 - **一次性识别，运行时不可变**
 
 **痛点**：用户在 Trae 里做写作 / 研究 / 金融分析时，场景永远是 coding，导致：
@@ -37,14 +37,14 @@
 | 输入信号 | 仅对话内容 | 专注会话语义，避免环境信号噪音 |
 | 识别算法 | 关键词规则 + LLM 兜底 | 平衡精度与成本，复用 HybridDetector 模式 |
 | 输出回写 | 写入 session 元数据 | 跨进程持久，per-session 隔离 |
-| 架构位置 | hippocampus-presets | 与现有 detect.rs 同位置，CombinedProfile 在此构建 |
+| 架构位置 | memory-center-presets | 与现有 detect.rs 同位置，CombinedProfile 在此构建 |
 | 实现方案 | 方案 A（轻量规范型） | 扩展 Storage trait + 独立 LLM 调用 + 不重建索引 |
 
 ## 3. 架构概览
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│ hippocampus-presets                                     │
+│ memory-center-presets                                     │
 │                                                         │
 │  ┌─────────────────────┐    ┌────────────────────────┐ │
 │  │ KeywordScenarioDetect│    │ HttpScenarioDetector   │ │
@@ -74,7 +74,7 @@
                         │
                         ▼
 ┌─────────────────────────────────────────────────────────┐
-│ hippocampus-core (Storage trait 扩展)                   │
+│ memory-center-core (Storage trait 扩展)                   │
 │  + async fn write_session_meta(sid, meta) -> Result<()> │
 │  + async fn read_session_meta(sid) -> Result<Option<...>│
 │                                                          │
@@ -87,7 +87,7 @@
 
 ### 4.1 关键词规则字典
 
-**文件**：`crates/hippocampus-presets/src/scenario_detect.rs`（新增）
+**文件**：`crates/memory-center-presets/src/scenario_detect.rs`（新增）
 
 **关键词集**（每场景约 15 个，含中英文）：
 
@@ -118,11 +118,11 @@
 
 ### 4.2 HttpScenarioDetector（LLM 推断器）
 
-**文件**：`crates/hippocampus-presets/src/scenario_detect.rs`（同文件）
+**文件**：`crates/memory-center-presets/src/scenario_detect.rs`（同文件）
 
 ```rust
 pub struct HttpScenarioDetector {
-    config: LlmDetectorConfig,  // 复用 hippocampus-llm 现有配置
+    config: LlmDetectorConfig,  // 复用 memory-center-llm 现有配置
 }
 
 impl HttpScenarioDetector {
@@ -160,8 +160,8 @@ impl HttpScenarioDetector {
 - LLM 网络错误 / 超时 → 返回 `None`
 
 **配置**：
-- 复用 `HIPPOCAMPUS_DETECTOR_API_URL` / `API_KEY` / `MODEL` / `TIMEOUT` / `MAX_TOKENS`
-- 或新增独立前缀 `HIPPOCAMPUS_SCENARIO_DETECTOR_*`（默认回退到 DETECTOR 配置）
+- 复用 `MEMORY_CENTER_DETECTOR_API_URL` / `API_KEY` / `MODEL` / `TIMEOUT` / `MAX_TOKENS`
+- 或新增独立前缀 `MEMORY_CENTER_SCENARIO_DETECTOR_*`（默认回退到 DETECTOR 配置）
 - **决策**：复用 DETECTOR 配置，避免用户配置负担（v2.33 简化）
 
 ### 4.3 HybridScenarioDetector（编排器）
@@ -217,7 +217,7 @@ impl DetectionResult {
 
 ### 4.4 SessionMeta + Storage trait 扩展
 
-**文件**：`crates/hippocampus-core/src/storage.rs`（修改）
+**文件**：`crates/memory-center-core/src/storage.rs`（修改）
 
 ```rust
 /// Session 元数据（v2.33 新增）
@@ -271,7 +271,7 @@ pub trait Storage: Send + Sync {
 
 ### 4.5 优先级链（编排函数）
 
-**文件**：`crates/hippocampus-presets/src/scenario_detect.rs`（同文件）
+**文件**：`crates/memory-center-presets/src/scenario_detect.rs`（同文件）
 
 **依赖辅助函数 `scenario_to_str`**（与现有 `scenario_from_str` 对称，新增）：
 
@@ -448,18 +448,18 @@ resolve_effective_scenario(storage, sid, preset.scenario, agent_family, detector
 
 | 文件 | 改动类型 | 说明 |
 |------|---------|------|
-| `crates/hippocampus-core/src/storage.rs` | 修改 | 新增 SessionMeta struct + Storage trait 2 个方法 + LocalStorage/SqliteStorage/CachedStorage 实现 |
-| `crates/hippocampus-presets/src/scenario_detect.rs` | 新增 | KeywordScenarioDetector + HttpScenarioDetector + HybridScenarioDetector + resolve_effective_scenario |
-| `crates/hippocampus-presets/src/lib.rs` | 修改 | 导出新模块 |
-| `crates/hippocampus-presets/Cargo.toml` | 修改 | 新增 hippocampus-llm 依赖（HttpScenarioDetector 用） |
-| `crates/hippocampus-mcp/src/lib.rs` | 修改 | archive handler 调用 resolve_effective_scenario，注入 HybridScenarioDetector |
-| `crates/hippocampus-mcp/src/main.rs` | 修改 | build_scenario_detector 函数 + 注入 HippocampusMcp |
-| `crates/hippocampus-server/src/handlers.rs` | 修改 | archive handler 调用 resolve_effective_scenario |
+| `crates/memory-center-core/src/storage.rs` | 修改 | 新增 SessionMeta struct + Storage trait 2 个方法 + LocalStorage/SqliteStorage/CachedStorage 实现 |
+| `crates/memory-center-presets/src/scenario_detect.rs` | 新增 | KeywordScenarioDetector + HttpScenarioDetector + HybridScenarioDetector + resolve_effective_scenario |
+| `crates/memory-center-presets/src/lib.rs` | 修改 | 导出新模块 |
+| `crates/memory-center-presets/Cargo.toml` | 修改 | 新增 memory-center-llm 依赖（HttpScenarioDetector 用） |
+| `crates/memory-center-mcp/src/lib.rs` | 修改 | archive handler 调用 resolve_effective_scenario，注入 HybridScenarioDetector |
+| `crates/memory-center-mcp/src/main.rs` | 修改 | build_scenario_detector 函数 + 注入 MemoryCenterMcp |
+| `crates/memory-center-server/src/handlers.rs` | 修改 | archive handler 调用 resolve_effective_scenario |
 
 ### 7.2 不修改的部分
 
-- `crates/hippocampus-scenarios/*` — 场景数据 crate 保持纯数据，不引入 LLM 依赖
-- `crates/hippocampus-core/src/archive.rs` — Archiver 本身不改，由 handler 注入识别后的 CombinedProfile
+- `crates/memory-center-scenarios/*` — 场景数据 crate 保持纯数据，不引入 LLM 依赖
+- `crates/memory-center-core/src/archive.rs` — Archiver 本身不改，由 handler 注入识别后的 CombinedProfile
 - 现有 `detect_agent_client` — Agent 识别逻辑保持不变，作为降级 fallback
 
 ## 8. 测试策略
@@ -522,9 +522,9 @@ resolve_effective_scenario(storage, sid, preset.scenario, agent_family, detector
 
 ### 11.3 配置
 
-- 复用现有 `HIPPOCAMPUS_DETECTOR_*` 环境变量（HttpScenarioDetector 共用 LLM 配置）
+- 复用现有 `MEMORY_CENTER_DETECTOR_*` 环境变量（HttpScenarioDetector 共用 LLM 配置）
 - 不新增环境变量（简化用户配置负担）
-- 可选环境变量 `HIPPOCAMPUS_SCENARIO_DETECT=off` 关闭识别（v2.33.1 考虑）
+- 可选环境变量 `MEMORY_CENTER_SCENARIO_DETECT=off` 关闭识别（v2.33.1 考虑）
 
 ## 12. 风险与缓解
 

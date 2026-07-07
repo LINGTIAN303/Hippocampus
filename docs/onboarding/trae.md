@@ -1,24 +1,24 @@
-# Trae 接入 Hippocampus 记忆库 Onboarding 指南
+# Trae 接入 MemoryCenter 记忆库 Onboarding 指南
 
-> 适用版本：Hippocampus v2.30+ / Trae 1.x
+> 适用版本：MemoryCenter v2.30+ / Trae 1.x
 >
-> 本指南教你如何在 Trae 中接入 hippocampus MCP server，让 LLM 自动获得长期记忆能力。
+> 本指南教你如何在 Trae 中接入 memory-center MCP server，让 LLM 自动获得长期记忆能力。
 
 ---
 
 ## 1. 前置准备
 
-### 1.1 安装 hippocampus-mcp 二进制
+### 1.1 安装 memory-center-mcp 二进制
 
 ```bash
 # 从源码构建（需要 Rust 1.75+）
-git clone <hippocampus-repo>
-cd hippocampus
-cargo build --release -p hippocampus-mcp
+git clone <memory-center-repo>
+cd memory-center
+cargo build --release -p memory-center-mcp
 
 # 二进制位置
-./target/release/hippocampus-mcp.exe   # Windows
-./target/release/hippocampus-mcp       # Linux/macOS
+./target/release/memory-center-mcp.exe   # Windows
+./target/release/memory-center-mcp       # Linux/macOS
 ```
 
 或直接使用预编译二进制（如有发布）。
@@ -26,8 +26,8 @@ cargo build --release -p hippocampus-mcp
 ### 1.2 准备存储目录
 
 ```bash
-# hippocampus 存储记忆文件的根目录（任意可写路径）
-mkdir -p D:/hippocampus-data
+# memory-center 存储记忆文件的根目录（任意可写路径）
+mkdir -p D:/memory-center-data
 ```
 
 ---
@@ -43,8 +43,8 @@ mkdir -p D:/hippocampus-data
 
 | 字段 | 值 |
 |------|-----|
-| 名称 | `hippocampus` |
-| 命令 | `D:/path/to/hippocampus-mcp.exe`（替换为实际路径） |
+| 名称 | `memory-center` |
+| 命令 | `D:/path/to/memory-center-mcp.exe`（替换为实际路径） |
 | 参数 | （留空） |
 
 ### 2.2 环境变量配置
@@ -55,7 +55,7 @@ mkdir -p D:/hippocampus-data
 
 | 变量名 | 说明 | 示例值 |
 |--------|------|--------|
-| `HIPPOCAMPUS_ROOT` | 存储根目录 | `D:/hippocampus-data` |
+| `MEMORY_CENTER_ROOT` | 存储根目录 | `D:/memory-center-data` |
 | `RUST_LOG` | 日志级别 | `info` |
 
 #### 可选：LLM 摘要生成器（推荐开启）
@@ -65,11 +65,11 @@ mkdir -p D:/hippocampus-data
 
 | 变量名 | 说明 | 默认值 |
 |--------|------|--------|
-| `HIPPOCAMPUS_GENERATOR_API_URL` | LLM API 地址（OpenAI 兼容 `/v1/chat/completions`） | 空（降级） |
-| `HIPPOCAMPUS_GENERATOR_API_KEY` | API Key | 空 |
-| `HIPPOCAMPUS_GENERATOR_MODEL` | 模型名 | `gpt-5.5-instant` |
-| `HIPPOCAMPUS_GENERATOR_TIMEOUT` | 超时秒数 | `60` |
-| `HIPPOCAMPUS_GENERATOR_MAX_TOKENS` | LLM 最大输出 token | `500` |
+| `MEMORY_CENTER_GENERATOR_API_URL` | LLM API 地址（OpenAI 兼容 `/v1/chat/completions`） | 空（降级） |
+| `MEMORY_CENTER_GENERATOR_API_KEY` | API Key | 空 |
+| `MEMORY_CENTER_GENERATOR_MODEL` | 模型名 | `gpt-5.5-instant` |
+| `MEMORY_CENTER_GENERATOR_TIMEOUT` | 超时秒数 | `60` |
+| `MEMORY_CENTER_GENERATOR_MAX_TOKENS` | LLM 最大输出 token | `500` |
 
 #### 可选：语义检索（推荐开启）
 
@@ -78,10 +78,10 @@ mkdir -p D:/hippocampus-data
 
 | 变量名 | 说明 | 默认值 |
 |--------|------|--------|
-| `HIPPOCAMPUS_EMBEDDER_API_URL` | Embedding API 地址（OpenAI 兼容 `/v1/embeddings`） | 空（降级） |
-| `HIPPOCAMPUS_EMBEDDER_API_KEY` | API Key | 空 |
-| `HIPPOCAMPUS_EMBEDDER_MODEL` | 模型名 | `text-embedding-3-large` |
-| `HIPPOCAMPUS_EMBEDDER_DIM` | 向量维度 | `3072` |
+| `MEMORY_CENTER_EMBEDDER_API_URL` | Embedding API 地址（OpenAI 兼容 `/v1/embeddings`） | 空（降级） |
+| `MEMORY_CENTER_EMBEDDER_API_KEY` | API Key | 空 |
+| `MEMORY_CENTER_EMBEDDER_MODEL` | 模型名 | `text-embedding-3-large` |
+| `MEMORY_CENTER_EMBEDDER_DIM` | 向量维度 | `3072` |
 
 #### 可选：冲突检测器（推荐开启）
 
@@ -90,21 +90,21 @@ mkdir -p D:/hippocampus-data
 
 | 变量名 | 说明 | 默认值 |
 |--------|------|--------|
-| `HIPPOCAMPUS_DETECTOR_API_URL` | LLM API 地址 | 空（降级） |
-| `HIPPOCAMPUS_DETECTOR_API_KEY` | API Key | 空 |
-| `HIPPOCAMPUS_DETECTOR_MODEL` | 模型名 | `gpt-5.5-instant` |
+| `MEMORY_CENTER_DETECTOR_API_URL` | LLM API 地址 | 空（降级） |
+| `MEMORY_CENTER_DETECTOR_API_KEY` | API Key | 空 |
+| `MEMORY_CENTER_DETECTOR_MODEL` | 模型名 | `gpt-5.5-instant` |
 
 #### 可选：Preset 显式声明（v2.30 新增）
 
-hippocampus 启动时会自动识别 Agent 客户端（3 层信号融合）。
+memory-center 启动时会自动识别 Agent 客户端（3 层信号融合）。
 若自动识别失败或需强制指定，可设置：
 
 | 变量名 | 说明 | 示例值 |
 |--------|------|--------|
-| `HIPPOCAMPUS_PRESET_AGENT` | 强制声明 Agent family | `Trae` / `ClaudeCode` / `Cursor` / `Codex` |
-| `HIPPOCAMPUS_PRESET_SCENARIO` | 强制声明场景 | `coding` / `writing` / `research` / `daily` / `finance` / `design` / `officework` |
+| `MEMORY_CENTER_PRESET_AGENT` | 强制声明 Agent family | `Trae` / `ClaudeCode` / `Cursor` / `Codex` |
+| `MEMORY_CENTER_PRESET_SCENARIO` | 强制声明场景 | `coding` / `writing` / `research` / `daily` / `finance` / `design` / `officework` |
 
-> 若不设置，hippocampus 会按 Agent family 自动推导 scenario：
+> 若不设置，memory-center 会按 Agent family 自动推导 scenario：
 > - ClaudeCode / Cursor / Trae / Codex → `coding`
 > - 其他 → `daily`
 
@@ -112,14 +112,14 @@ hippocampus 启动时会自动识别 Agent 客户端（3 层信号融合）。
 
 ## 3. session_id 约定
 
-hippocampus 用 `session_id` 隔离不同会话的记忆。推荐约定：
+memory-center 用 `session_id` 隔离不同会话的记忆。推荐约定：
 
 ```
 trae-{项目名}-{日期}
 ```
 
 示例：
-- `trae-hippocampus-20260705`
+- `trae-memory-center-20260705`
 - `trae-myapp-20260705`
 
 > 一个 session_id 对应一个独立的记忆空间。同会话内复用同一 session_id，
@@ -131,17 +131,17 @@ trae-{项目名}-{日期}
 
 ### 4.1 启动 Trae 后检查日志
 
-hippocampus 启动时会在 stderr 输出识别日志（Trae 的 MCP 日志面板可见）：
+memory-center 启动时会在 stderr 输出识别日志（Trae 的 MCP 日志面板可见）：
 
 ```
 INFO  Agent 客户端识别：3 层信号融合完成  family=Trae source=EnvVarPrefix
 INFO  应用预设：按 Agent family 推导 scenario  family=Trae scenario=coding
 INFO  行为契约生成完成：usage_protocol 已就绪  archive_threshold=400000 session_prefix="trae" instructions_len=520 trigger_rules_count=4
-INFO  启动 Hippocampus MCP server (stdio 传输)  root=D:/hippocampus-data has_combined_profile=true
+INFO  启动 MemoryCenter MCP server (stdio 传输)  root=D:/memory-center-data has_combined_profile=true
 ```
 
 若 `has_combined_profile=false`，说明未识别为主流 Agent，检查：
-- 是否设置了 `HIPPOCAMPUS_PRESET_AGENT=Trae`（最可靠的识别方式）
+- 是否设置了 `MEMORY_CENTER_PRESET_AGENT=Trae`（最可靠的识别方式）
 - Trae 是否传递了 `TRAE_*` 前缀的环境变量
 
 ### 4.2 验证 LLM 主动调用
@@ -152,13 +152,13 @@ INFO  启动 Hippocampus MCP server (stdio 传输)  root=D:/hippocampus-data has
 你好，请介绍一下你自己
 ```
 
-观察 LLM 是否在第一次回复前调用了 `mcp_hippocampus.prompt` 工具。
+观察 LLM 是否在第一次回复前调用了 `mcp_memory-center.prompt` 工具。
 若已调用并返回历史记忆摘要，说明接入成功。
 
 ### 4.3 验证 archive 触发
 
 进行一段较长对话（或人为塞入大量文本让 token 接近 400K），
-观察 LLM 是否在阈值附近调用 `mcp_hippocampus.archive` 归档上下文。
+观察 LLM 是否在阈值附近调用 `mcp_memory-center.archive` 归档上下文。
 
 ---
 
@@ -167,14 +167,14 @@ INFO  启动 Hippocampus MCP server (stdio 传输)  root=D:/hippocampus-data has
 在项目根目录创建 `AGENTS.md`，Trae / Cursor 等 IDE 会自动读取并注入 LLM 的 system prompt：
 
 ```markdown
-# 本项目已接入 hippocampus 记忆库
+# 本项目已接入 memory-center 记忆库
 
 ## Agent 必须遵守的记忆协议
 
-1. 每个新会话开始 → 第一步调 mcp_hippocampus.prompt(session_id) 获取历史记忆
-2. 上下文接近 400K tokens → 调 mcp_hippocampus.archive(session_id, turns_json) 归档
-3. 用户提到「之前」「上次」「还记得」等词 → 先调 mcp_hippocampus.semantic_search(query, session_id) 再回复
-4. 用户陈述与记忆可能矛盾 → 先调 mcp_hippocampus.detect_conflicts(session_id, statement) 检测
+1. 每个新会话开始 → 第一步调 mcp_memory-center.prompt(session_id) 获取历史记忆
+2. 上下文接近 400K tokens → 调 mcp_memory-center.archive(session_id, turns_json) 归档
+3. 用户提到「之前」「上次」「还记得」等词 → 先调 mcp_memory-center.semantic_search(query, session_id) 再回复
+4. 用户陈述与记忆可能矛盾 → 先调 mcp_memory-center.detect_conflicts(session_id, statement) 检测
 
 ## session_id 约定
 
@@ -191,24 +191,24 @@ trae-{项目名}-{日期}
 
 ### 6.1 MCP server 启动失败
 
-- 检查 `HIPPOCAMPUS_ROOT` 路径是否存在且可写
+- 检查 `MEMORY_CENTER_ROOT` 路径是否存在且可写
 - 检查二进制路径是否正确
 - 查看 Trae MCP 日志面板的 stderr 输出
 
 ### 6.2 LLM 不主动调用记忆工具
 
 - 确认 `AGENTS.md` 已放在项目根目录
-- 确认 hippocampus 启动日志中 `has_combined_profile=true`
+- 确认 memory-center 启动日志中 `has_combined_profile=true`
 - 确认 `get_info` 返回的 `instructions` 字段非空（LLM 启动时应看到记忆协议）
 
 ### 6.3 semantic_search 报 501
 
-- 未配置 `HIPPOCAMPUS_EMBEDDER_API_URL`，hippocampus 降级为仅关键词检索
+- 未配置 `MEMORY_CENTER_EMBEDDER_API_URL`，memory-center 降级为仅关键词检索
 - 若仍报 501，检查 `SessionSearchRouter` 是否注入成功（看启动日志）
 
 ### 6.4 archive 生成的摘要质量差
 
-- 未配置 `HIPPOCAMPUS_GENERATOR_API_URL`，使用启发式摘要（首条消息前 80 字符）
+- 未配置 `MEMORY_CENTER_GENERATOR_API_URL`，使用启发式摘要（首条消息前 80 字符）
 - 配置 LLM API 后重试
 
 ---
@@ -216,5 +216,5 @@ trae-{项目名}-{日期}
 ## 7. 下一步
 
 - 阅读 [v2.30 路线图](../v2.30-roadmap-agent-onboarding.md) 了解后续 Cursor / Claude Code 接入计划
-- 阅读 [架构文档](../ARCHITECTURE.md) 了解 hippocampus 内部设计
-- 调整 `HIPPOCAMPUS_PRESET_SCENARIO` 适配你的工作场景（coding/writing/research 等）
+- 阅读 [架构文档](../ARCHITECTURE.md) 了解 memory-center 内部设计
+- 调整 `MEMORY_CENTER_PRESET_SCENARIO` 适配你的工作场景（coding/writing/research 等）

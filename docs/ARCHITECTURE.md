@@ -1,22 +1,22 @@
-# Hippocampus 架构文档
+# MemoryCenter 架构文档
 
-本文档详细描述 Hippocampus 的架构分层、模块职责与数据流。
+本文档详细描述 MemoryCenter 的架构分层、模块职责与数据流。
 
 ## 1. 架构分层
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │ Layer 3: Bindings                                               │
-│   ① Python 原生绑定 (v2.2 ✅, hippocampus-python, PyO3 0.29)   │
+│   ① Python 原生绑定 (v2.2 ✅, memory-center-python, PyO3 0.29)   │
 │   ② Node/Go/Java (v2.4+, 待实现)                                │
 ├─────────────────────────────────────────────────────────────────┤
 │ Layer 2: Interface                                              │
-│   ① C ABI 动态库 (MVP ✅, hippocampus-ffi)                     │
-│   ② Axum HTTP REST (v2.1 ✅, hippocampus-server)               │
-│   ③ MCP Server (v2.3 ✅, hippocampus-mcp, rmcp 1.7+)           │
+│   ① C ABI 动态库 (MVP ✅, memory-center-ffi)                     │
+│   ② Axum HTTP REST (v2.1 ✅, memory-center-server)               │
+│   ③ MCP Server (v2.3 ✅, memory-center-mcp, rmcp 1.7+)           │
 │   ④ WASM 组件 (v2.4, 待生态成熟)                               │
 ├─────────────────────────────────────────────────────────────────┤
-│ Layer 1: Core (hippocampus-core, 纯 Rust)                       │
+│ Layer 1: Core (memory-center-core, 纯 Rust)                       │
 │   ┌──────────┬──────────┬──────────┬──────────┬──────────┐    │
 │   │ archive  │ retrieve │ compact  │ score    │ storage  │    │
 │   │ 归档     │ 检索     │ 周期合并 │ 评分     │ 存储后端 │    │
@@ -35,17 +35,17 @@
 
 | 维度 | C ABI (FFI) | HTTP REST (server) | Python 原生 (python) | MCP Server (mcp) |
 |------|-------------|--------------------|-----------------------|------------------|
-| crate | hippocampus-ffi | hippocampus-server | hippocampus-python | hippocampus-mcp |
+| crate | memory-center-ffi | memory-center-server | memory-center-python | memory-center-mcp |
 | 调用方式 | C 函数 + JSON 字符串 | HTTP 端点 + JSON body | Python 方法 + dict | MCP tool + JSON 参数 |
 | 状态 | 有状态（handle） | 无状态（每请求独立） | 有状态（实例） | 无状态（每 tool 调用独立） |
 | 并发 | 单线程，调用方加锁 | 天然并发（tokio） | GIL 约束，单实例串行 | 单线程 stdio（rmcp） |
 | Runtime | current_thread | rt-multi-thread | current_thread | current_thread |
-| 错误处理 | HippocampusResult | {error:{code,message}} | PyValueError | McpError（invalid_params/internal_error） |
+| 错误处理 | MemoryCenterResult | {error:{code,message}} | PyValueError | McpError（invalid_params/internal_error） |
 | 适合场景 | C/C++/嵌入式 | 远程访问 / 多语言 | Python 应用 / 数据科学 | AI 编程客户端（Claude Code/Cursor/Trae） |
 
 ## 2. 模块职责
 
-### Layer 1: hippocampus-core
+### Layer 1: memory-center-core
 
 | 模块 | 职责 | 关键类型 |
 |------|------|----------|
@@ -67,56 +67,56 @@
 | 钩子检索 | `Retriever::retrieve_memory` |
 | 周期合并 | `Compactor::weekly_merge` / `monthly_evict`（钩子迁移） |
 
-### Layer 2: hippocampus-ffi（C ABI）
+### Layer 2: memory-center-ffi（C ABI）
 
 | 组件 | 职责 |
 |------|------|
-| `HippocampusHandle` | 持有 storage + tokio Runtime + config + session_id + project_id |
-| `HippocampusResult` | 统一返回包装（is_ok + data + error_message） |
+| `MemoryCenterHandle` | 持有 storage + tokio Runtime + config + session_id + project_id |
+| `MemoryCenterResult` | 统一返回包装（is_ok + data + error_message） |
 | 5 个 C ABI 函数 | archive / retrieve / get_summaries / render_prompt / run_compaction |
-| `hippocampus.h` | C 头文件，定义所有 ABI 接口 |
+| `memory_center.h` | C 头文件，定义所有 ABI 接口 |
 
-### Layer 2: hippocampus-server（HTTP REST）
+### Layer 2: memory-center-server（HTTP REST）
 
 | 组件 | 职责 |
 |------|------|
-| `Config` | 环境变量配置（HIPPOCAMPUS_HOST/PORT/ROOT） |
+| `Config` | 环境变量配置（MEMORY_CENTER_HOST/PORT/ROOT） |
 | `AppState` | 应用状态（存储根目录路径） |
 | `AppError` | 统一错误响应（BadRequest 400 / NotFound 404 / Internal 500） |
 | 5 个 handler | archive / retrieve / get_summaries / render_prompt / run_compaction |
 | `create_router` | 路由配置（Axum 0.8 `{param}` 语法，路径前缀 `/api/v1/sessions/{sid}/...`） |
 | `TraceLayer` | tower-http 请求日志中间件 |
 
-### Layer 3: hippocampus-python（PyO3 绑定）
+### Layer 3: memory-center-python（PyO3 绑定）
 
 | 组件 | 职责 |
 |------|------|
-| `Hippocampus` pyclass | 持有 storage_root + tokio Runtime + session_id + project_id |
+| `MemoryCenter` pyclass | 持有 storage_root + tokio Runtime + session_id + project_id |
 | `__enter__`/`__exit__` | 上下文管理器（自动释放资源） |
 | 5 个方法 | archive / retrieve / summaries / prompt / compaction |
 | `version()` / `operations()` | 模块级工具函数 |
 | JSON 中间转换 | Python dict ↔ Rust struct（通过 json.dumps/loads + serde） |
 
-### Layer 2: hippocampus-mcp（MCP Server）
+### Layer 2: memory-center-mcp（MCP Server）
 
 | 组件 | 职责 |
 |------|------|
-| `HippocampusMcp` 结构体 | 持有 storage_root（无状态，每次 tool 调用创建独立 LocalStorage） |
+| `MemoryCenterMcp` 结构体 | 持有 storage_root（无状态，每次 tool 调用创建独立 LocalStorage） |
 | 5 个参数结构体 | `ArchiveParams` / `RetrieveParams` / `SummariesParams` / `PromptParams` / `CompactionParams`（derive `JsonSchema` 自动生成参数 schema） |
 | `#[tool_router]` 宏 | rmcp 自动注册 5 个 `#[tool]` 方法为 MCP tools |
 | 5 个 MCP tools | archive / retrieve / summaries / prompt / compaction |
 | `main.rs` | stdio 传输入口（被 Claude Code / Cursor 等客户端拉起子进程） |
 | 错误映射 | Core Error → `McpError::invalid_params` / `McpError::internal_error` |
-| 传输方式 | stdio（默认），未来可在 hippocampus-server 挂 StreamableHttpService |
+| 传输方式 | stdio（默认），未来可在 memory-center-server 挂 StreamableHttpService |
 
 ## 3. 数据流
 
 ### 3.1 归档流程
 
 ```
-Agent 调用方                 hippocampus-ffi              hippocampus-core
+Agent 调用方                 memory-center-ffi              memory-center-core
      │                              │                            │
-     │  hippocampus_archive(         │                            │
+     │  memory_center_archive(         │                            │
      │    handle, turns_json)        │                            │
      │ ────────────────────────────► │                            │
      │                              │  解析 turns_json           │
@@ -134,7 +134,7 @@ Agent 调用方                 hippocampus-ffi              hippocampus-core
      │                              │  ◄──────────────────────── │
      │                              │  返回 SummaryView JSON      │
      │  ◄─────────────────────────── │                            │
-     │  HippocampusResult*           │                            │
+     │  MemoryCenterResult*           │                            │
      │  (data = SummaryView JSON)   │                            │
 ```
 
@@ -147,8 +147,8 @@ Agent 调用方                 hippocampus-ffi              hippocampus-core
 ```
 LLM 通过 tool 调用 retrieve_memory(hook_id)
      │
-     │  hippocampus_retrieve(handle, hook_id)
-     │ ────────────────────────────► hippocampus-ffi
+     │  memory_center_retrieve(handle, hook_id)
+     │ ────────────────────────────► memory-center-ffi
      │                                    │
      │                                    │ Retriever::new(...)
      │                                    │ block_on(retriever.retrieve_memory(hook_id))
@@ -156,7 +156,7 @@ LLM 通过 tool 调用 retrieve_memory(hook_id)
      │                                    │  → 找到匹配的 IndexHook
      │                                    │  → 读取 hook.memory_file_path
      │                                    │  → 返回完整 MemoryFile
-     │  ◄──────────────────────────────── HippocampusResult*
+     │  ◄──────────────────────────────── MemoryCenterResult*
      │  (data = MemoryFile JSON)
 ```
 
@@ -213,7 +213,7 @@ LLM 通过 tool 调用 retrieve_memory(hook_id)
 
 ### Layer 2 - FFI (C ABI)
 
-- **单线程模型**：`HippocampusHandle` 不保证线程安全
+- **单线程模型**：`MemoryCenterHandle` 不保证线程安全
 - **内部 tokio Runtime**：`current_thread`（轻量，适合 FFI 单线程模型）
 - **调用方串行化**：多线程访问同一 handle 需调用方自行加锁
 - **建议**：每线程独立创建 handle
@@ -228,8 +228,8 @@ LLM 通过 tool 调用 retrieve_memory(hook_id)
 
 - **GIL 约束**：单实例串行调用（PyO3 同步 API）
 - **内部 tokio Runtime**：`current_thread`（与 FFI 一致）
-- **上下文管理器**：`with Hippocampus(...) as hp:` 自动释放资源
-- **建议**：多会话用多实例（每会话一个 Hippocampus 对象）
+- **上下文管理器**：`with MemoryCenter(...) as hp:` 自动释放资源
+- **建议**：多会话用多实例（每会话一个 MemoryCenter 对象）
 
 ### Layer 2 - MCP (mcp)
 
@@ -237,7 +237,7 @@ LLM 通过 tool 调用 retrieve_memory(hook_id)
 - **stdio 传输**：rmcp 单线程 stdio 模型，被客户端（Claude Code/Cursor）作为子进程拉起
 - **内部 tokio Runtime**：`current_thread`（与 FFI/Python 一致，轻量）
 - **会话隔离**：通过 tool 参数 `session_id` / `project_id` 区分不同会话
-- **未来扩展**：可在 hippocampus-server 上挂 `StreamableHttpService` 支持 HTTP 传输
+- **未来扩展**：可在 memory-center-server 上挂 `StreamableHttpService` 支持 HTTP 传输
 
 ## 6. 数据格式
 
@@ -320,7 +320,7 @@ v2 计划接入 LLM 实现「主题相关性」维度（需语义理解）。
 
 ### Layer 1 (Core)
 
-`hippocampus_core::Error` 枚举：
+`memory_center_core::Error` 枚举：
 
 ```rust
 pub enum Error {
@@ -334,11 +334,11 @@ pub enum Error {
 
 ### Layer 2 - FFI (C ABI)
 
-所有错误通过 `HippocampusResult` 包装：
+所有错误通过 `MemoryCenterResult` 包装：
 
-- `hippocampus_is_ok(result)` → 检查是否成功
-- `hippocampus_get_error(result)` → 获取错误消息（需 free）
-- `hippocampus_get_data(result)` → 获取成功数据（需 free）
+- `memory_center_is_ok(result)` → 检查是否成功
+- `memory_center_get_error(result)` → 获取错误消息（需 free）
+- `memory_center_get_data(result)` → 获取成功数据（需 free）
 
 错误消息为 UTF-8 字符串，可直接展示给用户。
 

@@ -1,6 +1,6 @@
-# Hippocampus HTTP 服务部署指南
+# MemoryCenter HTTP 服务部署指南
 
-本文档记录将 Hippocampus HTTP 服务部署到 Linux 生产服务器的完整流程。
+本文档记录将 MemoryCenter HTTP 服务部署到 Linux 生产服务器的完整流程。
 已在 `162.211.183.236`（openworld.dpdns.org）上验证通过。
 
 ## 架构概览
@@ -10,11 +10,11 @@
     ↓
 Nginx 80 端口（location /hippo/ 反代）
     ↓ proxy_pass http://127.0.0.1:8765/
-systemd 守护进程 hippocampus-server.service
+systemd 守护进程 memory-center-server.service
     ↓
-/opt/hippocampus-server/bin/hippocampus-server（Rust 单二进制，9.2MB）
+/opt/memory-center-server/bin/memory-center-server（Rust 单二进制，9.2MB）
     ↓
-/opt/hippocampus-server/data/（LocalStorage 文件树）
+/opt/memory-center-server/data/（LocalStorage 文件树）
 ```
 
 ## 前置条件
@@ -29,15 +29,15 @@ systemd 守护进程 hippocampus-server.service
 
 ```bash
 # 1. 拉取代码
-git clone https://github.com/LINGTIAN303/Hippocampus.git /opt/hippocampus-src
-cd /opt/hippocampus-src
+git clone https://github.com/LINGTIAN303/MemoryCenter.git /opt/memory-center-src
+cd /opt/memory-center-src
 
 # 2. 编译 release 二进制（约 5-10 分钟）
-cargo build --release -p hippocampus-server
+cargo build --release -p memory-center-server
 
 # 3. 部署二进制
-mkdir -p /opt/hippocampus-server/bin /opt/hippocampus-server/data
-cp target/release/hippocampus-server /opt/hippocampus-server/bin/
+mkdir -p /opt/memory-center-server/bin /opt/memory-center-server/data
+cp target/release/memory-center-server /opt/memory-center-server/bin/
 ```
 
 ### 方案 B：本地交叉编译后上传
@@ -45,55 +45,55 @@ cp target/release/hippocampus-server /opt/hippocampus-server/bin/
 ```powershell
 # Windows 上交叉编译 Linux x86_64（需要 x86_64-unknown-linux-gnu 工具链）
 rustup target add x86_64-unknown-linux-gnu
-cargo build --release --target x86_64-unknown-linux-gnu -p hippocampus-server
+cargo build --release --target x86_64-unknown-linux-gnu -p memory-center-server
 
 # 上传
-scp target/x86_64-unknown-linux-gnu/release/hippocampus-server root@SERVER:/opt/hippocampus-server/bin/
+scp target/x86_64-unknown-linux-gnu/release/memory-center-server root@SERVER:/opt/memory-center-server/bin/
 ```
 
 > **注意**：交叉编译需要 `x86_64-linux-gnu-gcc`，Windows 上配置较复杂，推荐方案 A。
 
 ## 2. 配置环境变量
 
-编辑 systemd 服务文件（见下一步），或在 `/etc/profile.d/hippocampus.sh` 中配置：
+编辑 systemd 服务文件（见下一步），或在 `/etc/profile.d/memory-center.sh` 中配置：
 
 | 环境变量 | 说明 | 默认值 | 必填 |
 |---------|------|--------|------|
-| `HIPPOCAMPUS_HOST` | 监听地址 | `127.0.0.1` | 否（公网通过 Nginx 暴露） |
-| `HIPPOCAMPUS_PORT` | 监听端口 | `8765` | 否 |
-| `HIPPOCAMPUS_ROOT` | 存储根目录 | `./data` | 是 |
-| `HIPPOCAMPUS_API_KEY` | API Key 鉴权（v2.24） | 空（不鉴权） | **生产强烈建议配置** |
-| `RUST_LOG` | 日志级别 | `hippocampus_server=info,tower_http=info` | 否 |
+| `MEMORY_CENTER_HOST` | 监听地址 | `127.0.0.1` | 否（公网通过 Nginx 暴露） |
+| `MEMORY_CENTER_PORT` | 监听端口 | `8765` | 否 |
+| `MEMORY_CENTER_ROOT` | 存储根目录 | `./data` | 是 |
+| `MEMORY_CENTER_API_KEY` | API Key 鉴权（v2.24） | 空（不鉴权） | **生产强烈建议配置** |
+| `RUST_LOG` | 日志级别 | `memory_center_server=info,tower_http=info` | 否 |
 
 ### 可选增强组件
 
 | 环境变量前缀 | 功能 | 未配置时行为 |
 |------------|------|------------|
-| `HIPPOCAMPUS_EMBEDDER_*` | 语义检索（向量+BM25 混合） | 降级为仅关键词检索 |
-| `HIPPOCAMPUS_DETECTOR_*` | 冲突检测（启发式+LLM 混合） | 降级为启发式纯算法 |
-| `HIPPOCAMPUS_GENERATOR_*` | LLM 摘要生成 | 降级为启发式 `Summary::from_title` |
+| `MEMORY_CENTER_EMBEDDER_*` | 语义检索（向量+BM25 混合） | 降级为仅关键词检索 |
+| `MEMORY_CENTER_DETECTOR_*` | 冲突检测（启发式+LLM 混合） | 降级为启发式纯算法 |
+| `MEMORY_CENTER_GENERATOR_*` | LLM 摘要生成 | 降级为启发式 `Summary::from_title` |
 
-详细配置见 [crates/hippocampus-server/src/main.rs](../crates/hippocampus-server/src/main.rs) 顶部文档。
+详细配置见 [crates/memory-center-server/src/main.rs](../crates/memory-center-server/src/main.rs) 顶部文档。
 
 ## 3. 配置 systemd 守护
 
-创建 `/etc/systemd/system/hippocampus-server.service`：
+创建 `/etc/systemd/system/memory-center-server.service`：
 
 ```ini
 [Unit]
-Description=Hippocampus HTTP Server
+Description=MemoryCenter HTTP Server
 After=network.target
 
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/opt/hippocampus-server
-Environment=HIPPOCAMPUS_HOST=127.0.0.1
-Environment=HIPPOCAMPUS_PORT=8765
-Environment=HIPPOCAMPUS_ROOT=/opt/hippocampus-server/data
-Environment=HIPPOCAMPUS_API_KEY=你的强随机API Key
-Environment=RUST_LOG=hippocampus_server=info,tower_http=info
-ExecStart=/opt/hippocampus-server/bin/hippocampus-server
+WorkingDirectory=/opt/memory-center-server
+Environment=MEMORY_CENTER_HOST=127.0.0.1
+Environment=MEMORY_CENTER_PORT=8765
+Environment=MEMORY_CENTER_ROOT=/opt/memory-center-server/data
+Environment=MEMORY_CENTER_API_KEY=你的强随机API Key
+Environment=RUST_LOG=memory_center_server=info,tower_http=info
+ExecStart=/opt/memory-center-server/bin/memory-center-server
 Restart=always
 RestartSec=3
 
@@ -105,9 +105,9 @@ WantedBy=multi-user.target
 
 ```bash
 systemctl daemon-reload
-systemctl enable hippocampus-server
-systemctl start hippocampus-server
-systemctl status hippocampus-server --no-pager -l
+systemctl enable memory-center-server
+systemctl start memory-center-server
+systemctl status memory-center-server --no-pager -l
 ```
 
 **生成强随机 API Key**：
@@ -130,7 +130,7 @@ server {
 
     # ... 其他 location ...
 
-    # Hippocampus 记忆库 API 反代
+    # MemoryCenter 记忆库 API 反代
     location /hippo/ {
         proxy_pass http://127.0.0.1:8765/;
         proxy_set_header Host $host;
@@ -215,7 +215,7 @@ python3 /path/to/test_e2e.py
 ```
 
 > **注意**：测试脚本默认访问 `http://127.0.0.1:8765`（本地直连，绕过鉴权）。
-> 若配置了 `HIPPOCAMPUS_API_KEY`，需在脚本中加上 `Authorization` 头。
+> 若配置了 `MEMORY_CENTER_API_KEY`，需在脚本中加上 `Authorization` 头。
 
 ## 6. 客户端调用示例
 
@@ -266,39 +266,39 @@ print(resp.json())
 
 ```bash
 # 实时日志
-journalctl -u hippocampus-server -f
+journalctl -u memory-center-server -f
 
 # 最近 100 行
-journalctl -u hippocampus-server -n 100 --no-pager
+journalctl -u memory-center-server -n 100 --no-pager
 
 # 按时间筛选
-journalctl -u hippocampus-server --since "2026-07-05 10:00" --until "2026-07-05 12:00"
+journalctl -u memory-center-server --since "2026-07-05 10:00" --until "2026-07-05 12:00"
 ```
 
 ### 重启服务
 
 ```bash
-systemctl restart hippocampus-server
+systemctl restart memory-center-server
 ```
 
 ### 更新二进制
 
 ```bash
 # 1. 拉取最新代码
-cd /opt/hippocampus-src
+cd /opt/memory-center-src
 git pull origin main
 
 # 2. 重新编译
-cargo build --release -p hippocampus-server
+cargo build --release -p memory-center-server
 
 # 3. 替换二进制并重启
-cp target/release/hippocampus-server /opt/hippocampus-server/bin/
-systemctl restart hippocampus-server
+cp target/release/memory-center-server /opt/memory-center-server/bin/
+systemctl restart memory-center-server
 
 # 4. 验证
-systemctl status hippocampus-server --no-pager
+systemctl status memory-center-server --no-pager
 curl -sS -o /dev/null -w "HTTP %{http_code}\n" \
-  -H "Authorization: Bearer $HIPPOCAMPUS_API_KEY" \
+  -H "Authorization: Bearer $MEMORY_CENTER_API_KEY" \
   http://127.0.0.1:8765/api/v1/sessions/probe/summaries
 ```
 
@@ -306,21 +306,21 @@ curl -sS -o /dev/null -w "HTTP %{http_code}\n" \
 
 ```bash
 # 压缩存储目录
-tar -czf hippocampus-backup-$(date +%Y%m%d).tar.gz /opt/hippocampus-server/data/
+tar -czf memory-center-backup-$(date +%Y%m%d).tar.gz /opt/memory-center-server/data/
 
 # 定时备份（crontab）
 # 每日凌晨 3 点备份
-0 3 * * * tar -czf /backup/hippocampus-$(date +\%Y\%m\%d).tar.gz /opt/hippocampus-server/data/
+0 3 * * * tar -czf /backup/memory-center-$(date +\%Y\%m\%d).tar.gz /opt/memory-center-server/data/
 ```
 
 ### 清理测试数据
 
 ```bash
 # 删除指定 session
-rm -rf /opt/hippocampus-server/data/sessions/test-session
+rm -rf /opt/memory-center-server/data/sessions/test-session
 
 # 清空所有数据（危险！仅开发环境使用）
-rm -rf /opt/hippocampus-server/data/sessions/*
+rm -rf /opt/memory-center-server/data/sessions/*
 ```
 
 ## 8. 故障排查
@@ -329,11 +329,11 @@ rm -rf /opt/hippocampus-server/data/sessions/*
 
 ```bash
 # 查看详细错误
-journalctl -u hippocampus-server -n 50 --no-pager
+journalctl -u memory-center-server -n 50 --no-pager
 
 # 常见原因：
-# 1. 端口被占用 → 改 HIPPOCAMPUS_PORT 或停止占用进程
-# 2. 存储目录无权限 → chown -R root:root /opt/hippocampus-server/data
+# 1. 端口被占用 → 改 MEMORY_CENTER_PORT 或停止占用进程
+# 2. 存储目录无权限 → chown -R root:root /opt/memory-center-server/data
 # 3. 二进制架构不对 → 用 uname -m 确认是 x86_64
 ```
 
@@ -358,7 +358,7 @@ nginx -T 2>/dev/null | grep -A5 "location /hippo"
 
 ```bash
 # 确认 API Key 已配置
-systemctl show hippocampus-server -p Environment | grep HIPPOCAMPUS_API_KEY
+systemctl show memory-center-server -p Environment | grep MEMORY_CENTER_API_KEY
 
 # 确认请求头格式正确
 curl -v -H "Authorization: Bearer 你的API Key" http://127.0.0.1:8765/api/v1/sessions/probe/summaries
@@ -366,10 +366,10 @@ curl -v -H "Authorization: Bearer 你的API Key" http://127.0.0.1:8765/api/v1/se
 
 ## 9. 安全建议
 
-1. **生产环境必须配置 `HIPPOCAMPUS_API_KEY`**：未配置时所有请求无鉴权放行
+1. **生产环境必须配置 `MEMORY_CENTER_API_KEY`**：未配置时所有请求无鉴权放行
 2. **API Key 使用强随机值**：`openssl rand -hex 32`（64 字符）
 3. **不要将 API Key 写入代码或提交到 git**：只通过环境变量或 systemd 配置
-4. **定期轮换 API Key**：修改 systemd Environment 后 `systemctl daemon-reload && systemctl restart hippocampus-server`
+4. **定期轮换 API Key**：修改 systemd Environment 后 `systemctl daemon-reload && systemctl restart memory-center-server`
 5. **限制公网暴露范围**：若仅内网使用，可将 Nginx 配置为 `allow 内网网段; deny all;`
 6. **启用 HTTPS**：通过 Nginx 终止 SSL，后端保持 HTTP（已在本架构中实现）
 
@@ -389,4 +389,4 @@ curl -v -H "Authorization: Bearer 你的API Key" http://127.0.0.1:8765/api/v1/se
 | POST | `/api/v1/sessions/{sid}/memories/batch-update` | 批量更新 |
 | GET | `/api/v1/sessions/{sid}/memories/{hook_id}/conflicts` | 查询冲突记录 |
 
-所有端点均需携带 `Authorization: Bearer <API Key>` 头（配置 `HIPPOCAMPUS_API_KEY` 后）。
+所有端点均需携带 `Authorization: Bearer <API Key>` 头（配置 `MEMORY_CENTER_API_KEY` 后）。

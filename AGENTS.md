@@ -1,8 +1,8 @@
-# AGENTS.md — 本项目已接入 hippocampus 记忆库
+# AGENTS.md — 本项目已接入 memory-center 记忆库
 
 > 本文件由 Trae / Cursor / Claude Code 等 IDE 自动读取并注入 LLM 的 system prompt。
 >
-> Hippocampus 启动时会自动识别 Agent 客户端并注入 `usage_protocol.instructions`
+> MemoryCenter 启动时会自动识别 Agent 客户端并注入 `usage_protocol.instructions`
 > 到 MCP `server_info.instructions` 字段。本文件作为补充，提供项目级硬性规则。
 
 ---
@@ -14,7 +14,7 @@
 每个新会话的**第一次回复前**，必须先调用：
 
 ```
-mcp_hippocampus.prompt(session_id)
+mcp_memory-center.prompt(session_id)
 ```
 
 把返回的历史记忆摘要拼接到 system prompt。若返回空列表，说明该 session 无历史记忆，正常继续。
@@ -32,7 +32,7 @@ mcp_hippocampus.prompt(session_id)
 #### 2.2 调用方式（简化格式）
 
 ```
-mcp_hippocampus.archive(
+mcp_memory-center.archive(
     session_id,                  // 必填
     turns_json                   // 必填，最简格式：[{"user_message":{"text":"..."},"llm_message":{"text":"..."}}]
     // id/timestamp/tags/token_count 可省略，服务端自动补全
@@ -74,7 +74,7 @@ mcp_hippocampus.archive(
 
 调用方式：
 ```
-mcp_hippocampus.pre_compress_hook(
+mcp_memory-center.pre_compress_hook(
     session_id,                  // 必填
     full_context,                // 必填，完整上下文字符串
     estimated_tokens,            // 可选，估算 token 数
@@ -87,14 +87,14 @@ mcp_hippocampus.pre_compress_hook(
 - `archive`：日常归档，传入结构化 turns 数组
 - `pre_compress_hook`：压缩前一次性归档，传入完整上下文字符串，双轨处理（raw_context 原样保存 + 解析 turns 复用 Archiver）
 
-**核心价值**：即使客户端压缩丢弃了原始轮次，hippocampus 仍保留了完整的 raw_context 备份，可通过 retrieve 工具按需拉取。
+**核心价值**：即使客户端压缩丢弃了原始轮次，memory-center 仍保留了完整的 raw_context 备份，可通过 retrieve 工具按需拉取。
 
 ### 4. 用户提到过去事件：先调 semantic_search 再回复
 
 当用户消息中出现「之前」「上次」「还记得」「上次我们讨论的」「之前那个方案」等指代过去的词语时，**先调用**：
 
 ```
-mcp_hippocampus.semantic_search(query, session_id, top_k=5)
+mcp_memory-center.semantic_search(query, session_id, top_k=5)
 ```
 
 用用户原话作为 `query`，检索相关记忆。把检索结果作为上下文再回复用户。
@@ -104,7 +104,7 @@ mcp_hippocampus.semantic_search(query, session_id, top_k=5)
 当用户陈述的事实与记忆中的记录可能冲突时（如用户说「我用的是 Python」但记忆里是 Rust），**先调用**：
 
 ```
-mcp_hippocampus.detect_conflicts(session_id, hook_id, added_facts, revised_facts, deprecated_facts)
+mcp_memory-center.detect_conflicts(session_id, hook_id, added_facts, revised_facts, deprecated_facts)
 ```
 
 检测冲突。若检测到冲突，向用户确认后再更新记忆。
@@ -117,24 +117,24 @@ mcp_hippocampus.detect_conflicts(session_id, hook_id, added_facts, revised_facts
 This session continues a previous conversation that lost its context.
 ```
 
-表明 Trae 客户端刚压缩了上下文，必须立即执行**压缩后行为协议**（详见 `.trae/rules/hippocampus-archive.md` 的「压缩后行为协议」章节）：
+表明 Trae 客户端刚压缩了上下文，必须立即执行**压缩后行为协议**（详见 `.trae/rules/memory-center-archive.md` 的「压缩后行为协议」章节）：
 
 1. 归档压缩前未持久化的轮次（如有）
-2. 调用 `prompt` 拉取 hippocampus 一手记忆
-3. 交叉校准 Summary 第8章节"Current Work"与 hippocampus 记忆
+2. 调用 `prompt` 拉取 memory-center 一手记忆
+3. 交叉校准 Summary 第8章节"Current Work"与 memory-center 记忆
 4. 执行「Next Step 决策协议」：用 Pending todos 校准 Summary 第10章节建议
 
 **核心原则**：
-- hippocampus 记忆优先级 > Trae Summary
+- memory-center 记忆优先级 > Trae Summary
 - Pending todos 状态 > Summary 第10章节建议
 - in_progress 任务必须从断点继续，禁止重复提问已完成决策
 
-### 7. project_memory 反向写入：让 hippocampus 记忆流入第7层 Memory Context
+### 7. project_memory 反向写入：让 memory-center 记忆流入第7层 Memory Context
 
-hippocampus 维护一份 `project_memory.md` 副本（`projects/{project_id}/project_memory.md`），
+memory-center 维护一份 `project_memory.md` 副本（`projects/{project_id}/project_memory.md`），
 LLM 通过 `update_project_memory` 工具更新副本后，用 Write 工具将内容写入 Trae 客户端的
 memory 文件夹（如 `c:\Users\<user>\.trae-cn\memory\projects\<project>\project_memory.md`），
-完成"反向写入"闭环——让 hippocampus 记忆主动流入第7层 Memory Context。
+完成"反向写入"闭环——让 memory-center 记忆主动流入第7层 Memory Context。
 
 #### 何时调用 update_project_memory
 
@@ -146,7 +146,7 @@ memory 文件夹（如 `c:\Users\<user>\.trae-cn\memory\projects\<project>\proje
 #### 调用方式
 
 ```
-mcp_hippocampus.update_project_memory(
+mcp_memory-center.update_project_memory(
     project_id="myapp",
     section="task_state",
     content="## 当前任务\n- 动手点 4 已完成\n- 下一步：提交部署",
@@ -161,11 +161,11 @@ mcp_hippocampus.update_project_memory(
 章节用 HTML 注释标记界定，**不影响用户手动写入的内容**：
 
 ```markdown
-<!-- HIPPOCAMPUS:SECTION:task_state START -->
-（hippocampus 写入的内容）
-<!-- HIPPOCAMPUS:SECTION:task_state END -->
+<!-- MEMORY_CENTER:SECTION:task_state START -->
+（memory-center 写入的内容）
+<!-- MEMORY_CENTER:SECTION:task_state END -->
 
-（用户手动写入的内容，不受 hippocampus 影响）
+（用户手动写入的内容，不受 memory-center 影响）
 ```
 
 同一 section 的内容会被覆盖（action=replace），不同 section 独立存在。
@@ -179,7 +179,7 @@ trae-{项目名}-{日期}
 ```
 
 示例：
-- `trae-hippocampus-20260705`
+- `trae-memory-center-20260705`
 - `trae-myapp-20260705`
 
 > 一个 session_id 对应一个独立的记忆空间。同会话内复用同一 session_id，
@@ -198,31 +198,94 @@ trae-{项目名}-{日期}
 | 用户提到过去事件 | `semantic_search` | 检索相关记忆 |
 | 用户陈述与记忆矛盾 | `detect_conflicts` | 检测事实冲突 |
 | 需要查特定记忆细节 | `retrieve` | 按 hook_id 检索完整记忆 |
+| 用户只提供短 ID（如 305b700e） | `find_hook_by_prefix` | 按前缀查找完整 hook_id（跨 session 检索） |
 | 需要查所有记忆列表 | `summaries` | 获取所有周期摘要列表 |
 | 周级去重合并 | `compaction` | period="weekly" |
 | 月级评分淘汰 | `compaction` | period="monthly" |
 | 批量检索/删除/更新 | `batch_retrieve` / `batch_delete` / `batch_update` | 批量操作 |
 | 查询冲突记录 | `get_conflicts` | 获取已持久化的冲突记录 |
+| **首次接入 MemoryCenter** | `install_rules` | 安装记忆协议规则到项目（支持 catpaw/trae/claude-code 三种客户端） |
 | **上下文被压缩后** | `archive` + `prompt` | 归档断层轮次 + 拉取一手记忆校准 Summary，详见「压缩后行为协议」 |
 | 完成开发阶段/关键决策/风险点 | `update_project_memory` | 更新 project_memory.md 副本指定章节 |
-| 查看 project_memory 副本 | `get_project_memory` | 读取 hippocampus 维护的 project_memory.md 完整内容 |
+| 查看 project_memory 副本 | `get_project_memory` | 读取 memory-center 维护的 project_memory.md 完整内容 |
+| 查询预设可选值 | `preset_list_agents` / `preset_list_scenarios` / `preset_list_models` | 列出内置 Agent / Scenario / ModelVariant |
+| 预检预设效果 | `preset_build` | 即时构建 CombinedProfile，返回最终生效值 |
+
+---
+
+## MCP 传输模式
+
+MemoryCenter MCP Server 支持两种传输模式：
+
+| 模式 | 版本 | 适用场景 | 配置方式 |
+|------|------|----------|----------|
+| **stdio** | v2.3 | 本地 IDE（Claude Code / Cursor / Trae） | `command` + `env` |
+| **Streamable HTTP** | v2.36 | 远程客户端（DeepSeek 网页端等） | `url` + `transport: "streamable-http"` |
+
+### stdio 模式配置
+
+```json
+{
+  "mcpServers": {
+    "memory-center": {
+      "command": "/path/to/memory-center-mcp",
+      "env": { "MEMORY_CENTER_ROOT": "/path/to/memory/data" }
+    }
+  }
+}
+```
+
+### Streamable HTTP 模式配置
+
+```json
+{
+  "mcpServers": {
+    "memory-center": {
+      "url": "https://your-server/mcp",
+      "transport": "streamable-http"
+    }
+  }
+}
+```
+
+Streamable HTTP 模式环境变量：
+
+| 环境变量 | 说明 | 默认值 |
+|---------|------|--------|
+| `MEMORY_CENTER_MCP_ENABLED` | 是否启用 MCP HTTP 端点 | `false` |
+| `MEMORY_CENTER_MCP_STATEFUL` | 是否启用 session 模式 | `true` |
+| `MEMORY_CENTER_MCP_ALLOWED_HOSTS` | 允许的 Host（DNS rebinding 防护） | `localhost,127.0.0.1,::1` |
+| `MEMORY_CENTER_MCP_ALLOWED_ORIGINS` | 允许的 Origin（CORS 防护） | 空 |
+
+---
+
+## install_rules 远程模式
+
+当 MCP server 无法访问客户端本地路径时（如 HTTPS MCP 模式下 server 在远程），`install_rules` 工具会返回模板内容让 LLM 用客户端的 Write 工具自行创建文件：
+
+- **本地模式**（路径存在）：server 直接写入文件
+- **远程模式**（路径不存在）：返回 `action=remote_template` + `files[]`（含 `relative_path` + `content` + `mode`）
+
+远程模式下 LLM 需要解析返回的 `files` 数组，用 Write 工具按 `relative_path` 创建文件。`mode` 字段：
+- `create`：创建新文件
+- `append_with_markers`：带标记追加（已存在文件只更新标记区间）
 
 ---
 
 ## Preset 查询
 
-hippocampus 内置 5 个 Preset 维度，可通过以下工具查询可选值：
+memory-center 内置 5 个 Preset 维度，可通过以下工具查询可选值：
 
-- `mcp_hippocampus.preset_list_agents` — 11 个内置 Agent（ClaudeCode/Cursor/Trae/Codex 等）
-- `mcp_hippocampus.preset_list_scenarios` — 7 个内置 Scenario（coding/writing/research 等）
-- `mcp_hippocampus.preset_list_models` — 所有 ModelVariant
-- `mcp_hippocampus.preset_build` — 构建自定义 CombinedProfile
+- `mcp_memory-center.preset_list_agents` — 11 个内置 Agent（ClaudeCode/Cursor/Trae/Codex 等）
+- `mcp_memory-center.preset_list_scenarios` — 7 个内置 Scenario（coding/writing/research 等）
+- `mcp_memory-center.preset_list_models` — 所有 ModelVariant
+- `mcp_memory-center.preset_build` — 构建自定义 CombinedProfile
 
 ---
 
 ## 降级说明
 
-hippocampus 在以下情况会降级，但仍保持核心功能可用：
+memory-center 在以下情况会降级，但仍保持核心功能可用：
 
 | 未配置 | 降级行为 |
 |--------|----------|

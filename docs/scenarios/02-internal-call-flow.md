@@ -23,7 +23,7 @@
                             │
                             ▼
               ┌─────────────────────────────┐
-              │  hippocampus-core           │
+              │  memory-center-core           │
               │  ┌────────┐  ┌──────────┐   │
               │  │Archiver│  │Retriever │   │
               │  └────┬───┘  └────┬─────┘   │
@@ -51,10 +51,10 @@
 
 #### MCP Server 入口
 
-[crates/hippocampus-mcp/src/lib.rs:278-311](../../crates/hippocampus-mcp/src/lib.rs#L278-L311)
+[crates/memory-center-mcp/src/lib.rs:278-311](../../crates/memory-center-mcp/src/lib.rs#L278-L311)
 
 ```rust
-#[tool(description = "归档对话轮次到 Hippocampus 记忆库...")]
+#[tool(description = "归档对话轮次到 MemoryCenter 记忆库...")]
 async fn archive(
     &self,
     Parameters(params): Parameters<ArchiveParams>,
@@ -89,14 +89,14 @@ async fn archive(
 
 #### C ABI 入口
 
-[crates/hippocampus-ffi/src/lib.rs:309-355](../../crates/hippocampus-ffi/src/lib.rs#L309-L355)
+[crates/memory-center-ffi/src/lib.rs:309-355](../../crates/memory-center-ffi/src/lib.rs#L309-L355)
 
 ```rust
 #[no_mangle]
-pub unsafe extern "C" fn hippocampus_archive(
-    handle: *mut HippocampusHandle,
+pub unsafe extern "C" fn memory_center_archive(
+    handle: *mut MemoryCenterHandle,
     turns_json: *const c_char,
-) -> *mut HippocampusResult {
+) -> *mut MemoryCenterResult {
     // 1. C 字符串 → &str（UTF-8 校验）
     let json_str = CStr::from_ptr(turns_json).to_str()?;
 
@@ -120,7 +120,7 @@ pub unsafe extern "C" fn hippocampus_archive(
     match handle.runtime.block_on(archiver.archive()) {
         Ok((_memory, hook)) => {
             let summary = SummaryView::from(&hook);
-            ok_result(&summary)  // 返回 *mut HippocampusResult
+            ok_result(&summary)  // 返回 *mut MemoryCenterResult
         }
         Err(e) => err_from_core(e),
     }
@@ -129,7 +129,7 @@ pub unsafe extern "C" fn hippocampus_archive(
 
 #### HTTP REST 入口
 
-[crates/hippocampus-server/src/handlers.rs](../../crates/hippocampus-server/src/handlers.rs)
+[crates/memory-center-server/src/handlers.rs](../../crates/memory-center-server/src/handlers.rs)
 
 ```rust
 // POST /api/v1/sessions/{sid}/archive
@@ -164,7 +164,7 @@ async fn archive_handler(
 
 #### Python 入口
 
-[crates/hippocampus-python/src/lib.rs](../../crates/hippocampus-python/src/lib.rs)
+[crates/memory-center-python/src/lib.rs](../../crates/memory-center-python/src/lib.rs)
 
 ```rust
 // PyO3 绑定，Python 调用 hp.archive(turns)
@@ -188,7 +188,7 @@ fn archive(&self, turns: Vec<PyDict>) -> PyResult<Py<PyDict>> {
 
 ### 1.2 Core 层：Archiver::archive()
 
-[crates/hippocampus-core/src/archive.rs:138-200](../../crates/hippocampus-core/src/archive.rs#L138-L200)
+[crates/memory-center-core/src/archive.rs:138-200](../../crates/memory-center-core/src/archive.rs#L138-L200)
 
 ```rust
 pub async fn archive(&mut self) -> crate::Result<(MemoryFile, IndexHook)> {
@@ -238,7 +238,7 @@ pub async fn archive(&mut self) -> crate::Result<(MemoryFile, IndexHook)> {
 
 ### 1.3 Storage 层：LocalStorage::write_memory + append_hook
 
-[crates/hippocampus-core/src/storage.rs](../../crates/hippocampus-core/src/storage.rs)
+[crates/memory-center-core/src/storage.rs](../../crates/memory-center-core/src/storage.rs)
 
 ```rust
 // 写入记忆文件（原子写入）
@@ -300,7 +300,7 @@ Storage::append_project_hook()  ← v2.4 双写，project 级聚合索引
 
 #### MCP Server 入口
 
-[crates/hippocampus-mcp/src/lib.rs:315-331](../../crates/hippocampus-mcp/src/lib.rs#L315-L331)
+[crates/memory-center-mcp/src/lib.rs:315-331](../../crates/memory-center-mcp/src/lib.rs#L315-L331)
 
 ```rust
 #[tool(description = "按 hook_id 检索完整记忆文件...")]
@@ -317,7 +317,7 @@ async fn retrieve(&self, Parameters(params): Parameters<RetrieveParams>) -> Resu
 
 ### 2.2 Core 层：Retriever::retrieve_memory()
 
-[crates/hippocampus-core/src/retrieve.rs:248-269](../../crates/hippocampus-core/src/retrieve.rs#L248-L269)
+[crates/memory-center-core/src/retrieve.rs:248-269](../../crates/memory-center-core/src/retrieve.rs#L248-L269)
 
 ```rust
 pub async fn retrieve_memory(&self, hook_id: &str) -> crate::Result<MemoryFile> {
@@ -365,7 +365,7 @@ Storage::read_memory(memory_id)
 
 ### 3.1 Core 层：Retriever::get_summaries()
 
-[crates/hippocampus-core/src/retrieve.rs:116-141](../../crates/hippocampus-core/src/retrieve.rs#L116-L141)
+[crates/memory-center-core/src/retrieve.rs:116-141](../../crates/memory-center-core/src/retrieve.rs#L116-L141)
 
 ```rust
 pub async fn get_summaries(&self) -> crate::Result<Vec<SummaryView>> {
@@ -397,7 +397,7 @@ pub async fn get_summaries(&self) -> crate::Result<Vec<SummaryView>> {
 
 ### 3.2 SummaryView 数据结构
 
-[crates/hippocampus-core/src/retrieve.rs:34-65](../../crates/hippocampus-core/src/retrieve.rs#L34-L65)
+[crates/memory-center-core/src/retrieve.rs:34-65](../../crates/memory-center-core/src/retrieve.rs#L34-L65)
 
 ```rust
 pub struct SummaryView {
@@ -422,7 +422,7 @@ pub struct SummaryView {
 
 ### 4.1 Core 层：Retriever::render_to_system_prompt()
 
-[crates/hippocampus-core/src/retrieve.rs:156-240](../../crates/hippocampus-core/src/retrieve.rs#L156-L240)
+[crates/memory-center-core/src/retrieve.rs:156-240](../../crates/memory-center-core/src/retrieve.rs#L156-L240)
 
 ```rust
 pub async fn render_to_system_prompt(&self) -> crate::Result<String> {
@@ -528,7 +528,7 @@ pub async fn render_to_system_prompt(&self) -> crate::Result<String> {
 
 ### 5.1 入口层
 
-[crates/hippocampus-mcp/src/lib.rs:371-401](../../crates/hippocampus-mcp/src/lib.rs#L371-L401)
+[crates/memory-center-mcp/src/lib.rs:371-401](../../crates/memory-center-mcp/src/lib.rs#L371-L401)
 
 ```rust
 #[tool(description = "触发周期任务...")]
@@ -560,7 +560,7 @@ async fn compaction(&self, Parameters(params): Parameters<CompactionParams>) -> 
 
 ### 5.2 weekly_merge 调用链
 
-[crates/hippocampus-core/src/compact.rs:136-269](../../crates/hippocampus-core/src/compact.rs#L136-L269)
+[crates/memory-center-core/src/compact.rs:136-269](../../crates/memory-center-core/src/compact.rs#L136-L269)
 
 ```rust
 pub async fn weekly_merge(&self) -> crate::Result<(MemoryFile, IndexDocument)> {
@@ -633,7 +633,7 @@ pub async fn weekly_merge(&self) -> crate::Result<(MemoryFile, IndexDocument)> {
 
 #### 寒暄判定规则
 
-[crates/hippocampus-core/src/compact.rs:87-122](../../crates/hippocampus-core/src/compact.rs#L87-L122)
+[crates/memory-center-core/src/compact.rs:87-122](../../crates/memory-center-core/src/compact.rs#L87-L122)
 
 ```rust
 fn is_chitchat(turn: &MessageTurn) -> bool {
@@ -668,7 +668,7 @@ fn is_chitchat(turn: &MessageTurn) -> bool {
 
 ### 5.3 monthly_evict 调用链
 
-[crates/hippocampus-core/src/compact.rs:285-404](../../crates/hippocampus-core/src/compact.rs#L285-L404)
+[crates/memory-center-core/src/compact.rs:285-404](../../crates/memory-center-core/src/compact.rs#L285-L404)
 
 ```rust
 pub async fn monthly_evict(&self) -> crate::Result<(MemoryFile, IndexDocument)> {
@@ -732,7 +732,7 @@ pub async fn monthly_evict(&self) -> crate::Result<(MemoryFile, IndexDocument)> 
 
 #### 高价值 Turn 判定
 
-[crates/hippocampus-core/src/compact.rs:414-431](../../crates/hippocampus-core/src/compact.rs#L414-L431)
+[crates/memory-center-core/src/compact.rs:414-431](../../crates/memory-center-core/src/compact.rs#L414-L431)
 
 ```rust
 fn is_high_value_turn(turn: &MessageTurn) -> bool {
@@ -756,7 +756,7 @@ fn is_high_value_turn(turn: &MessageTurn) -> bool {
 
 ### 5.4 评分调用链
 
-[crates/hippocampus-core/src/score.rs:68-120](../../crates/hippocampus-core/src/score.rs#L68-L120)
+[crates/memory-center-core/src/score.rs:68-120](../../crates/memory-center-core/src/score.rs#L68-L120)
 
 ```rust
 impl Scorer for DefaultScorer {
@@ -871,11 +871,11 @@ render_to_system_prompt()      ← "[CodeBlock, Text, URL]"
 
 | 维度 | C ABI (FFI) | HTTP REST | Python | MCP |
 |------|-------------|-----------|--------|-----|
-| 入口函数 | `hippocampus_archive(handle, json)` | `POST /archive` | `hp.archive(turns)` | `archive` tool |
+| 入口函数 | `memory_center_archive(handle, json)` | `POST /archive` | `hp.archive(turns)` | `archive` tool |
 | 状态 | 有状态（handle） | 无状态（每请求） | 有状态（实例） | 无状态（每 tool） |
 | 异步执行 | `runtime.block_on()` | tokio async | `runtime.block_on()` | async |
 | Runtime | current_thread | rt-multi-thread | current_thread | current_thread |
-| 错误处理 | `HippocampusResult*` | `{error:{code,msg}}` | `PyValueError` | `McpError` |
+| 错误处理 | `MemoryCenterResult*` | `{error:{code,msg}}` | `PyValueError` | `McpError` |
 | Storage 创建 | handle 持有 | 每请求新建 | 实例持有 | 每 tool 调用新建 |
 
 ### 调用链关键差异

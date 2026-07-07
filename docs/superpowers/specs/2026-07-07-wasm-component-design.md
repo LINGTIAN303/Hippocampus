@@ -1,7 +1,7 @@
 # v2.35 WASM 组件设计
 
 > **状态**：设计阶段（2026-07-07）
-> **目标**：将 Hippocampus 核心逻辑编译为 WASM，支持浏览器/Edge/多语言嵌入场景
+> **目标**：将 MemoryCenter 核心逻辑编译为 WASM，支持浏览器/Edge/多语言嵌入场景
 > **前置**：v2.34 pre_compress_hook 已完成（commit c6ea964）
 > **范围**：core 拆分 + WASM 骨架 + MemoryStorage + 注入式 trait 绑定（P0+P1）
 
@@ -11,20 +11,20 @@
 
 ### 1.1 现状
 
-Hippocampus 当前的 Layer 2 接口层提供：
-- C ABI 动态库（hippocampus-ffi，MVP）
-- HTTP/Axum REST API（hippocampus-server，v2.1）
-- Python 原生绑定（hippocampus-python，v2.2，PyO3）
-- MCP Server（hippocampus-mcp，v2.3，rmcp + stdio）
-- Node.js 绑定（hippocampus-node，v2.14，napi-rs）
-- Go 绑定（hippocampus-go，v2.15，cgo + C ABI）
-- Java 绑定（hippocampus-java，v2.15，JNA + C ABI）
+MemoryCenter 当前的 Layer 2 接口层提供：
+- C ABI 动态库（memory-center-ffi，MVP）
+- HTTP/Axum REST API（memory-center-server，v2.1）
+- Python 原生绑定（memory-center-python，v2.2，PyO3）
+- MCP Server（memory-center-mcp，v2.3，rmcp + stdio）
+- Node.js 绑定（memory-center-node，v2.14，napi-rs）
+- Go 绑定（memory-center-go，v2.15，cgo + C ABI）
+- Java 绑定（memory-center-java，v2.15，JNA + C ABI）
 
 **缺口**：无 WASM 支持，无法在浏览器/Edge/Serverless 场景运行。
 
 ### 1.2 核心障碍
 
-`hippocampus-core` crate 虽标注"纯逻辑"，实际包含原生 IO 实现：
+`memory-center-core` crate 虽标注"纯逻辑"，实际包含原生 IO 实现：
 - `storage.rs`：LocalStorage（依赖 `tokio::fs`）
 - `sqlite.rs` / `sqlite_vector.rs`：依赖 `rusqlite` + `r2d2`
 - `cache.rs`：依赖 `moka`
@@ -47,7 +47,7 @@ Hippocampus 当前的 Layer 2 接口层提供：
 
 ### 2.1 拆分策略：纵向拆分（方案 A）
 
-新建 `hippocampus-core-logic` crate（纯逻辑 + Storage trait 定义 + 业务逻辑），现有 `hippocampus-core` 改为 facade 重导出。
+新建 `memory-center-core-logic` crate（纯逻辑 + Storage trait 定义 + 业务逻辑），现有 `memory-center-core` 改为 facade 重导出。
 
 **选择理由**：
 - 核心逻辑全复用，WASM 端只补 Storage 实现
@@ -56,9 +56,9 @@ Hippocampus 当前的 Layer 2 接口层提供：
 
 ### 2.2 拆分边界：trait 在 logic
 
-- `Storage` trait 定义 → `hippocampus-core-logic`
-- `LocalStorage` / `SqliteStorage` / `CachedStorage` 实现 → 留在 `hippocampus-core`
-- 业务逻辑（archive/retrieve/compact/hybrid/semantic）→ `hippocampus-core-logic`（依赖 trait，不依赖实现）
+- `Storage` trait 定义 → `memory-center-core-logic`
+- `LocalStorage` / `SqliteStorage` / `CachedStorage` 实现 → 留在 `memory-center-core`
+- 业务逻辑（archive/retrieve/compact/hybrid/semantic）→ `memory-center-core-logic`（依赖 trait，不依赖实现）
 
 ### 2.3 async 模型：保持 `#[async_trait]`（Send 版）
 
@@ -84,15 +84,15 @@ v2.36 / v2.37 留待：
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│ Layer 3: WASM 绑定层（hippocampus-wasm crate）              │
+│ Layer 3: WASM 绑定层（memory-center-wasm crate）              │
 │  - MemoryStorage（纯内存实现）                              │
 │  - JsStorage（注入式 trait 绑定，JS 回调）                  │
-│  - wasm-bindgen 导出（HippocampusCore + 数据类型）          │
+│  - wasm-bindgen 导出（MemoryCenterCore + 数据类型）          │
 └─────────────────────────────────────────────────────────────┘
                            │
                            ▼ 依赖
 ┌─────────────────────────────────────────────────────────────┐
-│ Layer 2: 核心逻辑层（hippocampus-core-logic crate）         │
+│ Layer 2: 核心逻辑层（memory-center-core-logic crate）         │
 │  - 纯逻辑：model / context_parser / score / serialization   │
 │    / migrator / bm25 / conflict / heuristic / generate /    │
 │    vector                                                   │
@@ -104,8 +104,8 @@ v2.36 / v2.37 留待：
 └─────────────────────────────────────────────────────────────┘
                            ▲ 重导出
 ┌─────────────────────────────────────────────────────────────┐
-│ Layer 1: Facade 层（hippocampus-core crate，现有）          │
-│  - pub use hippocampus_core_logic::*;                       │
+│ Layer 1: Facade 层（memory-center-core crate，现有）          │
+│  - pub use memory_center_core_logic::*;                       │
 │  - 重导出 LocalStorage / SqliteStorage / CachedStorage      │
 │  - 向后兼容，现有代码无需修改                                │
 └─────────────────────────────────────────────────────────────┘
@@ -114,7 +114,7 @@ v2.36 / v2.37 留待：
 ### 3.2 关键设计原则
 
 1. **core-logic 无 IO 依赖**：不依赖 tokio::fs / rusqlite / moka，可编译为 WASM
-2. **core facade 向后兼容**：现有 `use hippocampus_core::*` 代码无需修改
+2. **core facade 向后兼容**：现有 `use memory_center_core::*` 代码无需修改
 3. **Storage trait 保持 Send**：原生多线程不受影响，WASM 单线程下 Send 自动满足
 4. **业务逻辑全复用**：archive / retrieve / compact 等在 core-logic，WASM 端只需提供 Storage 实现
 
@@ -122,11 +122,11 @@ v2.36 / v2.37 留待：
 
 ## 4. crate 拆分细则
 
-### 4.1 新建 `crates/hippocampus-core-logic`
+### 4.1 新建 `crates/memory-center-core-logic`
 
 **职责**：纯逻辑 + Storage trait 定义 + 业务逻辑，无原生 IO 依赖
 
-**模块归属**（从 `hippocampus-core/src/` 迁移）：
+**模块归属**（从 `memory-center-core/src/` 迁移）：
 
 | 模块 | 归属 | 依赖说明 |
 |------|------|---------|
@@ -160,11 +160,11 @@ v2.36 / v2.37 留待：
 | dashmap | 未验证 | 先验证；不兼容则 feature flag 替换为 HashMap + RwLock |
 | tokio::sync::RwLock | 可用 | 单线程非阻塞，WASM 兼容 |
 
-### 4.2 现有 `hippocampus-core` 改为 facade
+### 4.2 现有 `memory-center-core` 改为 facade
 
 ```rust
-// crates/hippocampus-core/src/lib.rs
-pub use hippocampus_core_logic::*;
+// crates/memory-center-core/src/lib.rs
+pub use memory_center_core_logic::*;
 
 // 重导出原生 IO 实现（模块路径不变）
 pub mod storage;  // 保留 LocalStorage 实现（trait 定义已移到 core-logic）
@@ -172,34 +172,34 @@ pub mod sqlite;
 pub mod sqlite_vector;
 pub mod cache;
 
-// 兼容性重导出：保持 use hippocampus_core::storage::{Storage, LocalStorage} 可用
-pub use hippocampus_core_logic::storage::{Storage, SessionMeta};
+// 兼容性重导出：保持 use memory_center_core::storage::{Storage, LocalStorage} 可用
+pub use memory_center_core_logic::storage::{Storage, SessionMeta};
 pub use storage::LocalStorage;
 ```
 
 **向后兼容**：
-- `use hippocampus_core::storage::LocalStorage` — 不变
-- `use hippocampus_core::storage::Storage` — 通过重导出可用
-- `use hippocampus_core::Storage` — 通过 `pub use hippocampus_core_logic::*` 可用
+- `use memory_center_core::storage::LocalStorage` — 不变
+- `use memory_center_core::storage::Storage` — 通过重导出可用
+- `use memory_center_core::Storage` — 通过 `pub use memory_center_core_logic::*` 可用
 
 ### 4.3 拆分流程
 
-1. 新建 `crates/hippocampus-core-logic`，复制纯逻辑模块
+1. 新建 `crates/memory-center-core-logic`，复制纯逻辑模块
 2. 拆分 `storage.rs`：trait 部分移到 core-logic，LocalStorage 留在 core
-3. 修改 `hippocampus-core` 依赖 `hippocampus-core-logic`，重导出
-4. 验证 `cargo test -p hippocampus-core` 全量通过（无回归）
-5. 验证 `cargo build -p hippocampus-core-logic --target wasm32-unknown-unknown` 通过
+3. 修改 `memory-center-core` 依赖 `memory-center-core-logic`，重导出
+4. 验证 `cargo test -p memory-center-core` 全量通过（无回归）
+5. 验证 `cargo build -p memory-center-core-logic --target wasm32-unknown-unknown` 通过
 
 ---
 
 ## 5. WASM 绑定层
 
-### 5.1 新建 `crates/hippocampus-wasm`
+### 5.1 新建 `crates/memory-center-wasm`
 
 **职责**：将 core-logic 编译为 WASM，提供 JS 调用 API + MemoryStorage + 注入式 trait 绑定
 
 **依赖**：
-- `hippocampus-core-logic`（核心逻辑）
+- `memory-center-core-logic`（核心逻辑）
 - `wasm-bindgen`（JS 绑定）
 - `js-sys` / `web-sys`（JS 类型互操作）
 - `serde-wasm-bindgen`（serde ↔ JS 对象转换）
@@ -257,13 +257,13 @@ impl Storage for JsStorage {
 
 **JS 端使用**：
 ```javascript
-const storage = new Hippocampus.JsStorage({
+const storage = new MemoryCenter.JsStorage({
     writeMemory: async (memory) => { /* IndexedDB / fetch / KV */ },
     readMemory: async (id) => { /* ... */ },
     // ...
 });
-const hippocampus = new Hippocampus.HippocampusCore(storage);
-const hookId = await hippocampus.archive("session-1", turns);
+const memory-center = new MemoryCenter.MemoryCenterCore(storage);
+const hookId = await memory-center.archive("session-1", turns);
 ```
 
 **优点**：调用方完全控制存储后端（IndexedDB / KV / fetch 到远程服务）
@@ -275,7 +275,7 @@ const hookId = await hippocampus.archive("session-1", turns);
 
 | 类 | 用途 |
 |----|------|
-| `HippocampusCore` | 主入口，接收 Storage 实例，提供 archive / retrieve / search 等方法 |
+| `MemoryCenterCore` | 主入口，接收 Storage 实例，提供 archive / retrieve / search 等方法 |
 | `MemoryStorage` | 默认内存存储，构造无需参数 |
 | `JsStorage` | 注入式存储，构造接收 JS 回调对象 |
 | `Archiver` | 直接使用归档器（高级用法） |
@@ -283,11 +283,11 @@ const hookId = await hippocampus.archive("session-1", turns);
 
 **API 示例**：
 ```javascript
-import init, { HippocampusCore, MemoryStorage } from 'hippocampus-wasm';
+import init, { MemoryCenterCore, MemoryStorage } from 'memory-center-wasm';
 
 await init();  // 加载 WASM
 const storage = new MemoryStorage();
-const core = new HippocampusCore(storage);
+const core = new MemoryCenterCore(storage);
 
 const hookId = await core.archive("session-1", [
     { user_message: { text: "你好" }, llm_message: { text: "你好！" } }
@@ -299,8 +299,8 @@ const memories = await core.listMemories("session-1", "daily");
 ### 5.5 构建与发布
 
 - `wasm-pack build --target web` → 生成 `pkg/` 目录
-- `pkg/` 包含：`hippocampus_wasm.js` + `hippocampus_wasm_bg.wasm` + TypeScript 类型定义
-- 可发布到 npm（`hippocampus-wasm` 包名）
+- `pkg/` 包含：`memory_center_wasm.js` + `memory_center_wasm_bg.wasm` + TypeScript 类型定义
+- 可发布到 npm（`memory-center-wasm` 包名）
 
 ---
 
@@ -333,25 +333,25 @@ core-logic Error 枚举 → wasm-bindgen JsValue → JS try/catch
 |------|------|------|
 | core-logic 单元测试 | `cargo test` | 所有纯逻辑模块 + 业务逻辑（用 MockStorage） |
 | core-logic WASM 编译验证 | `cargo build --target wasm32-unknown-unknown` | 确保零原生依赖 |
-| WASM 绑定测试 | `wasm-pack test --node`（或 `--headless`） | MemoryStorage + JsStorage + HippocampusCore API |
+| WASM 绑定测试 | `wasm-pack test --node`（或 `--headless`） | MemoryStorage + JsStorage + MemoryCenterCore API |
 
 ### 7.2 core-logic 单元测试复用
 
-- 从 `hippocampus-core` 迁移所有不依赖 LocalStorage/SqliteStorage 的测试
+- 从 `memory-center-core` 迁移所有不依赖 LocalStorage/SqliteStorage 的测试
 - 新增 `MockStorage`（用 `Vec<MemoryFile>` + `Vec<IndexHook>`）供业务逻辑测试用
 - 验证 archive/retrieve/compact/hybrid/semantic 在 MockStorage 上的行为
 
 ### 7.3 WASM 绑定测试
 
 - `MemoryStorage` 基础 CRUD（write/read/delete memory + index + raw_context）
-- `HippocampusCore.archive()` 端到端（传入 turns → 返回 hook_id → retrieve 能找到）
+- `MemoryCenterCore.archive()` 端到端（传入 turns → 返回 hook_id → retrieve 能找到）
 - `JsStorage` 回调机制（JS 实现简单 MemoryStorage → Rust 通过 trait 调用 → 验证回调正确）
 - 序列化互操作（Rust 结构体 ↔ JS 对象）
 
 ### 7.4 回归测试
 
-- `hippocampus-core` facade 层全量测试通过（验证拆分无回归）
-- `hippocampus-server` / `hippocampus-mcp` 等下游 crate 编译 + 测试通过
+- `memory-center-core` facade 层全量测试通过（验证拆分无回归）
+- `memory-center-server` / `memory-center-mcp` 等下游 crate 编译 + 测试通过
 
 ---
 
@@ -372,54 +372,54 @@ core-logic Error 枚举 → wasm-bindgen JsValue → JS try/catch
 
 | 路径 | 职责 |
 |------|------|
-| `crates/hippocampus-core-logic/Cargo.toml` | core-logic crate 配置（无原生 IO 依赖） |
-| `crates/hippocampus-core-logic/src/lib.rs` | 模块导出 |
-| `crates/hippocampus-core-logic/src/model.rs` | 从 core 迁移 |
-| `crates/hippocampus-core-logic/src/context_parser.rs` | 从 core 迁移 |
-| `crates/hippocampus-core-logic/src/score.rs` | 从 core 迁移 |
-| `crates/hippocampus-core-logic/src/serialization.rs` | 从 core 迁移 |
-| `crates/hippocampus-core-logic/src/migrator.rs` | 从 core 迁移 |
-| `crates/hippocampus-core-logic/src/bm25.rs` | 从 core 迁移（验证 jieba-rs WASM 兼容） |
-| `crates/hippocampus-core-logic/src/conflict.rs` | 从 core 迁移 |
-| `crates/hippocampus-core-logic/src/heuristic.rs` | 从 core 迁移 |
-| `crates/hippocampus-core-logic/src/generate.rs` | 从 core 迁移 |
-| `crates/hippocampus-core-logic/src/vector.rs` | 从 core 迁移 |
-| `crates/hippocampus-core-logic/src/storage.rs` | **仅 Storage trait + SessionMeta 定义**（从 core 拆分） |
-| `crates/hippocampus-core-logic/src/archive.rs` | 从 core 迁移 |
-| `crates/hippocampus-core-logic/src/retrieve.rs` | 从 core 迁移 |
-| `crates/hippocampus-core-logic/src/compact.rs` | 从 core 迁移 |
-| `crates/hippocampus-core-logic/src/hybrid.rs` | 从 core 迁移 |
-| `crates/hippocampus-core-logic/src/semantic.rs` | 从 core 迁移 |
-| `crates/hippocampus-core-logic/tests/mock_storage.rs` | MockStorage 测试辅助 |
-| `crates/hippocampus-wasm/Cargo.toml` | WASM crate 配置（wasm-bindgen + serde-wasm-bindgen） |
-| `crates/hippocampus-wasm/src/lib.rs` | WASM 入口 + 导出类 |
-| `crates/hippocampus-wasm/src/memory_storage.rs` | MemoryStorage 实现 |
-| `crates/hippocampus-wasm/src/js_storage.rs` | JsStorage 注入式实现 |
-| `crates/hippocampus-wasm/src/error.rs` | Error → JsValue 转换 |
-| `crates/hippocampus-wasm/src/bindings.rs` | HippocampusCore + 数据类型绑定 |
-| `crates/hippocampus-wasm/tests/memory_storage.rs` | wasm-pack 测试 |
-| `crates/hippocampus-wasm/tests/js_storage.rs` | wasm-pack 测试 |
-| `crates/hippocampus-wasm/tests/api.rs` | HippocampusCore API 测试 |
+| `crates/memory-center-core-logic/Cargo.toml` | core-logic crate 配置（无原生 IO 依赖） |
+| `crates/memory-center-core-logic/src/lib.rs` | 模块导出 |
+| `crates/memory-center-core-logic/src/model.rs` | 从 core 迁移 |
+| `crates/memory-center-core-logic/src/context_parser.rs` | 从 core 迁移 |
+| `crates/memory-center-core-logic/src/score.rs` | 从 core 迁移 |
+| `crates/memory-center-core-logic/src/serialization.rs` | 从 core 迁移 |
+| `crates/memory-center-core-logic/src/migrator.rs` | 从 core 迁移 |
+| `crates/memory-center-core-logic/src/bm25.rs` | 从 core 迁移（验证 jieba-rs WASM 兼容） |
+| `crates/memory-center-core-logic/src/conflict.rs` | 从 core 迁移 |
+| `crates/memory-center-core-logic/src/heuristic.rs` | 从 core 迁移 |
+| `crates/memory-center-core-logic/src/generate.rs` | 从 core 迁移 |
+| `crates/memory-center-core-logic/src/vector.rs` | 从 core 迁移 |
+| `crates/memory-center-core-logic/src/storage.rs` | **仅 Storage trait + SessionMeta 定义**（从 core 拆分） |
+| `crates/memory-center-core-logic/src/archive.rs` | 从 core 迁移 |
+| `crates/memory-center-core-logic/src/retrieve.rs` | 从 core 迁移 |
+| `crates/memory-center-core-logic/src/compact.rs` | 从 core 迁移 |
+| `crates/memory-center-core-logic/src/hybrid.rs` | 从 core 迁移 |
+| `crates/memory-center-core-logic/src/semantic.rs` | 从 core 迁移 |
+| `crates/memory-center-core-logic/tests/mock_storage.rs` | MockStorage 测试辅助 |
+| `crates/memory-center-wasm/Cargo.toml` | WASM crate 配置（wasm-bindgen + serde-wasm-bindgen） |
+| `crates/memory-center-wasm/src/lib.rs` | WASM 入口 + 导出类 |
+| `crates/memory-center-wasm/src/memory_storage.rs` | MemoryStorage 实现 |
+| `crates/memory-center-wasm/src/js_storage.rs` | JsStorage 注入式实现 |
+| `crates/memory-center-wasm/src/error.rs` | Error → JsValue 转换 |
+| `crates/memory-center-wasm/src/bindings.rs` | MemoryCenterCore + 数据类型绑定 |
+| `crates/memory-center-wasm/tests/memory_storage.rs` | wasm-pack 测试 |
+| `crates/memory-center-wasm/tests/js_storage.rs` | wasm-pack 测试 |
+| `crates/memory-center-wasm/tests/api.rs` | MemoryCenterCore API 测试 |
 
 ### 9.2 修改文件
 
 | 路径 | 改动 |
 |------|------|
-| `Cargo.toml`（workspace） | members 新增 `crates/hippocampus-core-logic` + `crates/hippocampus-wasm`；新增 workspace.dependencies：wasm-bindgen / js-sys / web-sys / serde-wasm-bindgen / wasm-bindgen-futures |
-| `crates/hippocampus-core/Cargo.toml` | 新增 `hippocampus-core-logic = { path = "../hippocampus-core-logic" }` 依赖 |
-| `crates/hippocampus-core/src/lib.rs` | 改为 facade：`pub use hippocampus_core_logic::*;` + 重导出原生实现 |
-| `crates/hippocampus-core/src/storage.rs` | 删除 trait 定义（已移到 core-logic），保留 LocalStorage 实现 |
+| `Cargo.toml`（workspace） | members 新增 `crates/memory-center-core-logic` + `crates/memory-center-wasm`；新增 workspace.dependencies：wasm-bindgen / js-sys / web-sys / serde-wasm-bindgen / wasm-bindgen-futures |
+| `crates/memory-center-core/Cargo.toml` | 新增 `memory-center-core-logic = { path = "../memory-center-core-logic" }` 依赖 |
+| `crates/memory-center-core/src/lib.rs` | 改为 facade：`pub use memory_center_core_logic::*;` + 重导出原生实现 |
+| `crates/memory-center-core/src/storage.rs` | 删除 trait 定义（已移到 core-logic），保留 LocalStorage 实现 |
 | `CHANGELOG.md` | 新增 v2.35 条目 |
 
 ---
 
 ## 10. 验证标准
 
-- `cargo test -p hippocampus-core-logic` 全量通过
-- `cargo test -p hippocampus-core` 全量通过（facade 无回归）
-- `cargo build -p hippocampus-core-logic --target wasm32-unknown-unknown` 成功
-- `cargo build -p hippocampus-wasm --target wasm32-unknown-unknown` 成功
-- `wasm-pack test -p hippocampus-wasm --node` 通过
+- `cargo test -p memory-center-core-logic` 全量通过
+- `cargo test -p memory-center-core` 全量通过（facade 无回归）
+- `cargo build -p memory-center-core-logic --target wasm32-unknown-unknown` 成功
+- `cargo build -p memory-center-wasm --target wasm32-unknown-unknown` 成功
+- `wasm-pack test -p memory-center-wasm --node` 通过
 - `cargo test --workspace` 全量通过（除 WASM crate）
 
 ---
