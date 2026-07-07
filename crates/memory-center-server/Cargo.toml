@@ -1,0 +1,51 @@
+# memory-center-server
+# HTTP/Axum REST API 服务 - 将 Core 暴露为 HTTP 接口供跨语言调用
+
+[package]
+name = "memory-center-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "MemoryCenter HTTP 服务 - Axum REST API，供所有语言通过 HTTP 调用"
+
+[dependencies]
+memory-center-core = { path = "../memory-center-core", version = "0.1.0" }
+# v2.12: LLM 客户端组件（HttpLlmDetector / HttpEmbedder / HttpLlmScorer）下沉到独立 crate
+memory-center-llm = { path = "../memory-center-llm", version = "0.1.0" }
+# v2.18 批次2: 搜索模块（SessionSearchRouter + SearchIndexer）下沉到独立 crate
+memory-center-search = { path = "../memory-center-search", version = "0.1.0" }
+# v2.29: 预设组合层（PresetBuilder + CombinedProfile + 5 特配 crate）
+memory-center-presets = { path = "../memory-center-presets", version = "0.1.0" }
+memory-center-agents = { path = "../memory-center-agents", version = "0.1.0" }
+memory-center-scenarios = { path = "../memory-center-scenarios", version = "0.1.0" }
+memory-center-models = { path = "../memory-center-models", version = "0.1.0" }
+memory-center-windows = { path = "../memory-center-windows", version = "0.1.0" }
+memory-center-skills = { path = "../memory-center-skills", version = "0.1.0" }
+# v2.36: MCP Streamable HTTP 传输（合并到 HTTP Server）
+# - rmcp: 复用 workspace 声明（1.8 + transport-streamable-http-server feature）
+# - memory-center-mcp: 复用 bootstrap 模块的 build_* 函数 + MemoryCenterMcp 服务实现
+rmcp = { workspace = true }
+memory-center-mcp = { path = "../memory-center-mcp" }
+axum.workspace = true
+tokio = { version = "1.0", features = ["full"] }
+tower-http.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+# v2.34 pre_compress：生成 hook_id（uuid::Uuid::new_v4）+ 归档时间（chrono::Utc::now）
+uuid = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3.0"
+# HTTP 客户端用于集成测试
+reqwest = { version = "0.12", features = ["json"] }
+tokio = { version = "1.0", features = ["full"] }
+uuid = { workspace = true }
+chrono = { workspace = true }
+serde_json = { workspace = true }

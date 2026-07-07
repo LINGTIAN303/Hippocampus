@@ -1,0 +1,32 @@
+[package]
+name = "memory-center-presets"
+version.workspace = true
+edition.workspace = true
+description = "MemoryCenter 预设组合层 - 5 特配 crate 的 Builder + 叠加引擎 + 联动机制"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+memory-center-core = { path = "../memory-center-core", version = "0.1.0" }
+memory-center-models = { path = "../memory-center-models", version = "0.1.0" }
+memory-center-scenarios = { path = "../memory-center-scenarios", version = "0.1.0" }
+memory-center-windows = { path = "../memory-center-windows", version = "0.1.0" }
+memory-center-agents = { path = "../memory-center-agents", version = "0.1.0" }
+memory-center-skills = { path = "../memory-center-skills", version = "0.1.0" }
+memory-center-llm = { path = "../memory-center-llm", version = "0.1.0" }
+# v2.33：HttpScenarioDetector 需要 reqwest::Client 调用 LLM API
+reqwest = { version = "0.12", features = ["json"] }
+# v2.33：resolve_effective_scenario 用 chrono::Utc::now() 写入 detected_at
+chrono = { workspace = true }
+
+[dev-dependencies]
+chrono = { workspace = true }
+uuid = { workspace = true }
+# v2.33：HttpScenarioDetector 测试需要 #[tokio::test] 宏
+tokio = { version = "1.0", features = ["rt", "macros"] }
+# v2.33：resolve_effective_scenario 测试需要 TempDir 创建临时存储
+tempfile = { workspace = true }
+# v2.35：env var 测试串行化（避免并行 set_var/remove_var 互相干扰）
+serial_test = "3"

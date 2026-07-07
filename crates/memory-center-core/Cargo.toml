@@ -1,0 +1,44 @@
+# memory-center-core
+# 核心库 crate - 纯逻辑，无 IO 依赖
+
+[package]
+name = "memory-center-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "MemoryCenter 核心库 - Agent 记忆库的纯逻辑核心（归档/索引/检索/周期任务/评分）"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+async-trait.workspace = true
+tokio.workspace = true
+# v2.4 新增：双格式序列化 + SQLite 后端 + 细粒度锁
+rmp-serde.workspace = true
+rusqlite.workspace = true
+r2d2.workspace = true
+r2d2_sqlite.workspace = true
+dashmap.workspace = true
+# v2.5 新增：高性能缓存（CachedStorage 装饰器）
+moka.workspace = true
+# v2.5 批次 7 新增：中文分词（BM25 关键词检索）
+jieba-rs.workspace = true
+# v2.35 新增：从 core-logic 引入纯逻辑（Storage trait / model / bm25 等）
+memory-center-core-logic = { path = "../memory-center-core-logic" }
+
+[dev-dependencies]
+tokio = { version = "1.0", features = ["full"] }
+tempfile = "3.0"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+# 基准测试需要异步运行时支持
+[[bench]]
+name = "operations"
+harness = false

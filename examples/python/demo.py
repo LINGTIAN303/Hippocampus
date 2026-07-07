@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-Hippocampus Python 调用示例（基于 ctypes）
+MemoryCenter Python 调用示例（基于 ctypes）
 
-演示通过 ctypes 调用 Hippocampus 的 C ABI，覆盖 5 个核心操作。
+演示通过 ctypes 调用 MemoryCenter 的 C ABI，覆盖 5 个核心操作。
 
 前置准备：
-    1. 在项目根目录执行：cargo build --release -p hippocampus-ffi
+    1. 在项目根目录执行：cargo build --release -p memory-center-ffi
     2. 确认动态库路径：
-       - Linux:   target/release/libhippocampus.so
-       - macOS:   target/release/libhippocampus.dylib
-       - Windows: target/release/hippocampus.dll
+       - Linux:   target/release/libmemory_center.so
+       - macOS:   target/release/libmemory_center.dylib
+       - Windows: target/release/memory_center.dll
 
 运行：
     cd examples/python
@@ -30,84 +30,84 @@ from pathlib import Path
 # =============================================================================
 
 def load_library():
-    """加载 Hippocampus 动态库。"""
+    """加载 MemoryCenter 动态库。"""
     # 定位项目根目录（示例位于 examples/python/，向上两级）
     project_root = Path(__file__).resolve().parent.parent.parent
     target_dir = project_root / "target" / "release"
 
     if sys.platform == "win32":
-        lib_path = target_dir / "hippocampus.dll"
+        lib_path = target_dir / "memory_center.dll"
     elif sys.platform == "darwin":
-        lib_path = target_dir / "libhippocampus.dylib"
+        lib_path = target_dir / "libmemory_center.dylib"
     else:
-        lib_path = target_dir / "libhippocampus.so"
+        lib_path = target_dir / "libmemory_center.so"
 
     if not lib_path.exists():
         raise FileNotFoundError(
             f"动态库不存在：{lib_path}\n"
-            "请先在项目根目录执行：cargo build --release -p hippocampus-ffi"
+            "请先在项目根目录执行：cargo build --release -p memory-center-ffi"
         )
 
     lib = ctypes.CDLL(str(lib_path))
 
     # ---- 配置函数签名 ----
     # 句柄生命周期
-    lib.hippocampus_new.restype = ctypes.c_void_p
-    lib.hippocampus_new.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p]
-    lib.hippocampus_free.restype = None
-    lib.hippocampus_free.argtypes = [ctypes.c_void_p]
+    lib.MEMORY_CENTER_new.restype = ctypes.c_void_p
+    lib.MEMORY_CENTER_new.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p]
+    lib.MEMORY_CENTER_free.restype = None
+    lib.MEMORY_CENTER_free.argtypes = [ctypes.c_void_p]
 
     # 结果处理
-    lib.hippocampus_is_ok.restype = ctypes.c_bool
-    lib.hippocampus_is_ok.argtypes = [ctypes.c_void_p]
-    lib.hippocampus_get_data.restype = ctypes.POINTER(ctypes.c_char)
-    lib.hippocampus_get_data.argtypes = [ctypes.c_void_p]
-    lib.hippocampus_get_error.restype = ctypes.POINTER(ctypes.c_char)
-    lib.hippocampus_get_error.argtypes = [ctypes.c_void_p]
-    lib.hippocampus_result_free.restype = None
-    lib.hippocampus_result_free.argtypes = [ctypes.c_void_p]
-    lib.hippocampus_free_string.restype = None
-    lib.hippocampus_free_string.argtypes = [ctypes.POINTER(ctypes.c_char)]
+    lib.MEMORY_CENTER_is_ok.restype = ctypes.c_bool
+    lib.MEMORY_CENTER_is_ok.argtypes = [ctypes.c_void_p]
+    lib.MEMORY_CENTER_get_data.restype = ctypes.POINTER(ctypes.c_char)
+    lib.MEMORY_CENTER_get_data.argtypes = [ctypes.c_void_p]
+    lib.MEMORY_CENTER_get_error.restype = ctypes.POINTER(ctypes.c_char)
+    lib.MEMORY_CENTER_get_error.argtypes = [ctypes.c_void_p]
+    lib.MEMORY_CENTER_result_free.restype = None
+    lib.MEMORY_CENTER_result_free.argtypes = [ctypes.c_void_p]
+    lib.MEMORY_CENTER_free_string.restype = None
+    lib.MEMORY_CENTER_free_string.argtypes = [ctypes.POINTER(ctypes.c_char)]
 
     # 核心操作
-    lib.hippocampus_archive.restype = ctypes.c_void_p
-    lib.hippocampus_archive.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
-    lib.hippocampus_retrieve.restype = ctypes.c_void_p
-    lib.hippocampus_retrieve.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
-    lib.hippocampus_get_summaries.restype = ctypes.c_void_p
-    lib.hippocampus_get_summaries.argtypes = [ctypes.c_void_p]
-    lib.hippocampus_render_prompt.restype = ctypes.c_void_p
-    lib.hippocampus_render_prompt.argtypes = [ctypes.c_void_p]
-    lib.hippocampus_run_compaction.restype = ctypes.c_void_p
-    lib.hippocampus_run_compaction.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+    lib.MEMORY_CENTER_archive.restype = ctypes.c_void_p
+    lib.MEMORY_CENTER_archive.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+    lib.MEMORY_CENTER_retrieve.restype = ctypes.c_void_p
+    lib.MEMORY_CENTER_retrieve.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+    lib.MEMORY_CENTER_get_summaries.restype = ctypes.c_void_p
+    lib.MEMORY_CENTER_get_summaries.argtypes = [ctypes.c_void_p]
+    lib.MEMORY_CENTER_render_prompt.restype = ctypes.c_void_p
+    lib.MEMORY_CENTER_render_prompt.argtypes = [ctypes.c_void_p]
+    lib.MEMORY_CENTER_run_compaction.restype = ctypes.c_void_p
+    lib.MEMORY_CENTER_run_compaction.argtypes = [ctypes.c_void_p, ctypes.c_uint]
 
     return lib
 
 
 # 周期常量
-HIPPOCAMPUS_COMPACTION_WEEKLY = 0
-HIPPOCAMPUS_COMPACTION_MONTHLY = 1
+MEMORY_CENTER_COMPACTION_WEEKLY = 0
+MEMORY_CENTER_COMPACTION_MONTHLY = 1
 
 
 # =============================================================================
 # 2. 包装层：将 C ABI 包装为 Python 友好的 API
 # =============================================================================
 
-class HippocampusError(Exception):
-    """Hippocampus 调用错误。"""
+class MemoryCenterError(Exception):
+    """MemoryCenter 调用错误。"""
 
 
-class Hippocampus:
-    """Hippocampus 句柄的 Python 包装。"""
+class MemoryCenter:
+    """MemoryCenter 句柄的 Python 包装。"""
 
     def __init__(self, lib, root_path, session_id, project_id=None):
         self._lib = lib
         root_b = root_path.encode("utf-8")
         sid_b = session_id.encode("utf-8")
         pid_b = project_id.encode("utf-8") if project_id else None
-        self._handle = lib.hippocampus_new(root_b, sid_b, pid_b)
+        self._handle = lib.MEMORY_CENTER_new(root_b, sid_b, pid_b)
         if not self._handle:
-            raise HippocampusError("创建句柄失败（参数无效或 runtime 创建失败）")
+            raise MemoryCenterError("创建句柄失败（参数无效或 runtime 创建失败）")
 
     def __enter__(self):
         return self
@@ -118,54 +118,54 @@ class Hippocampus:
 
     def close(self):
         if self._handle:
-            self._lib.hippocampus_free(self._handle)
+            self._lib.MEMORY_CENTER_free(self._handle)
             self._handle = None
 
     def _get_result(self, result_ptr):
-        """统一提取结果，成功返回 data 字符串，失败抛 HippocampusError。"""
+        """统一提取结果，成功返回 data 字符串，失败抛 MemoryCenterError。"""
         try:
-            if not self._lib.hippocampus_is_ok(result_ptr):
-                err_ptr = self._lib.hippocampus_get_error(result_ptr)
+            if not self._lib.MEMORY_CENTER_is_ok(result_ptr):
+                err_ptr = self._lib.MEMORY_CENTER_get_error(result_ptr)
                 if err_ptr:
                     err_msg = ctypes.cast(err_ptr, ctypes.c_char_p).value.decode("utf-8")
-                    self._lib.hippocampus_free_string(err_ptr)
+                    self._lib.MEMORY_CENTER_free_string(err_ptr)
                 else:
                     err_msg = "(未知错误)"
-                raise HippocampusError(err_msg)
+                raise MemoryCenterError(err_msg)
 
-            data_ptr = self._lib.hippocampus_get_data(result_ptr)
+            data_ptr = self._lib.MEMORY_CENTER_get_data(result_ptr)
             data = ctypes.cast(data_ptr, ctypes.c_char_p).value.decode("utf-8") if data_ptr else ""
-            self._lib.hippocampus_free_string(data_ptr)
+            self._lib.MEMORY_CENTER_free_string(data_ptr)
             return data
         finally:
-            self._lib.hippocampus_result_free(result_ptr)
+            self._lib.MEMORY_CENTER_result_free(result_ptr)
 
     # ---- 5 个核心操作 ----
 
     def archive(self, turns):
         """归档一批轮次，返回 SummaryView 字典。"""
         turns_json = json.dumps(turns, ensure_ascii=False).encode("utf-8")
-        result = self._lib.hippocampus_archive(self._handle, turns_json)
+        result = self._lib.MEMORY_CENTER_archive(self._handle, turns_json)
         return json.loads(self._get_result(result))
 
     def retrieve(self, hook_id):
         """按钩子 ID 检索完整记忆文件。"""
-        result = self._lib.hippocampus_retrieve(self._handle, hook_id.encode("utf-8"))
+        result = self._lib.MEMORY_CENTER_retrieve(self._handle, hook_id.encode("utf-8"))
         return json.loads(self._get_result(result))
 
     def get_summaries(self):
         """获取所有周期摘要视图列表。"""
-        result = self._lib.hippocampus_get_summaries(self._handle)
+        result = self._lib.MEMORY_CENTER_get_summaries(self._handle)
         return json.loads(self._get_result(result))
 
     def render_prompt(self):
         """渲染摘要为 system prompt 文本（非 JSON）。"""
-        result = self._lib.hippocampus_render_prompt(self._handle)
+        result = self._lib.MEMORY_CENTER_render_prompt(self._handle)
         return self._get_result(result)  # 直接返回字符串
 
     def run_compaction(self, period):
-        """触发周期任务（HIPPOCAMPUS_COMPACTION_WEEKLY / MONTHLY）。"""
-        result = self._lib.hippocampus_run_compaction(self._handle, period)
+        """触发周期任务（MEMORY_CENTER_COMPACTION_WEEKLY / MONTHLY）。"""
+        result = self._lib.MEMORY_CENTER_run_compaction(self._handle, period)
         return json.loads(self._get_result(result))
 
 
@@ -199,18 +199,18 @@ def main():
     storage_root.mkdir(exist_ok=True)
 
     print("=" * 70)
-    print("Hippocampus Python 示例 - 通过 ctypes 调用 C ABI")
+    print("MemoryCenter Python 示例 - 通过 ctypes 调用 C ABI")
     print("=" * 70)
 
     # 1. 创建句柄（用 with 语句保证自动释放）
-    with Hippocampus(lib, str(storage_root), "py-session-001") as h:
+    with MemoryCenter(lib, str(storage_root), "py-session-001") as h:
         print("\n[1] 句柄创建成功")
 
         # 2. 构造并归档 2 轮对话
         turns = [
             make_turn(
                 "你好，介绍一下记忆库设计",
-                "Hippocampus 采用三级索引周期：天级归档 / 周级合并 / 月级淘汰",
+                "MemoryCenter 采用三级索引周期：天级归档 / 周级合并 / 月级淘汰",
                 80,
                 tags=[{"kind": "Text"}, {"kind": "CodeBlock"}],
             ),

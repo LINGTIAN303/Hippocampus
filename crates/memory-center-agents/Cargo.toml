@@ -1,0 +1,12 @@
+[package]
+name = "memory-center-agents"
+version.workspace = true
+edition.workspace = true
+description = "MemoryCenter Agent 代理工具特配库 - 11 主流 Agent family + 4 主流预设 + Custom 兜底"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+memory-center-core = { path = "../memory-center-core", version = "0.1.0" }

@@ -158,7 +158,7 @@ def call_llm(
 
 
 # ---------------------------------------------------------------------------
-# 4. Hippocampus HTTP API 封装
+# 4. MemoryCenter HTTP API 封装
 # ---------------------------------------------------------------------------
 def hippo_archive(session_id: str, turns: list[dict], timeout: int = 60) -> dict:
     """POST /sessions/{sid}/archive —— 归档会话，生成 daily 记忆文件。

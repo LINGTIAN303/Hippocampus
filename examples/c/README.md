@@ -1,4 +1,4 @@
-# Hippocampus C 示例与集成测试
+# MemoryCenter C 示例与集成测试
 
 本目录包含：
 
@@ -13,13 +13,13 @@
 
 ```bash
 # 在项目根目录构建动态库
-cargo build --release -p hippocampus-ffi
+cargo build --release -p memory-center-ffi
 ```
 
 构建产物位置：
-- Linux: `target/release/libhippocampus.so`
-- macOS: `target/release/libhippocampus.dylib`
-- Windows: `target/release/hippocampus.dll`
+- Linux: `target/release/libmemory_center.so`
+- macOS: `target/release/libmemory_center.dylib`
+- Windows: `target/release/memory_center.dll`
 
 ## 运行示例（demo.c）
 
@@ -28,9 +28,9 @@ cargo build --release -p hippocampus-ffi
 ```bash
 cd examples/c
 gcc demo.c -o demo \
-  -I ../../crates/hippocampus-ffi/include \
+  -I ../../crates/memory-center-ffi/include \
   -L ../../target/release \
-  -lhippocampus -lpthread -ldl
+  -lmemory_center -lpthread -ldl
 LD_LIBRARY_PATH=../../target/release ./demo
 ```
 
@@ -40,7 +40,7 @@ LD_LIBRARY_PATH=../../target/release ./demo
 
 ```powershell
 cd examples\c
-cl demo.c /I ..\..\crates\hippocampus-ffi\include /link ..\..\target\release\hippocampus.dll.lib
+cl demo.c /I ..\..\crates\memory-center-ffi\include /link ..\..\target\release\memory_center.dll.lib
 set PATH=..\..\target\release;%PATH%
 demo.exe
 ```
@@ -75,7 +75,7 @@ make test    # 运行 C 测试
 ### 预期输出
 
 ```
-================ Hippocampus C 集成测试 ================
+================ MemoryCenter C 集成测试 ================
 [test] 句柄生命周期...
   PASS
 [test] archive + retrieve 全链路...
@@ -93,7 +93,7 @@ C 集成测试已集成到 GitHub Actions（见 `.github/workflows/ci.yml` 的 `
 ## 注意事项
 
 - 句柄不保证线程安全，多线程访问需自行加锁
-- `hippocampus_get_data` / `hippocampus_get_error` 返回的字符串必须用 `hippocampus_free_string` 释放
-- `HippocampusResult*` 必须用 `hippocampus_result_free` 释放
+- `MEMORY_CENTER_get_data` / `MEMORY_CENTER_get_error` 返回的字符串必须用 `MEMORY_CENTER_free_string` 释放
+- `MemoryCenterResult*` 必须用 `MEMORY_CENTER_result_free` 释放
 - 本测试用 `strstr` 粗略提取 JSON 字段，生产场景建议用 jsmn / cJSON 等 JSON 解析库
 - 测试会在当前目录创建 `tmp_test_*` 临时目录，可用 `make clean` 清理

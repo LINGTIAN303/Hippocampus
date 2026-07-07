@@ -1,12 +1,12 @@
-# Hippocampus Python 示例
+# MemoryCenter Python 示例
 
-基于 ctypes 通过 C ABI 调用 Hippocampus，覆盖 5 个核心操作。
+基于 ctypes 通过 C ABI 调用 MemoryCenter，覆盖 5 个核心操作。
 
 ## 前置准备
 
 ```bash
 # 在项目根目录构建动态库
-cargo build --release -p hippocampus-ffi
+cargo build --release -p memory-center-ffi
 ```
 
 ## 运行
@@ -20,7 +20,7 @@ python3 demo.py
 
 ```
 ======================================================================
-Hippocampus Python 示例 - 通过 ctypes 调用 C ABI
+MemoryCenter Python 示例 - 通过 ctypes 调用 C ABI
 ======================================================================
 
 [1] 句柄创建成功
@@ -57,17 +57,17 @@ Hippocampus Python 示例 - 通过 ctypes 调用 C ABI
 
 - **函数签名配置**：`ctypes` 调用前必须配置 `restype` 和 `argtypes`，否则默认按 int 返回（指针被截断）
 - **字符串编码**：所有传入字符串需 `.encode("utf-8")`，返回字符串需 `.decode("utf-8")`
-- **内存释放**：`hippocampus_get_data` / `hippocampus_get_error` 返回的字符串必须用 `hippocampus_free_string` 释放，否则内存泄漏
+- **内存释放**：`MEMORY_CENTER_get_data` / `MEMORY_CENTER_get_error` 返回的字符串必须用 `MEMORY_CENTER_free_string` 释放，否则内存泄漏
 - **句柄生命周期**：推荐用 `with` 语句（已实现 `__enter__` / `__exit__`），保证异常情况下也释放
 - **project_id 为 None**：传 `None` 而非空字符串，C 端会判 NULL
 
 ## 包装层说明
 
-`demo.py` 内置了 `Hippocampus` 包装类，将 C ABI 包装为 Python 友好的 API：
+`demo.py` 内置了 `MemoryCenter` 包装类，将 C ABI 包装为 Python 友好的 API：
 
 - 自动处理字符串编解码
 - 自动释放返回的字符串和结果对象
-- 错误转为 `HippocampusError` 异常
+- 错误转为 `MemoryCenterError` 异常
 - 支持 `with` 语句自动释放句柄
 
 生产场景可直接复用此包装类，或基于它扩展（如增加类型注解、异步包装等）。

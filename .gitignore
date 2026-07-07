@@ -83,5 +83,5 @@ target/wheels/
 *.def
 *.dll.a
 # go test 临时产物
-crates/hippocampus-go/hippocampus.dll
-crates/hippocampus-go/hippocampus.lib
+crates/memory-center-go/memory_center.dll
+crates/memory-center-go/memory_center.lib

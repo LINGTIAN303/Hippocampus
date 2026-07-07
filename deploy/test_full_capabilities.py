@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Hippocampus 项目能力综合测试
+"""MemoryCenter 项目能力综合测试
 
 覆盖：
   1. v2.29 新功能：presets API（4 端点）+ archive 带 preset 参数
@@ -125,7 +125,7 @@ section("2.1 POST /archive 带 preset 参数（v2.29 新功能）")
 turns = [
     make_turn("我叫小明，今年 25 岁，住在上海。", "你好小明！很高兴认识你。", ["Text"]),
     make_turn("我在一家互联网公司做 Rust 后端开发。", "Rust 是优秀的系统编程语言。", ["Text", "CodeBlock"]),
-    make_turn("记住这个关键事实：项目代号是 Hippocampus。", "好的，我已记录项目代号。", ["Text"]),
+    make_turn("记住这个关键事实：项目代号是 MemoryCenter。", "好的，我已记录项目代号。", ["Text"]),
 ]
 status, result = call("POST", f"/sessions/{SID}/archive", body={
     "turns": turns,
@@ -183,7 +183,7 @@ else:
 section("3. POST /detect-conflicts 冲突预检测（v2.27）")
 if hook_id:
     status, result = call("POST", f"/sessions/{SID}/memories/{hook_id}/detect-conflicts", body={
-        "added_facts": ["项目代号是 NeuronNet"],  # 与归档的 Hippocampus 冲突
+        "added_facts": ["项目代号是 NeuronNet"],  # 与归档的 MemoryCenter 冲突
         "revised_facts": [],
         "deprecated_facts": [],
         "project_id": None,
@@ -203,7 +203,7 @@ if hook_id:
 section("4. POST /search 语义检索（仅关键词降级）")
 # 注意：启发式 Summary::from_title 只填 title（首条消息前 80 字符），
 # 未配置 LLM Generator 时 key_facts/key_entities 为空，搜索词需匹配 title。
-# 配置 HIPPOCAMPUS_GENERATOR_API_URL 后，归档时生成结构化摘要，搜索能匹配 key_facts。
+# 配置 MEMORY_CENTER_GENERATOR_API_URL 后，归档时生成结构化摘要，搜索能匹配 key_facts。
 status, result = call("POST", f"/sessions/{SID}/search", body={
     "query": "小明",  # 首条消息包含 "小明"
     "top_k": 5,

@@ -1,0 +1,12 @@
+[package]
+name = "memory-center-skills"
+version.workspace = true
+edition.workspace = true
+description = "MemoryCenter Agent 技能特配库 - 15 内置技能 + Custom 兜底 + MemoryLink 归档策略"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+memory-center-core = { path = "../memory-center-core", version = "0.1.0" }

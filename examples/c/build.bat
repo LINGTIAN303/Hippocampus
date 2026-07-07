@@ -1,5 +1,5 @@
 @echo off
-REM Hippocampus C 集成测试构建脚本（Windows MSVC）
+REM MemoryCenter C 集成测试构建脚本（Windows MSVC）
 REM
 REM 用法：
 REM   build.bat build   REM 构建 Rust 动态库 + 编译 C 测试
@@ -10,9 +10,9 @@ REM   build.bat clean   REM 清理
 setlocal
 
 set PROJECT_ROOT=..\..
-set FFI_INCLUDE=%PROJECT_ROOT%\crates\hippocampus-ffi\include
+set FFI_INCLUDE=%PROJECT_ROOT%\crates\memory-center-ffi\include
 set LIB_DIR=%PROJECT_ROOT%\target\release
-set LIB_NAME=hippocampus.dll
+set LIB_NAME=memory_center.dll
 
 if "%1"=="" goto all
 if "%1"=="build" goto build
@@ -40,7 +40,7 @@ goto end
 :rust_lib
 echo [1/3] 构建 Rust 动态库...
 pushd %PROJECT_ROOT%
-cargo build --release -p hippocampus-ffi
+cargo build --release -p memory-center-ffi
 if errorlevel 1 (
     echo 构建失败
     popd

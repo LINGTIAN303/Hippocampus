@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Hippocampus HTTP 服务端到端测试
+"""MemoryCenter HTTP 服务端到端测试
 
 用法：
   python3 test_e2e.py [API_KEY]
 
-  API_KEY - 可选，配置了 HIPPOCAMPUS_API_KEY 后必填，会作为
+  API_KEY - 可选，配置了 MEMORY_CENTER_API_KEY 后必填，会作为
             Authorization: Bearer <API_KEY> 头携带
 """
 import os
@@ -14,7 +14,7 @@ import json
 import uuid
 
 # 从命令行参数或环境变量读取 API Key
-API_KEY = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("HIPPOCAMPUS_API_KEY", "")
+API_KEY = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("MEMORY_CENTER_API_KEY", "")
 BASE = "http://127.0.0.1:8765/api/v1"
 SID = "e2e-test"
 
@@ -37,7 +37,7 @@ def make_turn(user_text, assistant_text):
 print("=== 1. 归档测试 ===")
 data = json.dumps({
     "turns": [
-        make_turn("Hello Hippocampus, 记住这个测试", "好的，我已记录这条消息"),
+        make_turn("Hello MemoryCenter, 记住这个测试", "好的，我已记录这条消息"),
         make_turn("今天天气怎么样", "今天北京晴天，气温32度"),
     ]
 }).encode()

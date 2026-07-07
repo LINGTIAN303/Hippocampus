@@ -24,23 +24,23 @@ jobs:
           # Windows x86_64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact: hippocampus.dll
+            artifact: memory_center.dll
           # Linux x86_64
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            artifact: libhippocampus.so
+            artifact: libmemory_center.so
           # Linux aarch64
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
-            artifact: libhippocampus.so
+            artifact: libmemory_center.so
           # macOS x86_64
           - os: macos-latest
             target: x86_64-apple-darwin
-            artifact: libhippocampus.dylib
+            artifact: libmemory_center.dylib
           # macOS aarch64 (Apple Silicon)
           - os: macos-latest
             target: aarch64-apple-darwin
-            artifact: libhippocampus.dylib
+            artifact: libmemory_center.dylib
 
     steps:
       - uses: actions/checkout@v4
@@ -70,13 +70,13 @@ jobs:
         continue-on-error: true  # MVP 阶段不阻断
 
       - name: Build (core)
-        run: cargo build --package hippocampus-core --verbose
+        run: cargo build --package memory-center-core --verbose
 
       - name: Build (FFI, cdylib)
-        run: cargo build --package hippocampus-ffi --release --target ${{ matrix.target }}
+        run: cargo build --package memory-center-ffi --release --target ${{ matrix.target }}
 
       - name: Run tests (core)
-        run: cargo test --package hippocampus-core --verbose
+        run: cargo test --package memory-center-core --verbose
 
       - name: Verify FFI artifact
         shell: bash
@@ -134,24 +134,24 @@ jobs:
           key: linux-c-test-cargo-${{ hashFiles('**/Cargo.toml') }}
 
       - name: Build Rust dynamic library
-        run: cargo build --release -p hippocampus-ffi
+        run: cargo build --release -p memory-center-ffi
 
       - name: Build & Run C demo
         run: |
           cd examples/c
           gcc demo.c -o demo \
-            -I ../../crates/hippocampus-ffi/include \
+            -I ../../crates/memory-center-ffi/include \
             -L ../../target/release \
-            -lhippocampus -lpthread -ldl
+            -lmemory_center -lpthread -ldl
           LD_LIBRARY_PATH=../../target/release ./demo
 
       - name: Build & Run C integration test
         run: |
           cd examples/c
           gcc test.c -o test \
-            -I ../../crates/hippocampus-ffi/include \
+            -I ../../crates/memory-center-ffi/include \
             -L ../../target/release \
-            -lhippocampus -lpthread -ldl
+            -lmemory_center -lpthread -ldl
           LD_LIBRARY_PATH=../../target/release ./test
 
   # ============================================================================
@@ -176,7 +176,7 @@ jobs:
           key: linux-http-test-cargo-${{ hashFiles('**/Cargo.toml') }}
 
       - name: Run server unit + HTTP integration tests
-        run: cargo test -p hippocampus-server --all-targets --verbose
+        run: cargo test -p memory-center-server --all-targets --verbose
 
   # ============================================================================
   # MCP 集成测试（MCP server 5 个 tools 全链路）
@@ -200,7 +200,7 @@ jobs:
           key: linux-mcp-test-cargo-${{ hashFiles('**/Cargo.toml') }}
 
       - name: Run MCP integration tests
-        run: cargo test -p hippocampus-mcp --all-targets --verbose
+        run: cargo test -p memory-center-mcp --all-targets --verbose
 
   # ============================================================================
   # Python 集成测试（PyO3 绑定全链路）
@@ -232,13 +232,13 @@ jobs:
           key: linux-python-test-cargo-${{ hashFiles('**/Cargo.toml') }}
 
       - name: Build Python wheel
-        run: maturin build --release -m crates/hippocampus-python/Cargo.toml
+        run: maturin build --release -m crates/memory-center-python/Cargo.toml
 
       - name: Install wheel
         run: pip install target/wheels/*.whl
 
       - name: Run Python tests
-        run: pytest crates/hippocampus-python/tests/test_hippocampus.py -v
+        run: pytest crates/memory-center-python/tests/test_MemoryCenter.py -v
 
   # ============================================================================
   # 文档构建

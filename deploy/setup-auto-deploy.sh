@@ -1,13 +1,13 @@
 #!/bin/bash
-# Hippocampus 自动部署配置脚本（服务器端一次性执行）
+# MemoryCenter 自动部署配置脚本（服务器端一次性执行）
 # 创建裸仓库 + post-receive hook，实现 git push production main 自动部署
 set -e
 
 export PATH=/root/.cargo/bin:/usr/bin:/bin:/usr/local/bin:$PATH
 
-GIT_DIR=/root/hippocampus.git
-WORK_DIR=/root/hippocampus-work
-BIN_DIR=/opt/hippocampus-server/bin
+GIT_DIR=/root/memory-center.git
+WORK_DIR=/root/MemoryCenter-work
+BIN_DIR=/opt/memory-center-server/bin
 
 echo "=== 1. 创建裸仓库 ==="
 if [ -d "$GIT_DIR" ]; then
@@ -25,14 +25,14 @@ cat > "$GIT_DIR/hooks/post-receive" << 'HOOK'
 set -e
 export PATH=/root/.cargo/bin:/usr/bin:/bin:/usr/local/bin:$PATH
 
-GIT_DIR=/root/hippocampus.git
-WORK_DIR=/root/hippocampus-work
-BIN_DIR=/opt/hippocampus-server/bin
+GIT_DIR=/root/memory-center.git
+WORK_DIR=/root/MemoryCenter-work
+BIN_DIR=/opt/memory-center-server/bin
 
 while read oldrev newrev ref; do
     if [ "$ref" = "refs/heads/main" ]; then
         echo "[deploy] ============================================"
-        echo "[deploy] 开始部署 Hippocampus Server"
+        echo "[deploy] 开始部署 MemoryCenter Server"
         echo "[deploy] commit: $newrev"
         echo "[deploy] 时间: $(date '+%Y-%m-%d %H:%M:%S')"
         echo "[deploy] ============================================"
@@ -43,28 +43,28 @@ while read oldrev newrev ref; do
         cd "$WORK_DIR"
 
         # 编译
-        echo "[deploy] 编译 hippocampus-server..."
-        cargo build --release -p hippocampus-server
+        echo "[deploy] 编译 memory-center-server..."
+        cargo build --release -p memory-center-server
 
         # 复制二进制
         echo "[deploy] 复制二进制到 $BIN_DIR..."
         mkdir -p "$BIN_DIR"
-        cp target/release/hippocampus-server "$BIN_DIR/"
+        cp target/release/memory-center-server "$BIN_DIR/"
 
         # 重启服务
-        echo "[deploy] 重启 hippocampus-server 服务..."
-        systemctl restart hippocampus-server
+        echo "[deploy] 重启 memory-center-server 服务..."
+        systemctl restart memory-center-server
 
         # 验证
         sleep 2
-        if systemctl is-active --quiet hippocampus-server; then
+        if systemctl is-active --quiet memory-center-server; then
             echo "[deploy] 服务启动成功"
             echo "[deploy] ============================================"
             echo "[deploy] 部署完成"
             echo "[deploy] ============================================"
         else
             echo "[deploy] 错误：服务启动失败"
-            systemctl status hippocampus-server --no-pager | tail -20
+            systemctl status memory-center-server --no-pager | tail -20
             exit 1
         fi
     fi
@@ -78,10 +78,10 @@ mkdir -p "$WORK_DIR"
 echo "工作目录: $WORK_DIR"
 
 echo "=== 4. 验证现有服务状态 ==="
-if systemctl is-active --quiet hippocampus-server; then
-    echo "hippocampus-server 服务运行中"
+if systemctl is-active --quiet memory-center-server; then
+    echo "memory-center-server 服务运行中"
 else
-    echo "警告：hippocampus-server 服务未运行"
+    echo "警告：memory-center-server 服务未运行"
 fi
 
 echo ""
