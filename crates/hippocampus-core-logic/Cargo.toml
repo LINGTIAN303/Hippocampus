@@ -8,6 +8,13 @@ license.workspace = true
 repository.workspace = true
 description = "Hippocampus 核心逻辑 - 纯逻辑 + Storage trait（WASM 兼容）"
 
+[features]
+# 默认启用 native 模式（jieba 中文分词 + dashmap 并发锁）
+default = ["native"]
+native = ["dep:jieba-rs", "dep:dashmap"]
+# WASM 模式：排除 jieba-rs/dashmap，uuid 启用 js 随机数源
+wasm = ["uuid/js"]
+
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
@@ -19,8 +26,9 @@ async-trait.workspace = true
 # 仅 sync feature，WASM 兼容（不引入 fs/rt）
 tokio = { version = "1.0", features = ["sync"] }
 rmp-serde.workspace = true
-dashmap.workspace = true
-jieba-rs.workspace = true
+# 改为 optional：WASM 模式下排除（jieba 词典加载 + dashmap 均不兼容 WASM）
+jieba-rs = { workspace = true, optional = true }
+dashmap = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { version = "1.0", features = ["full"] }

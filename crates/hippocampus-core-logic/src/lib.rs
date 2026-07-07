@@ -7,6 +7,12 @@
 #![warn(missing_docs, rust_2018_idioms)]
 
 pub mod archive;
+// BM25 模块：native 模式用 jieba 中文分词，WASM 模式用简易字符分词
+// 两者公共接口完全一致（Bm25Searcher + KeywordSearcher trait impl）
+#[cfg(feature = "native")]
+pub mod bm25;
+#[cfg(not(feature = "native"))]
+#[path = "bm25_wasm.rs"]
 pub mod bm25;
 pub mod compact;
 pub mod conflict;
