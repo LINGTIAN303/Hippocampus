@@ -1,0 +1,40 @@
+# mdBook 配置
+# 文档：https://rust-lang.github.io/mdBook/format/configuration.html
+
+[book]
+title = "MemoryCenter 文档"
+authors = ["LINGTIAN303"]
+language = "zh-CN"
+description = "Agent 记忆库 —— 跨语言可引用的持久化高效完整记忆系统"
+src = "src"
+
+# 输出目录（CI 中会用，本地预览默认 ./book）
+[build]
+build-dir = "book"
+create-missing = false
+
+# 主题与样式
+[output.html]
+default-theme = "light"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/LINGTIAN303/MemoryCenter"
+edit-url-template = "https://github.com/LINGTIAN303/MemoryCenter/edit/main/docs/src/{path}"
+additional-css = []
+additional-js = []
+no-section-label = false
+
+# 启用搜索功能
+[output.html.search]
+enable = true
+limit-results = 30
+use-boolean-and = true
+boost-title = 2
+boost-hierarchy = 1
+boost-paragraph = 1
+expand = true
+heading-split-level = 3
+
+# 顶部导航栏链接
+[output.html.fold]
+enable = true
+level = 0

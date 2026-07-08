@@ -1,0 +1,17 @@
+# Issue 模板配置
+# 文档：https://docs.github.com/communities/using-templates-to-encourage-useful-issues-and-pull-requests/configuring-issue-templates-for-your-repository
+
+# 禁止空白 Issue（强制使用模板）
+blank_issues_enabled: false
+
+# 引导链接（在 New Issue 入口显示）
+contact_links:
+  - name: 📖 文档与 Wiki
+    url: https://github.com/LINGTIAN303/MemoryCenter/wiki
+    about: 查看完整文档（快速上手 / 架构 / API / 部署）
+  - name: 💬 讨论 / 提问
+    url: https://github.com/LINGTIAN303/MemoryCenter/discussions
+    about: 使用问题、想法交流请到 Discussions 区
+  - name: 🔒 安全漏洞上报
+    url: https://github.com/LINGTIAN303/MemoryCenter/security/advisories/new
+    about: 安全漏洞请走私密通道，勿在 Issue 公开

@@ -1,0 +1,129 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"  # v0.1.0 / v0.2.0 等 tag 触发
+
+permissions:
+  contents: write  # 创建 Release 需要
+
+jobs:
+  # ============================================================================
+  # 跨平台构建 Release Artifact
+  # ============================================================================
+  build:
+    name: Build (${{ matrix.os }} / ${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Windows x86_64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: memory_center.dll
+            archive: memory-center-windows-x64.zip
+          # Linux x86_64
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: libmemory_center.so
+            archive: memory-center-linux-x64.tar.gz
+          # macOS aarch64 (Apple Silicon)
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact: libmemory_center.dylib
+            archive: memory-center-macos-arm64.tar.gz
+          # macOS x86_64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact: libmemory_center.dylib
+            archive: memory-center-macos-x64.tar.gz
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: release-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.toml') }}
+
+      - name: Build FFI dynamic library
+        run: cargo build --release -p memory-center-ffi --target ${{ matrix.target }}
+
+      - name: Build MCP server binary
+        run: cargo build --release -p memory-center-mcp --target ${{ matrix.target }}
+
+      - name: Build HTTP server binary
+        run: cargo build --release -p memory-center-server --target ${{ matrix.target }}
+
+      - name: Package artifacts (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/${{ matrix.artifact }} dist/
+          cp target/${{ matrix.target }}/release/memory-center-mcp dist/
+          cp target/${{ matrix.target }}/release/memory-center-server dist/
+          cp -r crates/memory-center-ffi/include dist/
+          tar -czf ${{ matrix.archive }} -C dist .
+
+      - name: Package artifacts (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist
+          Copy-Item target/${{ matrix.target }}/release/${{ matrix.artifact }} dist/
+          Copy-Item target/${{ matrix.target }}/release/memory-center-mcp.exe dist/
+          Copy-Item target/${{ matrix.target }}/release/memory-center-server.exe dist/
+          Copy-Item -Recurse crates/memory-center-ffi/include dist/
+          Compress-Archive -Path dist/* -DestinationPath ${{ matrix.archive }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.archive }}
+          path: ${{ matrix.archive }}
+
+  # ============================================================================
+  # 创建 GitHub Release 并上传所有平台产物
+  # ============================================================================
+  release:
+    name: Publish Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true  # 自动从 commits 生成 changelog
+          files: |
+            artifacts/**/*.zip
+            artifacts/**/*.tar.gz
+          body: |
+            ## MemoryCenter ${{ github.ref_name }}
+
+            ### 安装方式
+
+            1. **MCP Server（推荐）**：下载对应平台的 `memory-center-*` 压缩包，解压后配置 `command` 指向 `memory-center-mcp` 二进制
+            2. **C ABI 动态库**：解压后将 `memory_center.dll/.so/.dync` 与 `include/memory_center.h` 接入项目
+            3. **HTTP REST API**：运行 `memory-center-server` 启动 Axum 服务
+
+            ### 完整变更历史
+
+            见 [CHANGELOG.md](https://github.com/LINGTIAN303/MemoryCenter/blob/main/CHANGELOG.md)。

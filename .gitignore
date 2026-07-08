@@ -28,6 +28,9 @@ tarpaulin-report.html
 cobertura.xml
 coverage/
 
+# mdBook 构建产物
+docs/book/
+
 # 环境变量
 .env
 .env.local

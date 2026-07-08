@@ -1,0 +1,61 @@
+name: Deploy Docs to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"           # 仅文档变更触发
+      - ".github/workflows/deploy-pages.yml"
+  workflow_dispatch:        # 支持手动触发
+
+permissions:
+  contents: read
+  pages: write              # 部署到 Pages 需要
+  id-token: write           # Pages 部署需要
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: true  # 取消上一次未完成的部署
+
+jobs:
+  # ============================================================================
+  # 构建 mdBook
+  # ============================================================================
+  build:
+    name: Build mdBook
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mdBook
+        uses: peaceiris/actions-mdbook@v2
+        with:
+          mdbook-version: 'latest'
+
+      - name: Build book
+        run: |
+          cd docs
+          mdbook build
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/book
+
+  # ============================================================================
+  # 部署到 GitHub Pages
+  # ============================================================================
+  deploy:
+    name: Deploy to Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

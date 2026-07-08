@@ -2,21 +2,56 @@
 
 > Agent 记忆库依赖库 —— 跨语言可引用的持久化高效完整记忆系统
 
-命名寓意：作为 Agent 的记忆中心（Memory Center），负责对话上下文的持久化归档与时序管理。灵感来源于大脑记忆系统的分级巩固机制——短期记忆（工作记忆）→ 长期记忆（巩固存储）→ 遗忘淘汰（评分淘汰），本项目将「天/周/月」三级索引周期映射到工程实现，为 Agent 提供生物学节律般的记忆机制。
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/Rust-1.88%2B-orange.svg)](https://www.rust-lang.org)
+[![Crates](https://img.shields.io/badge/Crates-17-yellow.svg)](#crate-矩阵)
+[![Platforms](https://img.shields.io/badge/Platforms-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg)](#测试)
+[![MCP Tools](https://img.shields.io/badge/MCP%20Tools-21-blueviolet.svg)](#6-mcp-server-v237推荐用于-claude-code--cursor--trae--codex-cli)
+[![Bindings](https://img.shields.io/badge/Bindings-Rust%20%7C%20C%20%7C%20Python%20%7C%20Node%20%7C%20WASM-green.svg)](#接口概览)
+<br/>
+[![CI](https://github.com/LINGTIAN303/MemoryCenter/actions/workflows/ci.yml/badge.svg)](https://github.com/LINGTIAN303/MemoryCenter/actions/workflows/ci.yml)
+[![GitHub stars](https://img.shields.io/github/stars/LINGTIAN303/MemoryCenter)](https://github.com/LINGTIAN303/MemoryCenter/stargazers)
+[![GitHub forks](https://img.shields.io/github/forks/LINGTIAN303/MemoryCenter)](https://github.com/LINGTIAN303/MemoryCenter/network/members)
+[![GitHub issues](https://img.shields.io/github/issues/LINGTIAN303/MemoryCenter)](https://github.com/LINGTIAN303/MemoryCenter/issues)
+[![Last Commit](https://img.shields.io/github/last-commit/LINGTIAN303/MemoryCenter)](https://github.com/LINGTIAN303/MemoryCenter/commits/main)
 
-> ⚠️ **破坏性变更通知（2026-07-04）**
->
-> 型号库已更新至 2026 年 7 月最新官方版本。**7 个旧型号构造器被删除**，已使用旧型号的代码需迁移至新型号。详见 [CHANGELOG.md](CHANGELOG.md#型号库更新2026-07-04-核查官方文档)。
->
-> 快速迁移：
-> - `claude_opus_4_5()` → `claude_opus_4_8()`（推荐）
-> - `claude_sonnet_4_5()` → `claude_sonnet_5()`
-> - `gemini_3_pro()` → `gemini_3_1_pro()`
-> - `deepseek_v3_2()` / `deepseek_r1()` → `deepseek_v4_pro()` 或 `deepseek_v4_flash()`
-> - `qwen_3()` → `qwen_3_coder()`
-> - `llama_4()` → `llama_4_scout()` 或 `llama_4_maverick()`
->
-> **紧急**：DeepSeek V3/V3.2 将于 2026-07-24 停服，请尽快迁移至 V4。
+## 目录
+
+- [定位](#定位agent-的时序记忆基础设施)
+- [核心特性](#核心特性)
+- [架构分层](#架构分层)（含 Mermaid 架构图）
+- [Crate 矩阵](#crate-矩阵)
+- [文档](#文档)
+- [快速开始](#快速开始)
+- [接口概览](#接口概览)
+- [核心概念](#核心概念)（含 Mermaid 时序图 + 状态机）
+- [工作流](#工作流典型-agent-接入)
+- [技术栈](#技术栈)
+- [测试](#测试)
+- [项目状态](#项目状态)
+- [License](#license)
+
+## 命名寓意
+
+作为 Agent 的记忆中心（Memory Center），负责对话上下文的持久化归档与时序管理。灵感来源于大脑记忆系统的分级巩固机制——短期记忆（工作记忆）→ 长期记忆（巩固存储）→ 遗忘淘汰（评分淘汰），本项目将「天/周/月」三级索引周期映射到工程实现，为 Agent 提供生物学节律般的记忆机制。
+
+<details>
+<summary>⚠️ <b>破坏性变更通知（2026-07-04）</b> —— 点击展开迁移指南</summary>
+
+型号库已更新至 2026 年 7 月最新官方版本。**7 个旧型号构造器被删除**，已使用旧型号的代码需迁移至新型号。详见 [CHANGELOG.md](CHANGELOG.md#型号库更新2026-07-04-核查官方文档)。
+
+快速迁移：
+
+- `claude_opus_4_5()` → `claude_opus_4_8()`（推荐）
+- `claude_sonnet_4_5()` → `claude_sonnet_5()`
+- `gemini_3_pro()` → `gemini_3_1_pro()`
+- `deepseek_v3_2()` / `deepseek_r1()` → `deepseek_v4_pro()` 或 `deepseek_v4_flash()`
+- `qwen_3()` → `qwen_3_coder()`
+- `llama_4()` → `llama_4_scout()` 或 `llama_4_maverick()`
+
+**紧急**：DeepSeek V3/V3.2 将于 2026-07-24 停服，请尽快迁移至 V4。
+
+</details>
 
 ## 定位：Agent 的时序记忆基础设施
 
@@ -56,6 +91,53 @@ MemoryCenter 不存向量、不做语义检索、不做 Agent 编排，专注一
 Layer 3: Bindings       ① Python 原生绑定 (PyO3, v2.2 ✅)  ② WASM 组件 (v2.35 ✅)  ③ Node/Go/Java (v2.4+)
 Layer 2: Interface      ① C ABI 动态库 (MVP ✅)  ② Axum HTTP REST (v2.1 ✅)  ③ MCP Server stdio (v2.3 ✅)  ④ MCP Streamable HTTP (v2.36 ✅)
 Layer 1: Core (Rust)    纯逻辑 crate（core-logic），无 IO 依赖；facade crate（core）整合原生实现
+```
+
+```mermaid
+flowchart TB
+    subgraph L3["Layer 3 · Bindings · 跨语言绑定"]
+        PY["Python<br/>(PyO3)"]
+        WASM["WASM<br/>(wasm-bindgen)"]
+        NODE["Node.js<br/>(napi-rs)"]
+    end
+    subgraph L2["Layer 2 · Interface · 接入层"]
+        FFI["C ABI<br/>(memory-center-ffi)"]
+        HTTP["HTTP REST<br/>(Axum)"]
+        MCP["MCP Server<br/>(stdio + HTTP)"]
+    end
+    subgraph L1["Layer 1 · Core · 核心层（Rust）"]
+        CORE["memory-center-core<br/>(facade)"]
+        LOGIC["core-logic<br/>(纯逻辑)"]
+        SEARCH["search<br/>(BM25 + 语义)"]
+        LLM["llm<br/>(摘要+冲突)"]
+        PRESET["presets<br/>(11 Agent + 7 Scenario)"]
+    end
+    subgraph STORE["Storage · 可插拔存储"]
+        SQLITE["SQLite<br/>(含向量搜索)"]
+        FILE["文件树<br/>(原生)"]
+    end
+
+    PY --> FFI
+    WASM --> LOGIC
+    NODE --> FFI
+    FFI --> CORE
+    HTTP --> CORE
+    MCP --> CORE
+    CORE --> LOGIC
+    CORE --> SEARCH
+    CORE --> LLM
+    CORE --> PRESET
+    LOGIC --> STORE
+    SEARCH --> STORE
+
+    classDef layer3 fill:#e1f5ff,stroke:#0288d1
+    classDef layer2 fill:#fff4e1,stroke:#f57c00
+    classDef layer1 fill:#e8f5e9,stroke:#388e3c
+    classDef storage fill:#fce4ec,stroke:#c2185b
+    class PY,WASM,NODE layer3
+    class FFI,HTTP,MCP layer2
+    class CORE,LOGIC,SEARCH,LLM,PRESET layer1
+    class SQLITE,FILE storage
 ```
 
 详细架构与数据流见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
@@ -119,7 +201,10 @@ cargo build --release -p memory-center-ffi
 
 ### 2. C 调用示例
 
-将 `crates/memory-center-ffi/include/memory_center.h` 与动态库一起接入项目：
+将 `crates/memory-center-ffi/include/memory_center.h` 与动态库一起接入项目。
+
+<details>
+<summary>点击展开 C 完整示例代码</summary>
 
 ```c
 #include "memory_center.h"
@@ -163,6 +248,8 @@ int main(void) {
 }
 ```
 
+</details>
+
 完整示例代码见 [examples/c/demo.c](examples/c/demo.c)。
 
 ### 3. Python 通过 ctypes 调用
@@ -188,7 +275,10 @@ result = lib.memory_center_archive(handle, json.dumps(turns).encode())
 
 ### 4. Python 原生绑定（推荐，v2.2）
 
-使用 PyO3 原生绑定，无需 ctypes 手动配置函数签名，支持上下文管理器自动释放：
+使用 PyO3 原生绑定，无需 ctypes 手动配置函数签名，支持上下文管理器自动释放。
+
+<details>
+<summary>点击展开安装与使用示例</summary>
 
 ```bash
 # 安装 maturin（PyO3 团队开发的构建工具）
@@ -222,7 +312,7 @@ with MemoryCenter("./mem_data", "session-001", project_id="proj-a") as hp:
     # 3. 渲染 system prompt 文本（直接拼接给 LLM）
     prompt = hp.prompt()
     if prompt:
-        print(prompt)  # # 可用记忆索引 ...
+        print(prompt)  # 可用记忆索引 ...
 
     # 4. 按钩子 ID 检索完整记忆（LLM tool 调用入口）
     memory = hp.retrieve(summary["hook_id"])
@@ -232,6 +322,8 @@ with MemoryCenter("./mem_data", "session-001", project_id="proj-a") as hp:
     hp.compaction("weekly")   # 周级无损去重合并
     hp.compaction("monthly")  # 月级评分淘汰
 ```
+
+</details>
 
 详细 API 见 [crates/memory-center-python/src/lib.rs](crates/memory-center-python/src/lib.rs)。
 Python 集成测试见 [crates/memory-center-python/tests/test_memory-center.py](crates/memory-center-python/tests/test_memory-center.py)（20 个 pytest 用例）。
@@ -350,6 +442,64 @@ MCP 集成测试见 [crates/memory-center-mcp/tests/](crates/memory-center-mcp/t
 - MCP: [crates/memory-center-mcp/src/lib.rs](crates/memory-center-mcp/src/lib.rs)
 
 ## 核心概念
+
+### Agent 调用流程（MCP 时序图）
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Agent as Agent<br/>(Claude/Cursor/Trae)
+    participant MCP as MCP Server
+    participant Core as Core (Rust)
+    participant Store as Storage
+
+    Note over Agent,Store: ① 会话开始 · 拉取历史记忆
+    Agent->>MCP: prompt(session_id)
+    MCP->>Core: render_prompt()
+    Core->>Store: load_summaries()
+    Store-->>Core: 摘要钩子列表
+    Core-->>MCP: prompt 文本
+    MCP-->>Agent: 注入 system prompt
+
+    Note over Agent,Store: ② 持续对话 · 归档轮次
+    Agent->>MCP: archive(session_id, turns_json)
+    MCP->>Core: archive(turns)
+    Core->>Store: freeze_context()<br/>生成索引钩子
+    Store-->>Core: hook_id
+    Core-->>MCP: 归档摘要
+    MCP-->>Agent: 归档成功
+
+    Note over Agent,Store: ③ 按需检索 · LLM tool 调用
+    Agent->>MCP: retrieve(hook_id)
+    MCP->>Core: retrieve(hook_id)
+    Core->>Store: load_full_turns()
+    Store-->>Agent: 完整对话上下文
+
+    Note over Agent,Store: ④ 周期维护
+    Agent->>MCP: compaction(period=weekly)
+    MCP->>Core: weekly_merge()
+    Core->>Store: 去重合并 7 天记忆
+    Store-->>MCP: 合并结果
+    MCP-->>Agent: 完成
+```
+
+### 记忆生命周期（状态机）
+
+```mermaid
+stateDiagram-v2
+    [*] --> Working: 会话开始
+    Working: 工作记忆<br/>(在 LLM 上下文窗口内)
+    Working --> Archived: 达到 token 阈值<br/>archive() 触发
+    Archived: 已归档<br/>(生成索引钩子 + 完整文件)
+    Archived --> WeeklyMerged: 7 天后<br/>compaction(weekly)
+    WeeklyMerged: 周级合并<br/>(无损去重)
+    WeeklyMerged --> MonthlyScored: 4 周后<br/>compaction(monthly)
+    MonthlyScored: 月级评分<br/>(4 维加权)
+    MonthlyScored --> Retained: 评分高<br/>保留为主记忆
+    MonthlyScored --> Evicted: 评分低<br/>淘汰（高价值片段保留）
+    Retained --> [*]
+    Evicted --> [*]
+```
 
 ### 归档（Archive / Freeze）
 
