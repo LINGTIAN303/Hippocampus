@@ -664,7 +664,7 @@ struct GetConflictsParams {
 #[derive(Deserialize, schemars::JsonSchema)]
 struct InstallRulesParams {
     /// 客户端类型
-    #[schemars(description = "客户端类型：catpaw（写入 .catpaw/rules/）、trae（写入 .trae/rules/）、claude-code（追加到 CLAUDE.md）")]
+    #[schemars(description = "客户端类型：catpaw（写入 .catpaw/rules/）、trae（写入 .trae/rules/）、claude-code（追加到 CLAUDE.md）、opencode（写入 .opencode/rules/）")]
     client: String,
     /// 项目根目录（绝对路径）
     #[schemars(description = "项目根目录的绝对路径，如 D:/myapp 或 /home/user/myapp")]
@@ -1858,11 +1858,12 @@ impl MemoryCenterMcp {
     }
 
     /// v2.31：首次接入时调用，自动写入 Rules 模板 + AGENTS.md。
-    /// 支持 catpaw/trae/claude-code 三种客户端，覆盖策略按客户端类型自动决定。
+    /// 支持 catpaw/trae/claude-code/opencode 四种客户端，覆盖策略按客户端类型自动决定。
     /// v2.31 新增：同时写入项目根目录的 AGENTS.md（含 session_id 约定 + 核心协议速查）。
-    #[tool(description = "首次接入 MemoryCenter 时调用此工具，自动写入 Rules 模板 + AGENTS.md。【一次性调用】每个项目只需调用一次，已存在会返回 action=skipped，不要重复调用。支持 catpaw（.catpaw/rules/）、trae（.trae/rules/）、claude-code（追加到 CLAUDE.md）三种客户端。同时写入项目根目录的 AGENTS.md，包含 session_id 约定（治本：让 LLM 知道规范格式，避免用'项目名-session'这种错误格式）+ 核心协议速查表。AGENTS.md 用标记隔离，force=true 时只更新标记内容，不影响用户手动写入的部分。\
+    /// v2.38 新增：opencode 客户端支持（写入 .opencode/rules/，配合 OpenCode 的 instructions 字段加载）。
+    #[tool(description = "首次接入 MemoryCenter 时调用此工具，自动写入 Rules 模板 + AGENTS.md。【一次性调用】每个项目只需调用一次，已存在会返回 action=skipped，不要重复调用。支持 catpaw（.catpaw/rules/）、trae（.trae/rules/）、claude-code（追加到 CLAUDE.md）、opencode（.opencode/rules/）四种客户端。同时写入项目根目录的 AGENTS.md，包含 session_id 约定（治本：让 LLM 知道规范格式，避免用'项目名-session'这种错误格式）+ 核心协议速查表。AGENTS.md 用标记隔离，force=true 时只更新标记内容，不影响用户手动写入的部分。\
      \
-     【远程模式】当 MCP server 无法访问你传入的 project_root 时（如 HTTPS MCP 模式下 server 在远程），返回 action=remote_template + files 数组（含 relative_path + content + mode）。此时你需要用 Write 工具自行创建这些文件：catpaw/trae 模式创建新文件，claude-code 追加到 CLAUDE.md。\
+     【远程模式】当 MCP server 无法访问你传入的 project_root 时（如 HTTPS MCP 模式下 server 在远程），返回 action=remote_template + files 数组（含 relative_path + content + mode）。此时你需要用 Write 工具自行创建这些文件：catpaw/trae/opencode 模式创建新文件，claude-code 追加到 CLAUDE.md。\
      \
      首次配置完 MemoryCenter MCP 后立即调用：install_rules(client=\"你的客户端类型\", project_root=\"项目根目录绝对路径\")。")]
     async fn install_rules(
@@ -2904,6 +2905,208 @@ claude-code-{项目名}-{日期}
 - 用户明确说"不用记"
 "#;
 
+/// OpenCode Rules 模板（v2.38 新增）
+///
+/// 写入 `.opencode/rules/memory-center-archive.md`，配合 AGENTS.md 双重保障。
+/// OpenCode 通过 `opencode.jsonc` 的 `instructions` 字段加载此文件，注入 LLM system prompt。
+///
+/// 与 Trae/Claude Code 模板的差异：
+/// - session_id 前缀为 `opencode`
+/// - 强调 OpenCode 的压缩机制（`/compact` 命令 + 自动 `compactIfNeeded`）
+/// - 说明 sidecar 已覆盖被动保存层，LLM 重点负责主动召回
+/// - 提供 `mcp` 配置示例（local/remote 两种模式）
+const OPENCODE_RULES_TEMPLATE: &str = r#"# MemoryCenter 记忆归档触发规则（OpenCode）
+
+## 你的角色
+
+你是接入了 MemoryCenter 记忆库的 OpenCode Agent。MemoryCenter 帮你保留长对话中的关键信息，
+避免上下文压缩时丢失重要内容。
+
+**双重保障机制**：
+1. **被动保存层（sidecar 自动处理）**：`mc-sidecar` 进程监听 OpenCode SQLite 的
+   `session.time_compacting` 字段变化，压缩完成时自动调 MemoryCenter `pre-compress` 端点
+   归档完整上下文。**你无需手动处理压缩前归档**。
+2. **主动召回层（你的职责）**：压缩后你需要主动调 `prompt` 拉取历史记忆，
+   并在用户提到过去事件时调 `semantic_search` 检索。
+
+## 1. 会话开始：调 prompt 获取历史记忆
+
+每个新会话的**第一次回复前**，必须先调用：
+
+```
+mcp_memory-center.prompt(session_id)
+```
+
+把返回的历史记忆摘要拼接到 system prompt。若返回空列表，说明该 session 无历史记忆。
+
+## 2. 上下文接近阈值：主动调 archive 归档
+
+### 触发条件（满足任一即调用）
+
+- **对话长度**：已进行超过 20 轮（用户消息 + LLM 回复算 1 轮）
+- **内容复杂度**：包含大量代码 / 长文档 / 多次工具调用（累计内容超过 5000 字）
+- **主观判断**：你感觉到"上下文开始变重"、"前面说过但记不清细节"
+- **Token 反馈**：上次 archive 返回的 `threshold_ratio_percent >= 80`
+- **兜底**：每 30 轮对话主动归档一次（即使未达阈值）
+
+### 调用方式（简化格式）
+
+```
+mcp_memory-center.archive(
+    session_id,                  // 必填
+    turns_json                  // 必填，最简格式：[{"user_message":{"text":"..."},"llm_message":{"text":"..."}}]
+    // id/timestamp/tags/token_count 可省略，服务端自动补全
+)
+```
+
+### Token 反馈循环（核心机制）
+
+归档后返回结果包含：
+- `estimated_total_tokens`：当前累计估算 token 数
+- `threshold`：归档阈值（如 120000 = 120K）
+- `threshold_ratio_percent`：当前占比百分比
+- `suggestion`：归档建议（人类可读）
+
+**判断规则**：
+- `threshold_ratio_percent >= 100` → **立即归档**，并提示用户触发上下文压缩
+- `threshold_ratio_percent >= 80` → **准备归档**，主动提示用户"建议归档"
+- `threshold_ratio_percent >= 50` → 继续对话，但注意跟踪累计值
+- `< 50` → 继续对话
+
+> 你（LLM）无法直接感知自身 token 消耗，但通过 archive 返回的 `estimated_total_tokens`
+> 可以建立"token 意识"——这是伪钩子方案的核心：通过外部反馈循环模拟主动感知。
+
+### OpenCode 压缩机制说明
+
+OpenCode 有两种压缩方式（都走同一流程）：
+1. **手动压缩**：用户输入 `/compact` 命令
+2. **自动压缩**：`compactIfNeeded` 在上下文接近窗口上限时自动触发
+
+压缩流程：`Compaction.Started` → LLM 生成摘要 → `Compaction.Ended`，
+此时 `session.time_compacting` 字段经历 `NULL → ts → NULL` 变化。
+
+**sidecar 会监听这个变化**，自动把压缩前的完整上下文归档到 MemoryCenter。
+你无需在压缩前手动调 `pre_compress_hook`，但可以在压缩后主动调 `prompt` 拉取记忆。
+
+## 3. 用户提到过去事件：先调 semantic_search 再回复
+
+当用户消息中出现"之前"、"上次"、"还记得"、"我们之前讨论的"、"之前那个方案"等
+指代过去的词语时，**先调用**：
+
+```
+mcp_memory-center.semantic_search(query, session_id, top_k=5)
+```
+
+用用户原话作为 query，检索相关记忆。把检索结果作为上下文再回复用户。
+
+## 4. 用户陈述与记忆可能矛盾：先调 detect_conflicts 检测
+
+当用户陈述的事实与记忆中的记录可能冲突时（如用户说"我用的是 Python"但记忆里是 Rust），
+**先调用**：
+
+```
+mcp_memory-center.detect_conflicts(session_id, hook_id, added_facts, revised_facts, deprecated_facts)
+```
+
+## 5. 上下文被压缩后：执行压缩后行为协议
+
+当系统消息中出现以下固定文本时：
+
+```
+This session continues a previous conversation that lost its context.
+```
+
+表明 OpenCode 刚压缩了上下文，必须立即执行**压缩后行为协议**：
+
+1. 归档压缩前未持久化的轮次（sidecar 通常已处理，但建议检查）
+2. 调 `prompt` 拉取 MemoryCenter 一手记忆
+3. 交叉校准 OpenCode 摘要与 MemoryCenter 记忆
+4. 用 Pending todos 校准下一步建议
+
+**核心原则**：
+- MemoryCenter 记忆优先级 > OpenCode 压缩摘要
+- in_progress 任务必须从断点继续，禁止重复提问已完成决策
+
+## 6. project_memory 反向写入
+
+完成开发阶段/关键架构决策/风险点时，调 `update_project_memory` 更新 project_memory.md。
+拿到 full_content 后用 Write 工具写入 OpenCode 的 memory 文件夹。
+
+## 7. session_id 约定
+
+```
+opencode-{项目名}-{日期}
+```
+
+示例：
+- `opencode-myapp-20260705`
+- `opencode-MemoryCenter-20260705`
+
+> 一个 session_id 对应一个独立的记忆空间。同会话内复用同一 session_id，
+> 切换项目或日期时换新 session_id。
+
+## 8. 不要归档的情况
+
+- 单次简单问答（如"这个变量什么意思"）
+- 纯闲聊或问候
+- 用户明确说"不用记"
+
+## OpenCode MCP 配置参考
+
+在 `opencode.jsonc`（或 `opencode.json` / `config.json`）中配置 MemoryCenter MCP server：
+
+### 本地 stdio 模式（推荐）
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "memory-center": {
+      "type": "local",
+      "command": ["memory-center-mcp"],
+      "environment": {
+        "MEMORY_CENTER_ROOT": "/path/to/memory/data"
+      }
+    }
+  },
+  "instructions": [".opencode/rules/memory-center-archive.md"]
+}
+```
+
+### 远程 Streamable HTTP 模式
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "memory-center": {
+      "type": "remote",
+      "url": "https://your-server/mcp",
+      "headers": {
+        "Authorization": "Bearer <API_KEY>"
+      }
+    }
+  },
+  "instructions": [".opencode/rules/memory-center-archive.md"]
+}
+```
+
+> `instructions` 字段让 OpenCode 自动加载本 Rules 文件，注入 LLM system prompt。
+> 若未配置 `instructions`，AGENTS.md 仍会被通用约定加载。
+
+## 与其他工具配合
+
+| 时机 | 工具 | 说明 |
+|------|------|------|
+| 会话第一次回复前 | `prompt` | 获取历史记忆摘要 |
+| 对话变长 / 接近阈值 | `archive` | 归档完整上下文 |
+| 用户提到过去事件 | `semantic_search` | 检索相关记忆 |
+| 用户陈述与记忆矛盾 | `detect_conflicts` | 检测事实冲突 |
+| 需要查特定记忆细节 | `retrieve` | 按 hook_id 检索完整记忆 |
+| 完成开发阶段 | `update_project_memory` | 更新 project_memory.md |
+| 压缩后恢复 | `archive` + `prompt` | sidecar 已归档，主动拉记忆 |
+"#;
+
 /// MemoryCenter 规则标记（用于 CLAUDE.md 检测是否已安装）
 const MEMORY_CENTER_RULES_BEGIN: &str = "<!-- memory-center-rules begin -->";
 const MEMORY_CENTER_RULES_END: &str = "<!-- memory-center-rules end -->";
@@ -2933,11 +3136,13 @@ const AGENTS_MD_TEMPLATE: &str = r#"<!-- memory-center-agents begin -->
 - Trae: `trae`
 - Claude Code: `claudecode`
 - Cursor: `cursor`
+- OpenCode: `opencode`
 
 **示例**：
 - `catpaw-myapp-20260706`
 - `trae-MemoryCenter-20260706`
 - `claudecode-worldsmith-20260706`
+- `opencode-myapp-20260706`
 
 > 一个 session_id 对应一个独立的记忆空间。同会话内复用同一 session_id，
 > 切换项目或日期时换新 session_id。
@@ -3007,9 +3212,10 @@ fn build_remote_template_response(client: &str, project_root: &str) -> Result<St
         "catpaw" => (".catpaw/rules/memory-center-archive.md", CATPAW_RULES_TEMPLATE, "create"),
         "trae" => (".trae/rules/memory-center-archive.md", TRAE_RULES_TEMPLATE, "create"),
         "claude-code" => ("CLAUDE.md", CLAUDE_CODE_RULES_TEMPLATE, "append_with_markers"),
+        "opencode" => (".opencode/rules/memory-center-archive.md", OPENCODE_RULES_TEMPLATE, "create"),
         _ => {
             return Err(format!(
-                "不支持的客户端类型: {client}\n支持的类型: catpaw / trae / claude-code"
+                "不支持的客户端类型: {client}\n支持的类型: catpaw / trae / claude-code / opencode"
             ));
         }
     };
@@ -3075,14 +3281,14 @@ fn build_remote_template_response(client: &str, project_root: &str) -> Result<St
 /// 安装 Rules 模板到项目目录
 ///
 /// 参数：
-/// - client: 客户端类型（catpaw / trae / claude-code）
+/// - client: 客户端类型（catpaw / trae / claude-code / opencode）
 /// - project_root: 项目根目录路径
 /// - force: 是否强制覆盖
 ///
 /// 返回 JSON 字符串（安装结果）
 ///
 /// 覆盖策略：
-/// - catpaw/trae（独立文件）：已存在则跳过（force=true 时覆盖）
+/// - catpaw/trae/opencode（独立文件）：已存在则跳过（force=true 时覆盖）
 /// - claude-code（CLAUDE.md）：有 MemoryCenter 标记则跳过/替换，无标记则追加
 pub fn install_rules_to_project(
     client: &str,
@@ -3193,9 +3399,28 @@ pub fn install_rules_to_project(
                 }
             }
         }
+        "opencode" => {
+            // v2.38：OpenCode 客户端，写入 .opencode/rules/memory-center-archive.md
+            // 配合 opencode.jsonc 的 instructions 字段加载，同时也被 AGENTS.md 通用约定覆盖
+            let rules_dir = root.join(".opencode").join("rules");
+            fs::create_dir_all(&rules_dir)
+                .map_err(|e| format!("创建 .opencode/rules/ 失败: {e}"))?;
+            let file_path = rules_dir.join("memory-center-archive.md");
+
+            if file_path.exists() && !force {
+                let msg = format!("已存在 {}，跳过（force=false）", file_path.display());
+                (file_path, "skipped", msg)
+            } else {
+                fs::write(&file_path, OPENCODE_RULES_TEMPLATE)
+                    .map_err(|e| format!("写入失败: {e}"))?;
+                let (action, action_cn) = if force { ("updated", "更新") } else { ("created", "创建") };
+                let msg = format!("已{} OpenCode Rules 模板到 {}", action_cn, file_path.display());
+                (file_path, action, msg)
+            }
+        }
         _ => {
             return Err(format!(
-                "不支持的客户端类型: {client}\n支持的类型: catpaw / trae / claude-code"
+                "不支持的客户端类型: {client}\n支持的类型: catpaw / trae / claude-code / opencode"
             ));
         }
     };
@@ -3322,7 +3547,7 @@ impl ServerHandler for MemoryCenterMcp {
             if !protocol.instructions.is_empty() {
                 // v2.31：在 instructions 末尾追加 install_rules 提示
                 // 让 LLM 首次接入时知道可以调用 install_rules 安装 Rules 模板
-                let install_hint = "\n\n---\n## 首次接入提示\n如果你是首次使用 MemoryCenter，建议调用 `install_rules` 工具安装 Rules 模板到你的客户端 rules 目录，让归档触发规则自动生效。\n\n调用方式：install_rules(client=\"你的客户端类型\", project_root=\"项目根目录绝对路径\")\n支持的客户端：catpaw / trae / claude-code";
+                let install_hint = "\n\n---\n## 首次接入提示\n如果你是首次使用 MemoryCenter，建议调用 `install_rules` 工具安装 Rules 模板到你的客户端 rules 目录，让归档触发规则自动生效。\n\n调用方式：install_rules(client=\"你的客户端类型\", project_root=\"项目根目录绝对路径\")\n支持的客户端：catpaw / trae / claude-code / opencode";
                 // v2.32：追加 get_config 提示，让 LLM 启动即知道可查询运行时配置
                 let get_config_hint = "\n\n---\n## 运行时配置查询\n会话开始时建议先调用 `get_config(scope=\"all\")` 了解当前生效配置，包括：\n- 归档阈值（archive_threshold）和 session_id 前缀\n- Agent 类型、scenario、评分权重、检索策略\n- **各组件降级状态**（重要）：semantic_search 是否为 keyword_only 降级、summary_generator 是否使用 LLM 等\n\n调 semantic_search 前建议先查 scope=degraded 确认检索模式，避免盲目调用降级工具。";
                 let instructions = format!("{}{}{}", protocol.instructions, install_hint, get_config_hint);
@@ -3380,7 +3605,6 @@ mod tests {
     ///
     /// Mock 生成器返回固定的结构化摘要，用于验证 archive tool 注入链路。
     fn make_mcp_with_summary_generator(tmpdir: &TempDir, fail: bool) -> MemoryCenterMcp {
-        use async_trait::async_trait;
         use memory_center_core::generate::SummaryGenerator;
         use memory_center_core::model::{MemoryFile, Summary};
 

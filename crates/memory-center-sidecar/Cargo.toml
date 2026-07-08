@@ -1,0 +1,40 @@
+# memory-center-sidecar
+# OpenCode 压缩事件监听 sidecar（v2.36 新增）
+# 监听 OpenCode SQLite 会话库的压缩事件，自动触发 MemoryCenter 归档
+# 实现路径一：sidecar 文件监听（强自动，OpenCode 端零改动）
+
+[package]
+name = "memory-center-sidecar"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "OpenCode 压缩事件监听 sidecar - 自动触发 MemoryCenter 归档"
+
+[[bin]]
+name = "mc-sidecar"
+path = "src/main.rs"
+
+[dependencies]
+# 序列化
+serde.workspace = true
+serde_json.workspace = true
+# 时间处理
+chrono.workspace = true
+# 唯一 ID（生成 MessageTurn ID）
+uuid = { workspace = true }
+# 日志
+tracing.workspace = true
+tracing-subscriber.workspace = true
+# 异步运行时
+tokio = { workspace = true, features = ["full"] }
+# SQLite（读 OpenCode 会话库）
+rusqlite = { workspace = true }
+# HTTP 客户端（调用 MemoryCenter REST API）
+reqwest = { workspace = true }
+# CLI 参数解析
+clap = { workspace = true }
+# 错误处理
+thiserror.workspace = true
