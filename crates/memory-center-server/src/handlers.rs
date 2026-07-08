@@ -244,6 +244,9 @@ pub async fn archive(
         archiver = archiver.with_summary_template_override(tpl);
     }
 
+    // v2.35：提取 turns 文本用于索引（在 move 消费前 borrow）
+    let turns_text = crate::extract_turns_text(&req.turns);
+
     for turn in req.turns {
         archiver.push_turn(turn);
     }
@@ -253,8 +256,9 @@ pub async fn archive(
 
     // v2.31：归档后触发搜索索引（按 session 隔离）
     // v2.8 起由 session_search 替代全局 search_indexer，未配置时跳过（向后兼容）
+    // v2.35：传入 turns_text 提升检索召回率
     if let Some(router) = &state.session_search {
-        router.index_hook(&sid, &hook).await;
+        router.index_hook(&sid, &hook, &turns_text).await;
     }
 
     tracing::info!(
@@ -517,6 +521,9 @@ async fn archive_parsed_turns_in_pre_compress(
         .with_archive_reason("pre_compress")
         .with_raw_context_path(raw_context_path);
 
+    // v2.35：提取 turns 文本用于索引（在 move 消费前 borrow）
+    let turns_text = crate::extract_turns_text(&turns);
+
     for turn in turns {
         archiver.push_turn(turn);
     }
@@ -527,8 +534,9 @@ async fn archive_parsed_turns_in_pre_compress(
         .map_err(|e| format!("归档失败: {e}"))?;
 
     // v2.31：归档后触发搜索索引（按 session 隔离）
+    // v2.35：传入 turns_text 提升检索召回率
     if let Some(router) = &state.session_search {
-        router.index_hook(session_id, &hook).await;
+        router.index_hook(session_id, &hook, &turns_text).await;
     }
 
     // 写 task_state_snapshot（若有，与 MCP 端一致：失败不影响归档结果）

@@ -37,4 +37,4 @@ pub mod search;
 pub mod session_search;
 
 pub use search::SearchIndexer;
-pub use session_search::{SessionSearchRouter, SessionSearchRouterConfig};
+pub use session_search::{SessionSearchRouter, SessionSearchRouterConfig, extract_turns_text};

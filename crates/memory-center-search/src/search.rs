@@ -93,7 +93,8 @@ impl SearchIndexer {
     /// - key_facts（关键事实，join）
     /// - key_entities（关键实体，join）
     /// - tags（标签中文显示名，join）
-    fn extract_index_text(hook: &IndexHook) -> String {
+    /// - turns_text（原始对话内容，v2.35 新增）
+    fn extract_index_text(hook: &IndexHook, turns_text: &str) -> String {
         let mut parts: Vec<String> = Vec::new();
 
         // 标题（日级启发式生成，必填）
@@ -122,15 +123,22 @@ impl SearchIndexer {
             parts.push(tag_str.join(" "));
         }
 
+        // v2.35：拼入原始 turns 文本（若提供），显著提升检索召回率
+        if !turns_text.trim().is_empty() {
+            parts.push(turns_text.to_string());
+        }
+
         parts.join(" | ")
     }
 
     /// 归档后触发索引
     ///
-    /// 将 hook 的摘要文本索引到关键词索引和向量索引。
+    /// 将 hook 的摘要文本 + 原始 turns 文本索引到关键词索引和向量索引。
     /// Embedder 失败时跳过向量索引，不影响关键词索引。
-    pub async fn index_hook(&self, hook: &IndexHook) {
-        let text = Self::extract_index_text(hook);
+    ///
+    /// v2.35：新增 `turns_text` 参数，将原始对话内容拼入索引文本以提升检索召回率。
+    pub async fn index_hook(&self, hook: &IndexHook, turns_text: &str) {
+        let text = Self::extract_index_text(hook, turns_text);
         let hook_id = hook.id.to_string();
         let memory_id = hook.memory_id.clone();
 
@@ -255,7 +263,7 @@ mod tests {
     #[test]
     fn test_extract_index_text_basic() {
         let hook = make_hook("Rust 编程语言", vec![]);
-        let text = SearchIndexer::extract_index_text(&hook);
+        let text = SearchIndexer::extract_index_text(&hook, "");
         assert!(text.contains("Rust 编程语言"));
     }
 
@@ -265,7 +273,7 @@ mod tests {
             "Rust 编程语言",
             vec!["Rust 强调安全性".into(), "所有权机制".into()],
         );
-        let text = SearchIndexer::extract_index_text(&hook);
+        let text = SearchIndexer::extract_index_text(&hook, "");
         assert!(text.contains("Rust 编程语言"));
         assert!(text.contains("Rust 强调安全性"));
         assert!(text.contains("所有权机制"));
@@ -276,7 +284,7 @@ mod tests {
     fn test_extract_index_text_with_abstract() {
         let mut hook = make_hook("Rust", vec![]);
         hook.summary.abstract_text = Some("Rust 是系统编程语言".into());
-        let text = SearchIndexer::extract_index_text(&hook);
+        let text = SearchIndexer::extract_index_text(&hook, "");
         assert!(text.contains("Rust 是系统编程语言"));
     }
 
@@ -286,7 +294,7 @@ mod tests {
         let indexer = SearchIndexer::new(keyword.clone(), None, None);
 
         let hook = make_hook("Rust 安全编程", vec!["所有权机制".into()]);
-        indexer.index_hook(&hook).await;
+        indexer.index_hook(&hook, "").await;
 
         // 验证关键词索引已更新
         assert_eq!(keyword.len(), 1);
@@ -307,7 +315,7 @@ mod tests {
         );
 
         let hook = make_hook("Rust 安全编程", vec![]);
-        indexer.index_hook(&hook).await;
+        indexer.index_hook(&hook, "").await;
 
         // 验证关键词索引
         assert_eq!(keyword.len(), 1);
@@ -324,7 +332,7 @@ mod tests {
         // 索引 3 个 hook
         for i in 0..3 {
             let hook = make_hook(&format!("文档 {}", i), vec![]);
-            indexer.index_hook(&hook).await;
+            indexer.index_hook(&hook, "").await;
         }
 
         assert_eq!(keyword.len(), 3);
@@ -358,7 +366,7 @@ mod tests {
         );
 
         let hook = make_hook("测试文档", vec![]);
-        indexer.index_hook(&hook).await;
+        indexer.index_hook(&hook, "").await;
 
         // 关键词索引应成功
         assert_eq!(keyword.len(), 1);

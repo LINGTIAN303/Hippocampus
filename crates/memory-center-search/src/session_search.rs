@@ -390,10 +390,13 @@ impl SessionSearchRouter {
 
     /// 归档后触发索引（按 session 隔离）
     ///
-    /// 将 hook 的摘要文本索引到该 session 的关键词索引和向量索引。
+    /// 将 hook 的摘要文本 + 原始 turns 文本索引到该 session 的关键词索引和向量索引。
     /// Embedder 失败时跳过向量索引，不影响关键词索引。
-    pub async fn index_hook(&self, sid: &str, hook: &IndexHook) {
-        let text = extract_index_text(hook);
+    ///
+    /// v2.35：新增 `turns_text` 参数，将原始对话内容拼入索引文本以提升检索召回率。
+    /// 调用方需从 `MessageTurn` 提取文本传入（handlers.rs 在 archive 前提取）。
+    pub async fn index_hook(&self, sid: &str, hook: &IndexHook, turns_text: &str) {
+        let text = extract_index_text(hook, turns_text);
         let hook_id = hook.id.to_string();
         let memory_id = hook.memory_id.clone();
 
@@ -609,14 +612,27 @@ impl SessionSearchRouter {
 
         let count = all_hooks.len();
 
-        // 2. 批量提取索引文本
+        // 2. 批量读取 MemoryFile 提取 turns 文本（v2.35：加入原始对话内容提升召回率）
+        // 单个 MemoryFile 读取失败时降级为空 turns_text，不影响 summary 索引
+        let memory_ids: Vec<String> =
+            all_hooks.iter().map(|h| h.memory_id.clone()).collect();
+        let memory_files = storage.read_memories_batch(&memory_ids).await;
+
+        // 3. 批量提取索引文本（summary + turns_text）
         let texts: Vec<String> = all_hooks
             .iter()
-            .map(|h| extract_index_text(h))
+            .zip(memory_files.iter())
+            .map(|(h, mf_result)| {
+                let turns_text = match mf_result {
+                    Ok(mf) => extract_turns_text(&mf.turns),
+                    Err(_) => String::new(), // 读取失败降级为空，不影响 summary 索引
+                };
+                extract_index_text(h, &turns_text)
+            })
             .collect();
         let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
 
-        // 3. 批量装入关键词索引（必执行，无 IO 依赖）
+        // 4. 批量装入关键词索引（必执行，无 IO 依赖）
         let keyword_docs: Vec<(String, String, String)> = all_hooks
             .iter()
             .zip(texts.iter())
@@ -624,7 +640,7 @@ impl SessionSearchRouter {
             .collect();
         indices.keyword.index_batch(keyword_docs);
 
-        // 4. 批量 embed + 装入向量索引（仅当 embedder 和 vector 都存在时）
+        // 5. 批量 embed + 装入向量索引（仅当 embedder 和 vector 都存在时）
         if let (Some(embedder), Some(vi)) = (&self.embedder, &indices.vector) {
             match embedder.embed_batch(&text_refs).await {
                 Ok(vectors) => {
@@ -712,10 +728,45 @@ impl SessionSearchRouter {
 // 辅助函数：提取索引文本
 // ============================================================================
 
+/// 从 `MessageTurn` 列表提取纯文本（供索引使用）
+///
+/// v2.35 新增：将每轮的 `user_message.text` + `llm_message.text` 拼接，
+/// 作为 `index_hook` 的 `turns_text` 参数传入，显著提升检索召回率。
+///
+/// ## 提取范围
+///
+/// - `user_message.text`：用户消息文本
+/// - `llm_message.text`：LLM 回复文本
+/// - 跳过 `thinking`（思考链噪声大，不利于关键词检索）
+/// - 跳过 `tool_calls`（结构化数据，不利于文本检索）
+///
+/// ## 性能
+///
+/// 纯内存操作，无 IO。每轮文本之间用空格分隔。
+pub fn extract_turns_text(turns: &[memory_center_core::model::MessageTurn]) -> String {
+    let mut parts: Vec<String> = Vec::with_capacity(turns.len() * 2);
+
+    for turn in turns {
+        if let Some(text) = &turn.user_message.text {
+            if !text.trim().is_empty() {
+                parts.push(text.clone());
+            }
+        }
+        if let Some(text) = &turn.llm_message.text {
+            if !text.trim().is_empty() {
+                parts.push(text.clone());
+            }
+        }
+    }
+
+    parts.join(" ")
+}
+
 /// 从 IndexHook 提取用于索引的文本
 ///
 /// 组合摘要的多维信息：title + abstract + key_facts + key_entities + tags
-fn extract_index_text(hook: &IndexHook) -> String {
+/// v2.35：额外拼入 turns_text（原始对话内容），提升 BM25/语义检索召回率
+fn extract_index_text(hook: &IndexHook, turns_text: &str) -> String {
     let mut parts: Vec<String> = Vec::new();
 
     parts.push(hook.summary.title.clone());
@@ -737,6 +788,11 @@ fn extract_index_text(hook: &IndexHook) -> String {
     if !hook.tags.is_empty() {
         let tag_str: Vec<String> = hook.tags.iter().map(|t| t.to_string()).collect();
         parts.push(tag_str.join(" "));
+    }
+
+    // v2.35：拼入原始 turns 文本（若提供），显著提升检索召回率
+    if !turns_text.trim().is_empty() {
+        parts.push(turns_text.to_string());
     }
 
     parts.join(" | ")
@@ -817,7 +873,7 @@ mod tests {
     #[test]
     fn test_extract_index_text_basic() {
         let hook = make_hook("测试标题", vec![]);
-        let text = extract_index_text(&hook);
+        let text = extract_index_text(&hook, "");
         assert!(text.contains("测试标题"));
     }
 
@@ -833,7 +889,7 @@ mod tests {
         let router = SessionSearchRouter::new(None, 0);
 
         let hook = make_hook("Rust 安全编程", vec!["所有权机制".into()]);
-        router.index_hook("sess-1", &hook).await;
+        router.index_hook("sess-1", &hook, "").await;
 
         let results = router.search("sess-1", "Rust", 5).await.unwrap();
         assert!(!results.is_empty(), "应能搜索到已索引的内容");
@@ -846,10 +902,10 @@ mod tests {
         let router = SessionSearchRouter::new(None, 0);
 
         let hook1 = make_hook("Rust 编程语言", vec![]);
-        router.index_hook("sess-1", &hook1).await;
+        router.index_hook("sess-1", &hook1, "").await;
 
         let hook2 = make_hook("Python 编程语言", vec![]);
-        router.index_hook("sess-2", &hook2).await;
+        router.index_hook("sess-2", &hook2, "").await;
 
         // session-1 搜索 "Rust" → 应找到 hook1
         let results1 = router.search("sess-1", "Rust", 5).await.unwrap();
@@ -883,13 +939,13 @@ mod tests {
         let router = SessionSearchRouter::new(None, 0);
 
         router
-            .index_hook("sess-a", &make_hook("标题A", vec![]))
+            .index_hook("sess-a", &make_hook("标题A", vec![]), "")
             .await;
         router
-            .index_hook("sess-b", &make_hook("标题B", vec![]))
+            .index_hook("sess-b", &make_hook("标题B", vec![]), "")
             .await;
         router
-            .index_hook("sess-a", &make_hook("标题A2", vec![]))
+            .index_hook("sess-a", &make_hook("标题A2", vec![]), "")
             .await;
 
         router.run_pending_tasks().await;
@@ -906,7 +962,7 @@ mod tests {
         let router = SessionSearchRouter::new(Some(embedder), 8);
 
         let hook = make_hook("Rust 安全编程", vec![]);
-        router.index_hook("sess-1", &hook).await;
+        router.index_hook("sess-1", &hook, "").await;
 
         let results = router.search("sess-1", "Rust", 5).await.unwrap();
         assert!(!results.is_empty());
@@ -917,7 +973,7 @@ mod tests {
         let router = SessionSearchRouter::new(None, 0);
 
         router
-            .index_hook("sess-1", &make_hook("标题", vec![]))
+            .index_hook("sess-1", &make_hook("标题", vec![]), "")
             .await;
         router.run_pending_tasks().await;
         assert_eq!(router.session_count(), 1);
@@ -937,7 +993,7 @@ mod tests {
 
         for i in 0..3 {
             let hook = make_hook(&format!("文档 {}", i), vec![]);
-            router.index_hook("sess-1", &hook).await;
+            router.index_hook("sess-1", &hook, "").await;
         }
 
         let results = router.search("sess-1", "文档", 10).await.unwrap();
@@ -963,13 +1019,13 @@ mod tests {
         );
 
         router
-            .index_hook("sess-1", &make_hook("标题1", vec![]))
+            .index_hook("sess-1", &make_hook("标题1", vec![]), "")
             .await;
         router
-            .index_hook("sess-2", &make_hook("标题2", vec![]))
+            .index_hook("sess-2", &make_hook("标题2", vec![]), "")
             .await;
         router
-            .index_hook("sess-3", &make_hook("标题3", vec![]))
+            .index_hook("sess-3", &make_hook("标题3", vec![]), "")
             .await;
 
         // 强制执行清理任务
@@ -1012,7 +1068,7 @@ mod tests {
         );
 
         router
-            .index_hook("sess-1", &make_hook("标题", vec![]))
+            .index_hook("sess-1", &make_hook("标题", vec![]), "")
             .await;
         router.run_pending_tasks().await;
         assert_eq!(router.session_count(), 1);
@@ -1034,7 +1090,7 @@ mod tests {
         let router = SessionSearchRouter::new(None, 0);
 
         router
-            .index_hook("sess-default", &make_hook("默认配置", vec![]))
+            .index_hook("sess-default", &make_hook("默认配置", vec![]), "")
             .await;
         router.run_pending_tasks().await;
 
@@ -1089,10 +1145,10 @@ mod tests {
         );
 
         router
-            .index_hook("sess-1", &make_hook("标题1", vec![]))
+            .index_hook("sess-1", &make_hook("标题1", vec![]), "")
             .await;
         router
-            .index_hook("sess-2", &make_hook("标题2", vec![]))
+            .index_hook("sess-2", &make_hook("标题2", vec![]), "")
             .await;
 
         // 多次访问 sess-1（提高其在 TinyLFU 中的频率）
@@ -1102,7 +1158,7 @@ mod tests {
 
         // 插入 sess-3（触发容量压力）
         router
-            .index_hook("sess-3", &make_hook("标题3", vec![]))
+            .index_hook("sess-3", &make_hook("标题3", vec![]), "")
             .await;
         router.run_pending_tasks().await;
 
@@ -1133,10 +1189,10 @@ mod tests {
         );
 
         router
-            .index_hook("sess-1", &make_hook("标题1", vec![]))
+            .index_hook("sess-1", &make_hook("标题1", vec![]), "")
             .await;
         router
-            .index_hook("sess-2", &make_hook("标题2", vec![]))
+            .index_hook("sess-2", &make_hook("标题2", vec![]), "")
             .await;
 
         // 访问 sess-1，使其成为最近访问（MRU 端）
@@ -1146,7 +1202,7 @@ mod tests {
         // 插入 sess-3（触发容量压力）
         // 严格 LRU 应淘汰 sess-2（最久未访问）
         router
-            .index_hook("sess-3", &make_hook("标题3", vec![]))
+            .index_hook("sess-3", &make_hook("标题3", vec![]), "")
             .await;
 
         // StrictLRU 淘汰是同步的，无需 run_pending_tasks
@@ -1194,7 +1250,7 @@ mod tests {
         );
 
         router
-            .index_hook("sess-1", &make_hook("标题", vec![]))
+            .index_hook("sess-1", &make_hook("标题", vec![]), "")
             .await;
         assert_eq!(router.session_count(), 1);
 
@@ -1230,7 +1286,7 @@ mod tests {
         );
 
         router
-            .index_hook("sess-1", &make_hook("标题", vec![]))
+            .index_hook("sess-1", &make_hook("标题", vec![]), "")
             .await;
         assert_eq!(router.session_count(), 1);
 
@@ -1264,8 +1320,8 @@ mod tests {
         let hook1 = make_hook("Rust 编程", vec![]);
         let hook2 = make_hook("Python 编程", vec![]);
 
-        router.index_hook("sess-1", &hook1).await;
-        router.index_hook("sess-2", &hook2).await;
+        router.index_hook("sess-1", &hook1, "").await;
+        router.index_hook("sess-2", &hook2, "").await;
 
         // 隔离验证：sess-1 搜索 Rust 应找到 hook1
         let r1 = router.search("sess-1", "Rust", 5).await.unwrap();
@@ -1296,7 +1352,7 @@ mod tests {
         );
 
         let hook = make_hook("Rust 安全编程", vec!["所有权".into()]);
-        router.index_hook("sess-1", &hook).await;
+        router.index_hook("sess-1", &hook, "").await;
 
         let results = router.search("sess-1", "Rust", 5).await.unwrap();
         assert!(
@@ -1562,7 +1618,7 @@ mod tests {
 
         // 先通过 index_hook 索引新数据
         let hook_new = make_hook("新文档", vec![]);
-        router.index_hook("sess-1", &hook_new).await;
+        router.index_hook("sess-1", &hook_new, "").await;
 
         // search_with_rebuild → 关键词索引非空，不应触发 rebuild
         let results = router

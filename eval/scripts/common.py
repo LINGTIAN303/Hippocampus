@@ -240,6 +240,27 @@ def mc_ensure_archived(session_id: str, turns: list[dict]) -> dict | None:
     return mc_archive(session_id, turns)
 
 
+def mc_semantic_search(session_id: str, query: str, top_k: int = 5, timeout: int = 30) -> dict:
+    """POST /sessions/{sid}/search —— 语义检索（BM25 + 语义混合）。
+
+    返回 SearchResponse：
+    {
+        "results": [
+            {"hook_id": "...", "memory_id": "...", "score": 0.95, "source": "hybrid"},
+            ...
+        ],
+        "mode": "keyword" | "semantic" | "hybrid"
+    }
+    """
+    r = requests.post(
+        f"{MC_BASE}/sessions/{session_id}/search",
+        json={"query": query, "top_k": top_k},
+        timeout=timeout,
+    )
+    r.raise_for_status()
+    return r.json()
+
+
 # ---------------------------------------------------------------------------
 # 5. MessageTurn 构造
 # ---------------------------------------------------------------------------

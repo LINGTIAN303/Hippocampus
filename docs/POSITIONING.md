@@ -44,7 +44,7 @@ MemoryCenter 是 Agent 的时序记忆基础设施：完整保存对话上下文
 | **Supermemory** | Memory Engine + 自动遗忘 | 自动遗忘 + 矛盾解决 | Hybrid Search（RAG+Memory） | containerTag 级 | Python/TS + REST + MCP | TypeScript + Cloud SaaS | 24.6k | LongMemEval **81.6%** | 个人+商业 AI |
 | **Cognee** | ECL 三阶段 + 知识图谱 | forget API 手动 | 图遍历多跳推理 | 实体/三元组级 | Python + CLI + MCP | Python + 图数据库 | 16.6k | 关系推理 **92.5%** | 知识图谱推理 |
 | **OpenAI Responses** | previous_response_id 链式 | 服务端托管（黑盒） | 内置不可控 | 会话级 | OpenAI SDK | OpenAI 云 | - | - | OpenAI 生态 |
-| **MemoryCenter** | **时序归档（完整非摘要）+ 三级周期** | **天归档/周去重/月评分淘汰** | **摘要钩子注入 + tool 主动检索 + BM25 + 语义检索** | **17 类消息级标签** | **C ABI + HTTP REST + Python + Node.js + WASM + MCP（stdio + Streamable HTTP）** | **Rust 单二进制 + SQLite** | 新项目 | 待测 | 编程助手/通用 |
+| **MemoryCenter** | **时序归档（完整非摘要）+ 三级周期** | **天归档/周去重/月评分淘汰** | **摘要钩子注入 + tool 主动检索 + BM25 + 语义检索** | **17 类消息级标签** | **C ABI + HTTP REST + Python + Node.js + WASM + MCP（stdio + Streamable HTTP）** | **Rust 单二进制 + SQLite** | 新项目 | LongMemEval R@5 **100%**（30题抽样, s_cleaned） | 编程助手/通用 |
 
 ## 三大直接竞品深度对比
 

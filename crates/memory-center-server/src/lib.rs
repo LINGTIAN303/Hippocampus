@@ -29,7 +29,9 @@ mod presets;
 // v2.5 批次 7: SearchIndexer（归档后自动索引）
 // v2.8: SessionSearchRouter（session 级索引隔离）
 // 这里 re-export 保持向后兼容，server 内部代码与外部消费者的 import 路径不变
-pub use memory_center_search::{SearchIndexer, SessionSearchRouter, SessionSearchRouterConfig};
+pub use memory_center_search::{
+    extract_turns_text, SearchIndexer, SessionSearchRouter, SessionSearchRouterConfig,
+};
 
 // v2.12: LLM 客户端组件（HttpLlmDetector / HttpEmbedder / HttpLlmScorer）下沉到 MemoryCenter-llm crate
 // v2.21 批次 8b: 新增 HttpSummaryGenerator re-export
