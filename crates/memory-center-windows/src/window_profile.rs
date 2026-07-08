@@ -40,7 +40,7 @@ pub struct WindowProfile {
     /// 压缩时是否归档到 MemoryCenter
     ///
     /// 默认 true：被压缩丢弃的内容归档到 MemoryCenter 保留
-    pub archive_to_MemoryCenter: bool,
+    pub archive_to_memory_center: bool,
 }
 
 impl WindowProfile {
@@ -51,7 +51,7 @@ impl WindowProfile {
             scheme,
             cooperation_mode: CooperationMode::default(),
             trigger_threshold,
-            archive_to_MemoryCenter: true,
+            archive_to_memory_center: true,
         }
     }
 
@@ -68,8 +68,8 @@ impl WindowProfile {
     }
 
     /// 设置是否归档到 MemoryCenter
-    pub fn with_archive_to_MemoryCenter(mut self, archive: bool) -> Self {
-        self.archive_to_MemoryCenter = archive;
+    pub fn with_archive_to_memory_center(mut self, archive: bool) -> Self {
+        self.archive_to_memory_center = archive;
         self
     }
 
@@ -159,7 +159,7 @@ mod tests {
     fn test_claude_code_profile() {
         let p = WindowProfile::claude_code();
         assert_eq!(p.trigger_threshold, 180_000);
-        assert!(p.archive_to_MemoryCenter);
+        assert!(p.archive_to_memory_center);
         assert!(p.validate().is_ok());
     }
 
@@ -192,8 +192,8 @@ mod tests {
 
     #[test]
     fn test_with_archive_disabled() {
-        let p = WindowProfile::claude_code().with_archive_to_MemoryCenter(false);
-        assert!(!p.archive_to_MemoryCenter);
+        let p = WindowProfile::claude_code().with_archive_to_memory_center(false);
+        assert!(!p.archive_to_memory_center);
     }
 
     #[test]

@@ -118,7 +118,7 @@ impl PresetBuilder {
     /// 3. 解析归档阈值（优先级：用户 > scenario > model > 默认）
     /// 4. 解析摘要模板（优先级：用户 > scenario.custom > scenario 预设 > 默认）
     /// 5. 解析 session_prefix（来自 Agent）
-    /// 6. 解析 archive_to_MemoryCenter（Agent 和 Window 任一禁用则不归档）
+    /// 6. 解析 archive_to_memory_center（Agent 和 Window 任一禁用则不归档）
     pub fn build(self) -> Result<CombinedProfile, PresetError> {
         // 1. 校验所有 Profile
         if let Some(s) = &self.scenario {
@@ -176,16 +176,16 @@ impl PresetBuilder {
             .as_ref()
             .map(|a| a.session_prefix.clone());
 
-        // 6. 解析 archive_to_MemoryCenter（Agent 和 Window 任一禁用则不归档）
-        let archive_to_MemoryCenter = {
+        // 6. 解析 archive_to_memory_center（Agent 和 Window 任一禁用则不归档）
+        let archive_to_memory_center = {
             let agent_flag = self
                 .agent
                 .as_ref()
-                .map(|a| a.archive_to_MemoryCenter)
+                .map(|a| a.archive_to_memory_center)
                 .unwrap_or(true);
             let window_flag = resolved_window
                 .as_ref()
-                .map(|w| w.archive_to_MemoryCenter)
+                .map(|w| w.archive_to_memory_center)
                 .unwrap_or(true);
             agent_flag && window_flag
         };
@@ -207,7 +207,7 @@ impl PresetBuilder {
             archive_threshold,
             summary_template,
             session_prefix,
-            archive_to_MemoryCenter,
+            archive_to_memory_center,
             usage_protocol,
         ))
     }
@@ -458,7 +458,7 @@ mod tests {
         assert_eq!(combined.archive_threshold(), DEFAULT_ARCHIVE_THRESHOLD);
         assert_eq!(combined.summary_template(), DEFAULT_SUMMARY_TEMPLATE);
         assert!(combined.session_prefix().is_none());
-        assert!(combined.archive_to_MemoryCenter());
+        assert!(combined.archive_to_memory_center());
     }
 
     #[test]
@@ -598,18 +598,18 @@ mod tests {
             .build()
             .unwrap();
 
-        assert!(!combined.archive_to_MemoryCenter());
+        assert!(!combined.archive_to_memory_center());
     }
 
     #[test]
     fn test_archive_disabled_by_window() {
-        let window = WindowProfile::default().with_archive_to_MemoryCenter(false);
+        let window = WindowProfile::default().with_archive_to_memory_center(false);
         let combined = PresetBuilder::new()
             .with_window(window)
             .build()
             .unwrap();
 
-        assert!(!combined.archive_to_MemoryCenter());
+        assert!(!combined.archive_to_memory_center());
     }
 
     #[test]
@@ -619,7 +619,7 @@ mod tests {
             .build()
             .unwrap();
 
-        assert!(combined.archive_to_MemoryCenter());
+        assert!(combined.archive_to_memory_center());
     }
 
     #[test]

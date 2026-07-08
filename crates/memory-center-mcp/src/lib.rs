@@ -1777,7 +1777,7 @@ impl MemoryCenterMcp {
             "archive_threshold": combined.archive_threshold(),
             "summary_template": combined.summary_template(),
             "session_prefix": combined.session_prefix(),
-            "archive_to_MemoryCenter": combined.archive_to_MemoryCenter(),
+            "archive_to_memory_center": combined.archive_to_memory_center(),
             // 标志位（用于追溯哪些 Profile 参与了叠加）
             "has_agent": combined.agent.is_some(),
             "has_scenario": combined.scenario.is_some(),

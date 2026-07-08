@@ -133,7 +133,7 @@ pub struct CombinedProfile {
     /// 是否归档到 MemoryCenter
     ///
     /// Agent 和 Window 任一显式禁用则不归档
-    archive_to_MemoryCenter: bool,
+    archive_to_memory_center: bool,
 
     /// LLM 可读的行为契约（v2.30 新增）
     ///
@@ -154,7 +154,7 @@ impl CombinedProfile {
         archive_threshold: usize,
         summary_template: String,
         session_prefix: Option<String>,
-        archive_to_MemoryCenter: bool,
+        archive_to_memory_center: bool,
         usage_protocol: UsageProtocol,
     ) -> Self {
         Self {
@@ -166,7 +166,7 @@ impl CombinedProfile {
             archive_threshold,
             summary_template,
             session_prefix,
-            archive_to_MemoryCenter,
+            archive_to_memory_center,
             usage_protocol,
         }
     }
@@ -187,8 +187,8 @@ impl CombinedProfile {
     }
 
     /// 是否归档到 MemoryCenter
-    pub fn archive_to_MemoryCenter(&self) -> bool {
-        self.archive_to_MemoryCenter
+    pub fn archive_to_memory_center(&self) -> bool {
+        self.archive_to_memory_center
     }
 
     /// LLM 可读的行为契约（v2.30 新增）
@@ -270,7 +270,7 @@ mod tests {
         assert_eq!(combined.archive_threshold(), 500_000);
         assert_eq!(combined.summary_template(), "custom template {conversation}");
         assert_eq!(combined.session_prefix(), Some("claude-code"));
-        assert!(combined.archive_to_MemoryCenter());
+        assert!(combined.archive_to_memory_center());
         assert!(combined.score_weights().is_some());
         assert!(combined.retrieval_strategy().is_some());
         assert!(combined.priority_tags().is_some());

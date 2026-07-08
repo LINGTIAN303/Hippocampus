@@ -953,7 +953,7 @@ curl -X POST http://localhost:8765/api/v1/presets/build \
   "archive_threshold": 400000,
   "summary_template": "请总结以下对话...",
   "session_prefix": "claude-code",
-  "archive_to_MemoryCenter": true,
+  "archive_to_memory_center": true,
   "has_agent": true,
   "has_scenario": true,
   "has_window": true,

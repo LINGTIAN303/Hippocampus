@@ -36,7 +36,7 @@ pub struct AgentProfile {
     /// 是否归档到 MemoryCenter
     ///
     /// 部分用户可能希望 Agent 用自己的记忆机制而不归档，默认 true
-    pub archive_to_MemoryCenter: bool,
+    pub archive_to_memory_center: bool,
     /// session ID 前缀（用于按 Agent 隔离记忆）
     ///
     /// 默认从 family 推导，可由调用方覆盖
@@ -55,7 +55,7 @@ impl AgentProfile {
             variant: None,
             supports_tool_calls: true,
             has_native_compression: true,
-            archive_to_MemoryCenter: true,
+            archive_to_memory_center: true,
             session_prefix: AgentFamily::ClaudeCode
                 .default_session_prefix()
                 .to_string(),
@@ -73,7 +73,7 @@ impl AgentProfile {
             variant: None,
             supports_tool_calls: true,
             has_native_compression: true,
-            archive_to_MemoryCenter: true,
+            archive_to_memory_center: true,
             session_prefix: AgentFamily::Cursor.default_session_prefix().to_string(),
         }
     }
@@ -89,7 +89,7 @@ impl AgentProfile {
             variant: None,
             supports_tool_calls: true,
             has_native_compression: true,
-            archive_to_MemoryCenter: true,
+            archive_to_memory_center: true,
             session_prefix: AgentFamily::Trae.default_session_prefix().to_string(),
         }
     }
@@ -105,7 +105,7 @@ impl AgentProfile {
             variant: None,
             supports_tool_calls: true,
             has_native_compression: true,
-            archive_to_MemoryCenter: true,
+            archive_to_memory_center: true,
             session_prefix: AgentFamily::Codex.default_session_prefix().to_string(),
         }
     }
@@ -121,7 +121,7 @@ impl AgentProfile {
             variant: None,
             supports_tool_calls: true,
             has_native_compression: false, // 未知 Agent 默认无原生压缩
-            archive_to_MemoryCenter: true,
+            archive_to_memory_center: true,
             session_prefix,
         }
     }
@@ -149,7 +149,7 @@ impl AgentProfile {
 
     /// 禁用归档（Agent 使用自己的记忆机制）
     pub fn with_archive_disabled(mut self) -> Self {
-        self.archive_to_MemoryCenter = false;
+        self.archive_to_memory_center = false;
         self
     }
 
@@ -174,7 +174,7 @@ impl AgentProfile {
     /// 校验配置合法性
     ///
     /// - session_prefix 不能为空
-    /// - archive_to_MemoryCenter=false 时无需校验其他字段（Agent 自管记忆）
+    /// - archive_to_memory_center=false 时无需校验其他字段（Agent 自管记忆）
     pub fn validate(&self) -> Result<(), String> {
         if self.session_prefix.trim().is_empty() {
             return Err("session_prefix 不能为空".to_string());
@@ -204,7 +204,7 @@ mod tests {
         assert_eq!(p.family, AgentFamily::ClaudeCode);
         assert!(p.supports_tool_calls);
         assert!(p.has_native_compression);
-        assert!(p.archive_to_MemoryCenter);
+        assert!(p.archive_to_memory_center);
         assert_eq!(p.session_prefix, "claude-code");
         assert!(p.variant.is_none());
         assert!(p.validate().is_ok());
@@ -281,7 +281,7 @@ mod tests {
     #[test]
     fn test_builder_with_archive_disabled() {
         let p = AgentProfile::cursor().with_archive_disabled();
-        assert!(!p.archive_to_MemoryCenter);
+        assert!(!p.archive_to_memory_center);
     }
 
     #[test]
@@ -310,7 +310,7 @@ mod tests {
             .with_archive_disabled();
         assert_eq!(p.variant.as_deref(), Some("2.0"));
         assert_eq!(p.session_prefix, "custom-prefix");
-        assert!(!p.archive_to_MemoryCenter);
+        assert!(!p.archive_to_memory_center);
     }
 
     #[test]

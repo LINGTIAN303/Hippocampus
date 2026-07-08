@@ -651,7 +651,7 @@ fn window_scheme_from_str(s: &str) -> Option<memory_center_windows::WindowProfil
 ///
 /// print(preset["archive_threshold"])    # 450000
 /// print(preset["session_prefix"])       # "claude-code"
-/// print(preset["archive_to_MemoryCenter"])  # True
+/// print(preset["archive_to_memory_center"])  # True
 /// ```
 #[pyclass(name = "PresetBuilder")]
 struct PyPresetBuilder {
@@ -825,7 +825,7 @@ impl PyPresetBuilder {
     /// - archive_threshold: int（归档阈值，token 数）
     /// - summary_template: str（摘要模板，含 {conversation} 占位符）
     /// - session_prefix: str | None（session ID 前缀，来自 Agent）
-    /// - archive_to_MemoryCenter: bool（是否归档到 MemoryCenter）
+    /// - archive_to_memory_center: bool（是否归档到 MemoryCenter）
     /// - has_agent: bool（是否设置了 Agent）
     /// - has_scenario: bool（是否设置了 Scenario）
     /// - has_window: bool（是否设置了 Window，含联动推导）
@@ -866,7 +866,7 @@ impl PyPresetBuilder {
             "archive_threshold": combined.archive_threshold(),
             "summary_template": combined.summary_template(),
             "session_prefix": combined.session_prefix(),
-            "archive_to_MemoryCenter": combined.archive_to_MemoryCenter(),
+            "archive_to_memory_center": combined.archive_to_memory_center(),
             // 标志位
             "has_agent": combined.agent.is_some(),
             "has_scenario": combined.scenario.is_some(),
@@ -1078,7 +1078,7 @@ mod tests {
         assert_eq!(combined.archive_threshold(), 450_000); // 用户覆盖优先
         assert_eq!(combined.summary_template(), "custom template {conversation}");
         assert_eq!(combined.session_prefix(), Some("claude-code"));
-        assert!(combined.archive_to_MemoryCenter());
+        assert!(combined.archive_to_memory_center());
         assert!(combined.agent.is_some());
         assert!(combined.scenario.is_some());
         assert!(combined.window.is_some()); // Agent 联动推导
@@ -1182,7 +1182,7 @@ mod tests {
 
         assert_eq!(combined.archive_threshold(), 450_000); // 用户覆盖优先
         assert_eq!(combined.session_prefix(), Some("claude-code"));
-        assert!(combined.archive_to_MemoryCenter());
+        assert!(combined.archive_to_memory_center());
         assert!(combined.agent.is_some());
         assert!(combined.scenario.is_some());
     }
