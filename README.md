@@ -84,6 +84,21 @@ Layer 1: Core (Rust)    纯逻辑 crate（core-logic），无 IO 依赖；facade
 | `memory-center-go` | Go 绑定（cgo，v2.4+） | 🚧 计划中 |
 | `memory-center-java` | Java 绑定（JNA，v2.4+） | 🚧 计划中 |
 
+## 文档
+
+完整文档位于 [GitHub Wiki](https://github.com/LINGTIAN303/MemoryCenter/wiki)：
+
+| 文档 | 说明 |
+|------|------|
+| [Getting Started](https://github.com/LINGTIAN303/MemoryCenter/wiki/Getting-Started) | 快速上手试用 |
+| [Architecture](https://github.com/LINGTIAN303/MemoryCenter/wiki/Architecture) | 整体架构设计 |
+| [Crate Guide](https://github.com/LINGTIAN303/MemoryCenter/wiki/Crate-Guide) | 各 Crate 选择指南 |
+| [MCP Integration](https://github.com/LINGTIAN303/MemoryCenter/wiki/MCP-Integration) | MCP 接入概览与 21 个工具列表 |
+| [MCP Configuration Guide](https://github.com/LINGTIAN303/MemoryCenter/wiki/MCP-Configuration-Guide) | MCP 各环境详细配置 + 踩坑排查 |
+| [API Reference](https://github.com/LINGTIAN303/MemoryCenter/wiki/API-Reference) | REST API 文档 |
+| [Deployment](https://github.com/LINGTIAN303/MemoryCenter/wiki/Deployment) | 生产环境部署 |
+| [Changelog](https://github.com/LINGTIAN303/MemoryCenter/wiki/Changelog) | 版本变更历史 |
+
 ## 快速开始
 
 ### 1. 构建
@@ -434,4 +449,4 @@ pytest tests/test_memory_center.py -v
 
 ## License
 
-MIT OR Apache-2.0
+[MIT](LICENSE)

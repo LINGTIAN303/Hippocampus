@@ -6,7 +6,7 @@ build-backend = "maturin"
 name = "memory-center-python"
 requires-python = ">=3.9"
 description = "Agent 记忆库 - 持久化高效完整记忆法（Python 原生绑定）"
-license = { text = "MIT OR Apache-2.0" }
+license = { text = "MIT" }
 keywords = ["agent", "memory", "llm", "ai", "context"]
 classifiers = [
     "Programming Language :: Rust",
