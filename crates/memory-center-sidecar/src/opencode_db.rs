@@ -44,7 +44,7 @@ pub struct OpenCodeDb {
     conn: Connection,
 }
 
-/// V1 part 结构化内容（v2.42 新增）
+/// V1 part 结构化内容（v2.42 新增，v2.44 加 tokens_detail）
 ///
 /// 从 part 表提取的完整信息，保留 reasoning/tool/text/step-finish 等所有类型。
 /// 用于生成包含完整信息的 full_context（解决旧版只提取 text 导致信息丢失的问题）。
@@ -60,8 +60,14 @@ struct V1PartContent {
     tool_input: Option<String>,
     /// 工具输出（tool 类型，已完成时的 output 字段）
     tool_output: Option<String>,
-    /// token 总数（step-finish 类型，从 tokens.total 提取）
+    /// token 总数（step-finish 类型，从 tokens.total 提取，累计值含 cache read）
     tokens_total: Option<i64>,
+    /// 单轮实际 token 消耗（v2.44 新增，step-finish 的 input + output + reasoning）
+    ///
+    /// 与 tokens_total 的区别：
+    /// - tokens_total：累计值，含 cache read，数值很大（如 103544）
+    /// - tokens_consumed：单轮实际消耗 = input + output + reasoning，用于阈值监控
+    tokens_consumed: Option<usize>,
 }
 
 /// Session 基本信息
@@ -470,11 +476,12 @@ impl OpenCodeDb {
             ))
         })?;
 
-        // 先收集所有消息的结构化内容
+        // 先收集所有消息的结构化内容（v2.44：含 tokens）
         #[derive(Debug)]
         struct V2Msg {
             msg_type: String,
             content: SidecarContent,
+            tokens: Option<usize>,
         }
 
         let mut messages: Vec<V2Msg> = Vec::new();
@@ -482,25 +489,29 @@ impl OpenCodeDb {
             let (msg_type, data_json) = row?;
             let data: serde_json::Value = serde_json::from_str(&data_json).unwrap_or_default();
 
-            let content = parse_v2_message_to_content(&msg_type, &data);
+            let (content, tokens) = parse_v2_message_to_content(&msg_type, &data);
             if content.text.is_none() && content.thinking.is_none() && content.tool_calls.is_empty()
             {
                 continue;
             }
-            messages.push(V2Msg { msg_type, content });
+            messages.push(V2Msg { msg_type, content, tokens });
         }
 
         if messages.is_empty() {
             return Ok(Vec::new());
         }
 
-        // 按 turn 分组：user 消息开始新 turn，后续 assistant 归入同 turn
+        // 按 turn 分组（v2.44：同时追踪 tokens）
         let mut turns: Vec<SidecarTurn> = Vec::new();
         let mut current_user: Option<SidecarContent> = None;
         let mut current_assistant_parts: Vec<SidecarContent> = Vec::new();
+        let mut current_turn_tokens: usize = 0;
+        let mut has_tokens = false;
 
         let flush_turn = |user: &Option<SidecarContent>,
                           assistant_parts: &[SidecarContent],
+                          turn_tokens: usize,
+                          has_tokens: bool,
                           turns: &mut Vec<SidecarTurn>| {
             if user.is_none() && assistant_parts.is_empty() {
                 return;
@@ -514,6 +525,7 @@ impl OpenCodeDb {
             turns.push(SidecarTurn {
                 user_message: user_content,
                 llm_message: llm_content,
+                token_count: if has_tokens { Some(turn_tokens) } else { None },
             });
         };
 
@@ -521,16 +533,22 @@ impl OpenCodeDb {
             match msg.msg_type.as_str() {
                 "user" => {
                     if current_user.is_some() || !current_assistant_parts.is_empty() {
-                        flush_turn(&current_user, &current_assistant_parts, &mut turns);
+                        flush_turn(&current_user, &current_assistant_parts, current_turn_tokens, has_tokens, &mut turns);
                         if turns.len() >= max_turns {
                             return Ok(turns);
                         }
                         current_user = None;
                         current_assistant_parts.clear();
+                        current_turn_tokens = 0;
+                        has_tokens = false;
                     }
                     current_user = Some(msg.content.clone());
                 }
                 "assistant" => {
+                    if let Some(t) = msg.tokens {
+                        current_turn_tokens += t;
+                        has_tokens = true;
+                    }
                     current_assistant_parts.push(msg.content.clone());
                 }
                 "system" | "synthetic" | "shell" | "compaction" => {
@@ -539,19 +557,21 @@ impl OpenCodeDb {
                 _ => {
                     // 未知类型当 user 处理
                     if current_user.is_some() || !current_assistant_parts.is_empty() {
-                        flush_turn(&current_user, &current_assistant_parts, &mut turns);
+                        flush_turn(&current_user, &current_assistant_parts, current_turn_tokens, has_tokens, &mut turns);
                         if turns.len() >= max_turns {
                             return Ok(turns);
                         }
                         current_user = None;
                         current_assistant_parts.clear();
+                        current_turn_tokens = 0;
+                        has_tokens = false;
                     }
                     current_user = Some(msg.content.clone());
                 }
             }
         }
 
-        flush_turn(&current_user, &current_assistant_parts, &mut turns);
+        flush_turn(&current_user, &current_assistant_parts, current_turn_tokens, has_tokens, &mut turns);
         Ok(turns)
     }
 
@@ -852,13 +872,17 @@ impl OpenCodeDb {
             return Ok(Vec::new());
         }
 
-        // 按 turn 分组
+        // 按 turn 分组（v2.44：同时追踪 tokens）
         let mut turns: Vec<SidecarTurn> = Vec::new();
         let mut current_user: Option<SidecarContent> = None;
         let mut current_assistant_parts: Vec<SidecarContent> = Vec::new();
+        let mut current_turn_tokens: usize = 0;
+        let mut has_tokens = false;
 
         let flush_turn = |user: &Option<SidecarContent>,
                           assistant_parts: &[SidecarContent],
+                          turn_tokens: usize,
+                          has_tokens: bool,
                           turns: &mut Vec<SidecarTurn>| {
             if user.is_none() && assistant_parts.is_empty() {
                 return;
@@ -872,6 +896,7 @@ impl OpenCodeDb {
             turns.push(SidecarTurn {
                 user_message: user_content,
                 llm_message: llm_content,
+                token_count: if has_tokens { Some(turn_tokens) } else { None },
             });
         };
 
@@ -879,12 +904,14 @@ impl OpenCodeDb {
             match msg.role.as_str() {
                 "user" => {
                     if current_user.is_some() || !current_assistant_parts.is_empty() {
-                        flush_turn(&current_user, &current_assistant_parts, &mut turns);
+                        flush_turn(&current_user, &current_assistant_parts, current_turn_tokens, has_tokens, &mut turns);
                         if turns.len() >= max_turns {
                             return Ok(turns);
                         }
                         current_user = None;
                         current_assistant_parts.clear();
+                        current_turn_tokens = 0;
+                        has_tokens = false;
                     }
                     // user 消息只提取 text
                     let user_text: String = msg
@@ -898,8 +925,12 @@ impl OpenCodeDb {
                     current_user = Some(SidecarContent::text_only(user_text));
                 }
                 "assistant" => {
-                    // assistant 消息提取 text + thinking + tool_calls
-                    let content = v1_parts_to_assistant_content(&msg.parts);
+                    // assistant 消息提取 text + thinking + tool_calls + tokens
+                    let (content, tokens) = v1_parts_to_assistant_content(&msg.parts);
+                    if let Some(t) = tokens {
+                        current_turn_tokens += t;
+                        has_tokens = true;
+                    }
                     current_assistant_parts.push(content);
                 }
                 "system" => {
@@ -908,12 +939,14 @@ impl OpenCodeDb {
                 _ => {
                     // 未知角色当 user 处理
                     if current_user.is_some() || !current_assistant_parts.is_empty() {
-                        flush_turn(&current_user, &current_assistant_parts, &mut turns);
+                        flush_turn(&current_user, &current_assistant_parts, current_turn_tokens, has_tokens, &mut turns);
                         if turns.len() >= max_turns {
                             return Ok(turns);
                         }
                         current_user = None;
                         current_assistant_parts.clear();
+                        current_turn_tokens = 0;
+                        has_tokens = false;
                     }
                     let user_text: String = msg
                         .parts
@@ -928,7 +961,7 @@ impl OpenCodeDb {
             }
         }
 
-        flush_turn(&current_user, &current_assistant_parts, &mut turns);
+        flush_turn(&current_user, &current_assistant_parts, current_turn_tokens, has_tokens, &mut turns);
         Ok(turns)
     }
 
@@ -1164,12 +1197,21 @@ impl OpenCodeDb {
             };
 
             // step-finish 类型提取 token 统计
-            let tokens_total = if part_type == "step-finish" {
-                data.get("tokens")
+            let (tokens_total, tokens_consumed) = if part_type == "step-finish" {
+                let tokens = data.get("tokens");
+                let total = tokens
                     .and_then(|t| t.get("total"))
-                    .and_then(|v| v.as_i64())
+                    .and_then(|v| v.as_i64());
+                // v2.44：单轮实际消耗 = input + output + reasoning
+                let consumed = tokens.and_then(|t| {
+                    let input = t.get("input").and_then(|v| v.as_i64()).unwrap_or(0);
+                    let output = t.get("output").and_then(|v| v.as_i64()).unwrap_or(0);
+                    let reasoning = t.get("reasoning").and_then(|v| v.as_i64()).unwrap_or(0);
+                    Some((input + output + reasoning) as usize)
+                });
+                (total, consumed)
             } else {
-                None
+                (None, None)
             };
 
             parts.push(V1PartContent {
@@ -1179,6 +1221,7 @@ impl OpenCodeDb {
                 tool_input,
                 tool_output,
                 tokens_total,
+                tokens_consumed,
             });
         }
         Ok(parts)
@@ -1408,16 +1451,17 @@ fn format_v1_assistant_parts(parts: &[V1PartContent]) -> String {
 /// - text → 加入 text 字段
 /// - reasoning → 加入 thinking 字段
 /// - tool → 转换为 SidecarToolCall（name + input + output）
-fn parse_v2_message_to_content(msg_type: &str, data: &serde_json::Value) -> SidecarContent {
+fn parse_v2_message_to_content(msg_type: &str, data: &serde_json::Value) -> (SidecarContent, Option<usize>) {
     match msg_type {
         "user" => {
             let text = data.get("text").and_then(|v| v.as_str()).unwrap_or("");
-            SidecarContent::text_only(text.to_string())
+            (SidecarContent::text_only(text.to_string()), None)
         }
         "assistant" => {
             let mut text_parts: Vec<String> = Vec::new();
             let mut thinking_parts: Vec<String> = Vec::new();
             let mut tool_calls: Vec<SidecarToolCall> = Vec::new();
+            let mut tokens_consumed: Option<usize> = None;
 
             if let Some(content) = data.get("content").and_then(|v| v.as_array()) {
                 for part in content {
@@ -1450,6 +1494,15 @@ fn parse_v2_message_to_content(msg_type: &str, data: &serde_json::Value) -> Side
                                 result,
                             });
                         }
+                        "step-finish" => {
+                            // v2.44：提取单轮实际 token 消耗 = input + output + reasoning
+                            if let Some(tokens) = part.get("tokens") {
+                                let input = tokens.get("input").and_then(|v| v.as_i64()).unwrap_or(0);
+                                let output = tokens.get("output").and_then(|v| v.as_i64()).unwrap_or(0);
+                                let reasoning = tokens.get("reasoning").and_then(|v| v.as_i64()).unwrap_or(0);
+                                tokens_consumed = Some((input + output + reasoning) as usize);
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -1466,18 +1519,18 @@ fn parse_v2_message_to_content(msg_type: &str, data: &serde_json::Value) -> Side
                 Some(thinking_parts.join("\n\n"))
             };
 
-            SidecarContent {
+            (SidecarContent {
                 text,
                 thinking,
                 tool_calls,
-            }
+            }, tokens_consumed)
         }
         // system/synthetic/shell/compaction 返回空 content（调用方会跳过）
-        _ => SidecarContent {
+        _ => (SidecarContent {
             text: None,
             thinking: None,
             tool_calls: Vec::new(),
-        },
+        }, None),
     }
 }
 
@@ -1573,17 +1626,21 @@ fn merge_sidecar_contents(contents: &[SidecarContent]) -> SidecarContent {
     }
 }
 
-/// V1 parts 转换为 assistant 的 SidecarContent（v2.43 新增）
+/// V1 parts 转换为 assistant 的 SidecarContent（v2.43 新增，v2.44 返回 tokens）
 ///
 /// 与 `format_v1_assistant_parts` 相同的 part 处理逻辑，但输出结构化 SidecarContent：
 /// - text part → text 字段
 /// - reasoning part → thinking 字段（截断 2000 字符）
 /// - tool part → tool_calls（name + input + output，input 截 1000、output 截 3000）
-/// - step-start / step-finish → 跳过
-fn v1_parts_to_assistant_content(parts: &[V1PartContent]) -> SidecarContent {
+/// - step-start → 跳过
+/// - step-finish → 提取 tokens_consumed（单轮实际消耗）
+///
+/// 返回 `(SidecarContent, Option<usize>)`，第二个值是单轮 token 消耗。
+fn v1_parts_to_assistant_content(parts: &[V1PartContent]) -> (SidecarContent, Option<usize>) {
     let mut text_parts: Vec<String> = Vec::new();
     let mut thinking_parts: Vec<String> = Vec::new();
     let mut tool_calls: Vec<SidecarToolCall> = Vec::new();
+    let mut tokens_consumed: Option<usize> = None;
 
     for part in parts {
         match part.part_type.as_str() {
@@ -1623,7 +1680,13 @@ fn v1_parts_to_assistant_content(parts: &[V1PartContent]) -> SidecarContent {
                     result,
                 });
             }
-            "step-start" | "step-finish" => {
+            "step-finish" => {
+                // v2.44：提取单轮实际 token 消耗
+                if let Some(consumed) = part.tokens_consumed {
+                    tokens_consumed = Some(consumed);
+                }
+            }
+            "step-start" => {
                 // 跳过
             }
             _ => {
@@ -1637,7 +1700,7 @@ fn v1_parts_to_assistant_content(parts: &[V1PartContent]) -> SidecarContent {
         }
     }
 
-    SidecarContent {
+    let content = SidecarContent {
         text: if text_parts.is_empty() {
             None
         } else {
@@ -1649,7 +1712,8 @@ fn v1_parts_to_assistant_content(parts: &[V1PartContent]) -> SidecarContent {
             Some(thinking_parts.join("\n\n"))
         },
         tool_calls,
-    }
+    };
+    (content, tokens_consumed)
 }
 
 /// 数据库错误

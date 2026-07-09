@@ -26,7 +26,7 @@
 use crate::config::SidecarConfig;
 use serde::{Deserialize, Serialize};
 
-/// sidecar 本地的轮次结构（v2.43 新增）
+/// sidecar 本地的轮次结构（v2.43 新增，v2.44 加 token_count）
 ///
 /// 与服务器 `MessageTurn` JSON 格式兼容，但只包含 sidecar 能产出的字段。
 /// 服务器反序列化时用 `#[serde(default)]` 补全 id/timestamp/tags/token_count。
@@ -34,6 +34,12 @@ use serde::{Deserialize, Serialize};
 pub struct SidecarTurn {
     pub user_message: SidecarContent,
     pub llm_message: SidecarContent,
+    /// 单轮实际 token 消耗（v2.44 新增）
+    ///
+    /// 来源：opencode part 表 step-finish 的 `input + output + reasoning`。
+    /// None 表示未提取到（旧版 opencode 或解析失败），服务器会按内容估算。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_count: Option<usize>,
 }
 
 /// sidecar 本地的消息内容结构

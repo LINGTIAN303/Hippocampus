@@ -302,30 +302,45 @@ async fn archive_compaction_event(
             "{}\n\n--- Recent Context ---\n{}",
             compaction.summary, compaction.recent
         )),
+        token_count: None, // 压缩摘要无真实 token 数
     };
     turns.push(summary_turn);
 
-    // 估算 token 数（各 turn 的 text/thinking/tool 内容长度总和 / 3）
-    let estimated_tokens: usize = turns
-        .iter()
-        .map(|t| {
-            let user_len = t.user_message.text.as_ref().map(|s| s.len()).unwrap_or(0);
-            let llm_len = t.llm_message.text.as_ref().map(|s| s.len()).unwrap_or(0);
-            let thinking_len = t.llm_message.thinking.as_ref().map(|s| s.len()).unwrap_or(0);
-            let tool_len: usize = t
-                .llm_message
-                .tool_calls
-                .iter()
-                .map(|c| c.arguments.len() + c.result.len())
-                .sum();
-            (user_len + llm_len + thinking_len + tool_len) / 3
-        })
-        .sum();
+    // v2.44：优先用真实 token_count，缺失时回退到长度估算
+    // 真实值来源：opencode step-finish part 的 input + output + reasoning
+    let (estimated_tokens, real_count, fallback_count) = {
+        let mut real_total: usize = 0;
+        let mut fallback_total: usize = 0;
+        let mut has_real = false;
+        for t in &turns {
+            if let Some(tc) = t.token_count {
+                real_total += tc;
+                has_real = true;
+            } else {
+                // 对缺失真实值的 turn，用长度估算
+                let user_len = t.user_message.text.as_ref().map(|s| s.len()).unwrap_or(0);
+                let llm_len = t.llm_message.text.as_ref().map(|s| s.len()).unwrap_or(0);
+                let thinking_len = t.llm_message.thinking.as_ref().map(|s| s.len()).unwrap_or(0);
+                let tool_len: usize = t
+                    .llm_message
+                    .tool_calls
+                    .iter()
+                    .map(|c| c.arguments.len() + c.result.len())
+                    .sum();
+                let estimated = (user_len + llm_len + thinking_len + tool_len) / 3;
+                real_total += estimated;
+                fallback_total += estimated;
+            }
+        }
+        (real_total, if has_real { real_total } else { 0 }, fallback_total)
+    };
 
     tracing::info!(
         session_id = %compaction.session_id,
         turns_count = turns.len(),
         estimated_tokens,
+        real_tokens = real_count,
+        fallback_tokens = fallback_count,
         from_seq = ?event.from_seq,
         to_seq = compaction.seq,
         "读取增量 turns 完成，调用 MemoryCenter pre-compress"
