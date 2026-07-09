@@ -19,9 +19,22 @@ use clap::Parser;
 ///
 /// 监听 OpenCode SQLite 会话库的压缩事件，自动触发 MemoryCenter 归档。
 /// OpenCode 端零源码改动，完全在 MemoryCenter 侧实现。
+///
+/// v2.46：支持多 Agent adapter，通过 --agent 选择。
 #[derive(Parser, Debug, Clone)]
 #[command(name = "mc-sidecar", version, about)]
 pub struct SidecarConfig {
+    /// Agent 适配器类型（v2.46 新增）
+    ///
+    /// 选择 sidecar 监听的 Agent 工具，决定数据源读取方式。
+    /// - `opencode`（默认）：读取 OpenCode SQLite 数据库
+    /// - `claude-code`：读取 Claude Code 日志文件（未来实现）
+    ///
+    /// 各 Agent 特有参数仍用现有字段（如 --opencode-db），
+    /// 未来加 --claude-code-log-dir 等。
+    #[arg(long, env = "MC_SIDECAR_AGENT", default_value = "opencode")]
+    pub agent: String,
+
     /// OpenCode SQLite 数据库路径
     ///
     /// 默认按平台查找：

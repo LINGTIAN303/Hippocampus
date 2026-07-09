@@ -18,6 +18,10 @@ name = "mc-sidecar"
 path = "src/main.rs"
 
 [dependencies]
+# v2.46：AgentAdapter trait + SidecarTurn 等通用类型
+memory-center-adapter = { path = "../memory-center-adapter" }
+# v2.46：AgentFamily（adapter::family() 返回值）
+memory-center-agents = { path = "../memory-center-agents" }
 # 序列化
 serde.workspace = true
 serde_json.workspace = true

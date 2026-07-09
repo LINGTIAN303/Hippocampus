@@ -38,6 +38,9 @@ use std::path::Path;
 use std::collections::HashSet;
 
 use crate::archive::{SidecarContent, SidecarFileChange, SidecarToolCall, SidecarTurn};
+// v2.46：CompactionRecord + AgentAdapter trait 从 adapter crate 导入
+use memory_center_adapter::{AgentAdapter, AdapterError, CompactionRecord};
+use memory_center_agents::AgentFamily;
 
 /// OpenCode SQLite 读取器
 pub struct OpenCodeDb {
@@ -97,24 +100,8 @@ pub struct SessionInfo {
 
 /// compaction 消息记录（v2.39 新增）
 ///
-/// 对应 session_message 表中 type='compaction' 的一行。
-#[derive(Debug, Clone)]
-pub struct CompactionRecord {
-    /// 消息 ID（msg_xxx），用于去重
-    pub message_id: String,
-    /// 所属 session ID
-    pub session_id: String,
-    /// seq 序列号（用于确定归档范围）
-    pub seq: i64,
-    /// 创建时间戳（毫秒）
-    pub time_created: i64,
-    /// 压缩原因："auto" 或 "manual"
-    pub reason: String,
-    /// LLM 生成的压缩摘要
-    pub summary: String,
-    /// 保留的最近上下文
-    pub recent: String,
-}
+/// v2.46：类型定义已迁移到 `memory-center-adapter` crate，这里通过 `use` 导入。
+/// `CompactionRecord` 不再是 OpenCode 专属类型，而是所有 Agent adapter 共用的通用类型。
 
 /// 压缩状态变化检测结果（v2.39 重构）
 #[derive(Debug)]
@@ -169,23 +156,23 @@ impl OpenCodeDb {
     ///
     /// 先查 V2 `session_message` 表（CLI/TUI 版），空则回退 V1 `message` 表（桌面端）。
     /// sidecar 用 message_id 去重，发现新消息即触发归档。
-    pub fn query_all_compactions(&self) -> Result<Vec<CompactionRecord>, DbError> {
+    pub fn query_compactions(&self) -> Result<Vec<CompactionRecord>, DbError> {
         // 先试 V2 session_message 表
-        let v2_result = self.query_all_compactions_v2()?;
+        let v2_result = self.query_compactions_v2()?;
         if !v2_result.is_empty() {
             return Ok(v2_result);
         }
 
         // V2 为空，回退 V1 message 表（桌面端）
         tracing::debug!("V2 session_message 表无 compaction 数据，回退 V1 message 表");
-        self.query_all_compactions_v1()
+        self.query_compactions_v1()
     }
 
     /// V2 查询：从 session_message 表检测 compaction（CLI/TUI 版）
     ///
     /// 扫描 session_message 表中所有 type='compaction' 的消息，
     /// 按创建时间升序返回。利用索引 `session_message_session_type_seq_idx` 高效查询。
-    fn query_all_compactions_v2(&self) -> Result<Vec<CompactionRecord>, DbError> {
+    fn query_compactions_v2(&self) -> Result<Vec<CompactionRecord>, DbError> {
         let mut stmt = match self.conn.prepare(
             "SELECT id, session_id, seq, time_created, data
              FROM session_message
@@ -240,7 +227,7 @@ impl OpenCodeDb {
     /// - `part.data.type='reasoning'` → recent
     ///
     /// V1 无 seq 字段，用 `time_created`（毫秒时间戳）代替 seq 作为排序和增量范围标识。
-    fn query_all_compactions_v1(&self) -> Result<Vec<CompactionRecord>, DbError> {
+    fn query_compactions_v1(&self) -> Result<Vec<CompactionRecord>, DbError> {
         let mut stmt = match self.conn.prepare(
             "SELECT id, session_id, time_created, data
              FROM message
@@ -650,7 +637,7 @@ impl OpenCodeDb {
     /// V1 版本：从 message + part 表读取 (from_seq, to_seq) 范围内的消息（桌面端，v2.40 新增，v2.42 重构）
     ///
     /// V1 无 seq 字段，用 `time_created`（毫秒时间戳）代替。
-    /// 由于 `query_all_compactions_v1` 已将 `time_created` 存入 `CompactionRecord.seq`，
+    /// 由于 `query_compactions_v1` 已将 `time_created` 存入 `CompactionRecord.seq`，
     /// 所以 `(from_seq, to_seq)` 实际上是 `time_created` 范围，语义一致。
     ///
     /// 跳过 `data.mode = 'compaction'` 的压缩产物消息。
@@ -1987,4 +1974,54 @@ pub enum DbError {
     Sqlite(#[from] rusqlite::Error),
     #[error("JSON 解析错误: {0}")]
     Json(#[from] serde_json::Error),
+}
+
+// ============================================================================
+// v2.46：AgentAdapter trait 实现
+// ============================================================================
+
+/// DbError → AdapterError 自动转换
+///
+/// 让 `impl AgentAdapter for OpenCodeDb` 方法内 `.map_err()` 简化为 `?`。
+/// `AdapterError::Database(String)` 保存原始错误信息，不绑定 OpenCode 的错误类型。
+impl From<DbError> for AdapterError {
+    fn from(e: DbError) -> Self {
+        AdapterError::Database(e.to_string())
+    }
+}
+
+/// OpenCodeDb 实现 AgentAdapter trait（v2.46 新增）
+///
+/// 将 OpenCode 专属的 SQLite 读取逻辑封装为通用 trait 接口，
+/// 让 sidecar 的 watcher 和 main 不直接依赖 OpenCodeDb 类型。
+///
+/// 方法映射：
+/// - `query_compactions()` → 已有 `query_compactions()`（v2.46 从 `query_all_compactions` 重命名）
+/// - `read_turns_between()` → 已有 `read_session_turns_between()`
+/// - `query_session_title()` → 已有 `query_session_title()`
+/// - `family()` → 返回 `AgentFamily::OpenCode`
+impl AgentAdapter for OpenCodeDb {
+    fn query_compactions(&self) -> Result<Vec<CompactionRecord>, AdapterError> {
+        // 委托给已有的 inherent 方法，错误自动转换
+        OpenCodeDb::query_compactions(self).map_err(AdapterError::from)
+    }
+
+    fn read_turns_between(
+        &self,
+        session_id: &str,
+        from_seq: Option<i64>,
+        to_seq: i64,
+        max_turns: usize,
+    ) -> Result<Vec<SidecarTurn>, AdapterError> {
+        self.read_session_turns_between(session_id, from_seq, to_seq, max_turns)
+            .map_err(AdapterError::from)
+    }
+
+    fn query_session_title(&self, session_id: &str) -> Result<String, AdapterError> {
+        OpenCodeDb::query_session_title(self, session_id).map_err(AdapterError::from)
+    }
+
+    fn family(&self) -> AgentFamily {
+        AgentFamily::OpenCode
+    }
 }

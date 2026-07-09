@@ -1,0 +1,29 @@
+# memory-center-adapter
+# Agent 数据源适配器抽象层（v2.46 新增）
+#
+# 定义 AgentAdapter trait，抽象不同 Agent 工具（OpenCode/ClaudeCode/其他开源）
+# 的数据读取逻辑，让 sidecar 的 watcher 和 main 不直接依赖具体 Agent 的 DB/文件格式。
+#
+# 定位：agents（分类层）和 sidecar（实现层）之间的抽象层。
+# 依赖链：agents ← adapter ← sidecar，单向无循环。
+
+[package]
+name = "memory-center-adapter"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Agent 数据源适配器抽象层 - AgentAdapter trait + 通用类型"
+
+[dependencies]
+# 序列化（SidecarTurn 等类型派生 Serialize）
+serde.workspace = true
+serde_json.workspace = true
+# 错误处理
+thiserror.workspace = true
+# 日志
+tracing.workspace = true
+# Agent 分类层（AgentFamily）
+memory-center-agents = { path = "../memory-center-agents" }

@@ -52,6 +52,8 @@ use opencode_db::OpenCodeDb;
 use archive::{ArchiveClient, SidecarContent, SidecarTurn};
 use state::{resolve_state_path, SidecarState};
 use watcher::{CompactionChangeEvent, CompactionWatcher};
+// v2.46：AgentAdapter trait 用于动态分发
+use memory_center_adapter::AgentAdapter;
 
 #[tokio::main]
 async fn main() {
@@ -65,15 +67,6 @@ async fn main() {
 
     let config = SidecarConfig::parse();
 
-    // 解析 OpenCode SQLite 路径
-    let db_path = match config.resolve_db_path() {
-        Ok(path) => path,
-        Err(e) => {
-            tracing::error!(error = %e, "无法解析 OpenCode SQLite 路径，请通过 --opencode-db 指定");
-            std::process::exit(1);
-        }
-    };
-
     // 解析状态文件路径（v2.41 新增）
     let state_path = match resolve_state_path(config.state_file.as_ref()) {
         Ok(path) => path,
@@ -83,22 +76,51 @@ async fn main() {
         }
     };
 
-    tracing::info!(
-        db_path = %db_path.display(),
-        state_path = %state_path.display(),
-        memorycenter_url = %config.memorycenter_url,
-        poll_interval_secs = config.poll_interval,
-        project_id = %config.project_id,
-        backfill = config.backfill,
-        "mc-sidecar 启动（v2.41 compaction 消息检测模式 + 状态持久化）"
-    );
+    // v2.46：按 --agent 选择 adapter（动态分发）
+    // 当前仅支持 "opencode"，未来加 "claude-code" 等
+    let db: Box<dyn AgentAdapter> = match config.agent.as_str() {
+        "opencode" => {
+            // 解析 OpenCode SQLite 路径
+            let db_path = match config.resolve_db_path() {
+                Ok(path) => path,
+                Err(e) => {
+                    tracing::error!(error = %e, "无法解析 OpenCode SQLite 路径，请通过 --opencode-db 指定");
+                    std::process::exit(1);
+                }
+            };
 
-    // 检查 db 文件是否存在
-    if !db_path.exists() {
-        tracing::error!(db_path = %db_path.display(), "OpenCode SQLite 文件不存在");
-        tracing::error!("请确认 OpenCode 已安装并至少运行过一次");
-        std::process::exit(1);
-    }
+            tracing::info!(
+                db_path = %db_path.display(),
+                state_path = %state_path.display(),
+                memorycenter_url = %config.memorycenter_url,
+                poll_interval_secs = config.poll_interval,
+                project_id = %config.project_id,
+                backfill = config.backfill,
+                agent = %config.agent,
+                "mc-sidecar 启动（v2.46 多 Agent adapter + 状态持久化）"
+            );
+
+            // 检查 db 文件是否存在
+            if !db_path.exists() {
+                tracing::error!(db_path = %db_path.display(), "OpenCode SQLite 文件不存在");
+                tracing::error!("请确认 OpenCode 已安装并至少运行过一次");
+                std::process::exit(1);
+            }
+
+            // 打开数据库
+            match OpenCodeDb::open(&db_path) {
+                Ok(db) => Box::new(db),
+                Err(e) => {
+                    tracing::error!(error = %e, "打开 OpenCode SQLite 失败");
+                    std::process::exit(1);
+                }
+            }
+        }
+        other => {
+            tracing::error!(agent = other, "不支持的 agent 类型，当前仅支持: opencode");
+            std::process::exit(1);
+        }
+    };
 
     // 加载持久化状态（v2.41 新增）
     let sidecar_state = match SidecarState::load(&state_path) {
@@ -106,15 +128,6 @@ async fn main() {
         Err(e) => {
             tracing::warn!(error = %e, "状态文件加载失败，使用空状态继续");
             SidecarState::default()
-        }
-    };
-
-    // 打开数据库
-    let db = match OpenCodeDb::open(&db_path) {
-        Ok(db) => db,
-        Err(e) => {
-            tracing::error!(error = %e, "打开 OpenCode SQLite 失败");
-            std::process::exit(1);
         }
     };
 
@@ -138,11 +151,11 @@ async fn main() {
     // backfill 模式：归档历史压缩会话
     if config.backfill {
         tracing::info!("backfill 模式：扫描历史 compaction 事件...");
-        match watcher.backfill_events(&db) {
+        match watcher.backfill_events(db.as_ref()) {
             Ok(events) => {
                 tracing::info!(count = events.len(), "发现未归档的历史 compaction 事件");
                 for event in events {
-                    match archive_compaction_event(&db, &archive_client, &event, &config).await {
+                    match archive_compaction_event(db.as_ref(), &archive_client, &event, &config).await {
                         Ok(()) => {
                             // 归档成功后标记为已处理（避免主循环 poll 重复归档）
                             watcher.mark_archived(&event);
@@ -171,7 +184,7 @@ async fn main() {
         // 首次轮询：建立基线状态（不触发归档）
         // 将现有 compaction 消息标记为已处理，只归档后续新增的
         tracing::info!("首次轮询：建立基线状态...");
-        match watcher.poll(&db) {
+        match watcher.poll(db.as_ref()) {
             Ok(result) => {
                 // 把现有 compaction 全部标记为已处理（建立基线，不归档历史）
                 for event in &result.new_compactions {
@@ -199,7 +212,7 @@ async fn main() {
         tokio::time::sleep(poll_interval).await;
 
         // 轮询检测新的 compaction 事件
-        let poll_result = match watcher.poll(&db) {
+        let poll_result = match watcher.poll(db.as_ref()) {
             Ok(result) => result,
             Err(e) => {
                 tracing::warn!(error = %e, "轮询失败，等待下次重试");
@@ -219,7 +232,7 @@ async fn main() {
         // 处理新检测到的 compaction 事件
         let mut had_new = false;
         for event in poll_result.new_compactions {
-            match archive_compaction_event(&db, &archive_client, &event, &config).await {
+            match archive_compaction_event(db.as_ref(), &archive_client, &event, &config).await {
                 Ok(()) => {
                     // 归档成功后标记为已处理
                     watcher.mark_archived(&event);
@@ -255,7 +268,7 @@ async fn main() {
 /// - compaction summary 作为额外的合成 SidecarTurn 追加，让服务端 apply_turn_defaults 推断 tags
 /// - token 估算基于各 turn 的文本/tool 内容长度总和
 async fn archive_compaction_event(
-    db: &OpenCodeDb,
+    db: &dyn AgentAdapter,
     archive_client: &ArchiveClient,
     event: &CompactionChangeEvent,
     config: &SidecarConfig,
@@ -272,7 +285,8 @@ async fn archive_compaction_event(
     );
 
     // v2.43：读取结构化 turns（保留 tool_calls/thinking）
-    let mut turns = match db.read_session_turns_between(
+    // v2.46：通过 trait 方法调用（原 read_session_turns_between → read_turns_between）
+    let mut turns = match db.read_turns_between(
         &compaction.session_id,
         event.from_seq,
         compaction.seq,

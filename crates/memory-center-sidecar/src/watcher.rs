@@ -27,7 +27,9 @@
 //! 启动时若 `--backfill` 为 true，查询所有有 compaction 消息的 session，
 //! 对每条 compaction 消息执行增量归档。
 
-use crate::opencode_db::{CompactionRecord, OpenCodeDb};
+// v2.46：从 adapter crate 导入 AgentAdapter trait + CompactionRecord + AdapterError
+// watcher 不再直接依赖 OpenCodeDb 类型，通过 trait 交互
+use memory_center_adapter::{AgentAdapter, AdapterError, CompactionRecord};
 use crate::state::SidecarState;
 use std::collections::HashMap;
 
@@ -72,8 +74,8 @@ impl CompactionWatcher {
     ///
     /// 查询所有 compaction 消息，对比已处理集合，
     /// 返回新检测到的 compaction 事件列表。
-    pub fn poll(&mut self, db: &OpenCodeDb) -> Result<PollResult, crate::opencode_db::DbError> {
-        let all_compactions = db.query_all_compactions()?;
+    pub fn poll(&mut self, db: &dyn AgentAdapter) -> Result<PollResult, AdapterError> {
+        let all_compactions = db.query_compactions()?;
         let total = all_compactions.len();
 
         let mut new_compactions = Vec::new();
@@ -130,9 +132,9 @@ impl CompactionWatcher {
     /// 返回所有未处理的 compaction 事件（含 from_seq 用于增量归档）。
     pub fn backfill_events(
         &mut self,
-        db: &OpenCodeDb,
-    ) -> Result<Vec<CompactionChangeEvent>, crate::opencode_db::DbError> {
-        let all_compactions = db.query_all_compactions()?;
+        db: &dyn AgentAdapter,
+    ) -> Result<Vec<CompactionChangeEvent>, AdapterError> {
+        let all_compactions = db.query_compactions()?;
 
         // 按 session_id 分组，每个 session 内按 seq 排序
         let mut by_session: HashMap<String, Vec<CompactionRecord>> = HashMap::new();

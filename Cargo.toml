@@ -23,6 +23,7 @@ members = [
     "crates/memory-center-bench",
     "crates/memory-center-wasm",
     "crates/memory-center-sidecar",
+    "crates/memory-center-adapter",
 ]
 
 [workspace.package]
