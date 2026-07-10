@@ -76,6 +76,30 @@ pub struct SidecarConfig {
     /// - Windows: ~/.local/share/mc-sidecar/state.json
     #[arg(long, env = "MC_SIDECAR_STATE_FILE")]
     pub state_file: Option<PathBuf>,
+
+    /// Token 阈值（v2.47 新增）
+    ///
+    /// 当 session 累积 tokens 达到此值 * 触发比例时，sidecar 主动归档 + 插入 compaction 消息对。
+    /// - `0`（默认）：从服务器归档响应的 `threshold` 字段缓存，最终降级到 120000
+    /// - 非 0：直接使用此值（覆盖服务器阈值）
+    ///
+    /// 优先级：CLI 参数 > 服务器缓存 > 默认 120000
+    #[arg(long, env = "MC_SIDECAR_TOKEN_THRESHOLD", default_value = "0")]
+    pub token_threshold: usize,
+
+    /// 触发主动归档的比例（v2.47 新增）
+    ///
+    /// 累积 tokens >= threshold * ratio / 100 时触发。
+    /// 默认 80（即阈值的 80%），避免等到 OpenCode 自身触发 compaction 才归档。
+    #[arg(long, env = "MC_SIDECAR_TOKEN_TRIGGER_RATIO", default_value = "80")]
+    pub token_trigger_ratio: u64,
+
+    /// Compaction 时保留的尾部轮数（v2.47 新增）
+    ///
+    /// 插入 compaction 消息对时，保留最近 N 轮对话不归档（作为 tail）。
+    /// 与 OpenCode 原生行为一致（默认 2 轮），让 LLM 保持近期上下文连续性。
+    #[arg(long, env = "MC_SIDECAR_TAIL_TURNS", default_value = "2")]
+    pub tail_turns: usize,
 }
 
 impl SidecarConfig {

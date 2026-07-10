@@ -129,6 +129,24 @@ This session continues a previous conversation that lost its context.
 - Pending todos 状态 > Summary 第10章节建议
 - in_progress 任务必须从断点继续，禁止重复提问已完成决策
 
+### 6.5. OpenCode 主动清空后：调 prompt 召回记忆（v2.47 新增）
+
+当 sidecar 检测到 tokens 累积达到阈值 80% 时，会主动归档完整上下文并插入 compaction 消息对，
+让 OpenCode 下次加载时自动跳过旧消息（无感清空，跳过 LLM 压缩步骤）。
+
+检测到以下信号时，**立即调用 `prompt` 召回历史记忆**：
+
+- 会话中出现 `mode: "compaction"` + `agent: "compaction"` 的 assistant 消息
+- 消息摘要含 `"MemoryCenter 主动归档"` 关键词
+
+```bash
+mcp_memory-center.prompt(session_id)
+```
+
+**与第 6 节的区别**：
+- 第 6 节：客户端（如 Trae）自行压缩后，LLM 执行压缩后行为协议
+- 本节：sidecar 主动清空后（跳过压缩），LLM 只需调 prompt 召回记忆，无需归档断层轮次（sidecar 已完整归档）
+
 ### 7. project_memory 反向写入：让 memory-center 记忆流入第7层 Memory Context
 
 memory-center 维护一份 `project_memory.md` 副本（`projects/{project_id}/project_memory.md`），

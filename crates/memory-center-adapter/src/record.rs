@@ -35,3 +35,23 @@ pub struct CompactionRecord {
     /// 保留的最近上下文（可为空）
     pub recent: String,
 }
+
+/// 活跃 session 的 token 累积信息（v2.47 新增）
+///
+/// 用于 sidecar 的阈值监控：查询每个活跃 session 从上次归档 seq 到最新 seq
+/// 之间的 token 累积值，达到阈值时触发主动归档 + 清空。
+///
+/// ## 字段语义
+///
+/// - `last_seq`：该 session 最新消息的 seq（作为本次主动归档的范围终点）
+/// - `accumulated_tokens`：从 `last_archived_seq` 到 `last_seq` 的累积 token 数
+///   （来源：step-finish part 的 input + output + reasoning）
+#[derive(Debug, Clone)]
+pub struct SessionTokenInfo {
+    /// session ID
+    pub session_id: String,
+    /// 最新消息的 seq
+    pub last_seq: i64,
+    /// 累积 token 数（从上次归档 seq 到最新 seq）
+    pub accumulated_tokens: usize,
+}

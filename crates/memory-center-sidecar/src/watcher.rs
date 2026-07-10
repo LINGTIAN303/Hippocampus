@@ -182,3 +182,135 @@ impl Default for CompactionWatcher {
         Self::new(SidecarState::default())
     }
 }
+
+// ============================================================================
+// v2.47 新增：tokens 阈值监控（主动归档）
+// ============================================================================
+
+/// Token 阈值触发事件（v2.47 新增）
+///
+/// 当某 session 的累积 tokens 达到阈值 * 触发比例时产生此事件，
+/// 主循环据此执行主动归档 + 插入 compaction 消息对。
+#[derive(Debug, Clone)]
+pub struct TokenThresholdEvent {
+    /// 触发的 session ID
+    pub session_id: String,
+    /// 当前累积 tokens（从 last_archived_seq 到 last_seq）
+    pub accumulated_tokens: usize,
+    /// 使用的阈值（已解析：CLI > 服务器缓存 > 默认 120000）
+    pub threshold: usize,
+    /// 触发比例（如 80 表示 80%）
+    pub ratio_percent: u64,
+    /// 当前最新 seq（作为本次主动归档的范围终点）
+    pub last_seq: i64,
+    /// 上次归档的 seq（作为本次主动归档的范围起点，None 表示从会话开头）
+    pub from_seq: Option<i64>,
+}
+
+impl CompactionWatcher {
+    /// Token 阈值监控轮询（v2.47 新增）
+    ///
+    /// 查询所有活跃 session 的 token 累积值，检查是否达到触发阈值。
+    /// 达到阈值的 session 返回 `TokenThresholdEvent`，由主循环执行主动归档。
+    ///
+    /// ## 阈值解析优先级
+    ///
+    /// 1. CLI 参数 `--token-threshold` 非 0 → 直接使用
+    /// 2. 服务器缓存的 `cached_threshold`（从归档响应获取）非 0 → 使用缓存
+    /// 3. 最终降级到默认 120000
+    ///
+    /// ## 触发条件
+    ///
+    /// `accumulated_tokens >= threshold * ratio_percent / 100`
+    ///
+    /// ## 参数
+    ///
+    /// - `db`：Agent 数据源适配器
+    /// - `cli_threshold`：CLI 参数 `--token-threshold`（0 表示未配置）
+    /// - `ratio_percent`：触发比例（默认 80）
+    pub fn poll_tokens(
+        &self,
+        db: &dyn AgentAdapter,
+        cli_threshold: usize,
+        ratio_percent: u64,
+    ) -> Result<Vec<TokenThresholdEvent>, AdapterError> {
+        // 解析阈值：CLI > 服务器缓存 > 默认 120000
+        let threshold = if cli_threshold > 0 {
+            cli_threshold
+        } else if self.state.cached_threshold > 0 {
+            self.state.cached_threshold
+        } else {
+            120_000
+        };
+
+        // 触发线 = threshold * ratio / 100
+        let trigger_line = threshold * (ratio_percent as usize) / 100;
+
+        // 查询所有活跃 session 的 token 累积值
+        let sessions = db.query_active_sessions_tokens(&self.state.last_archived_seq)?;
+
+        let mut events = Vec::new();
+        for info in sessions {
+            if info.accumulated_tokens >= trigger_line {
+                let from_seq = self.state.get_last_seq(&info.session_id);
+
+                tracing::info!(
+                    session_id = %info.session_id,
+                    accumulated_tokens = info.accumulated_tokens,
+                    threshold,
+                    trigger_line,
+                    ratio_percent,
+                    last_seq = info.last_seq,
+                    from_seq = ?from_seq,
+                    "检测到 token 阈值触发（主动归档）"
+                );
+
+                events.push(TokenThresholdEvent {
+                    session_id: info.session_id,
+                    accumulated_tokens: info.accumulated_tokens,
+                    threshold,
+                    ratio_percent,
+                    last_seq: info.last_seq,
+                    from_seq,
+                });
+            } else {
+                tracing::debug!(
+                    session_id = %info.session_id,
+                    accumulated_tokens = info.accumulated_tokens,
+                    trigger_line,
+                    ratio_percent,
+                    "session token 未达阈值，跳过"
+                );
+            }
+        }
+
+        Ok(events)
+    }
+
+    /// 主动归档完成后更新状态（v2.47 新增）
+    ///
+    /// 与 `mark_archived` 类似，但不依赖 CompactionChangeEvent（主动归档无 compaction 消息）。
+    /// 更新 `last_archived_seq` 为 `last_seq`，让下次 poll_tokens 不重复计算已归档部分。
+    ///
+    /// 注意：不更新 `processed_message_ids`（那是 compaction 消息 ID 去重用的）。
+    pub fn mark_proactive_archived(&mut self, session_id: &str, last_seq: i64) {
+        self.state
+            .last_archived_seq
+            .insert(session_id.to_string(), last_seq);
+    }
+
+    /// 更新服务器返回的阈值缓存（v2.47 新增）
+    ///
+    /// 归档响应中含 `threshold` 字段时，缓存到 state，
+    /// 后续 poll_tokens 在 CLI 未配置阈值时使用此缓存。
+    pub fn update_cached_threshold(&mut self, threshold: usize) {
+        if threshold > 0 && self.state.cached_threshold != threshold {
+            tracing::debug!(
+                old = self.state.cached_threshold,
+                new = threshold,
+                "更新服务器阈值缓存"
+            );
+            self.state.cached_threshold = threshold;
+        }
+    }
+}

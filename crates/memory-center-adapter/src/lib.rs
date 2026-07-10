@@ -38,10 +38,11 @@ pub mod record;
 pub mod types;
 
 pub use error::AdapterError;
-pub use record::CompactionRecord;
+pub use record::{CompactionRecord, SessionTokenInfo};
 pub use types::{SidecarContent, SidecarFileChange, SidecarToolCall, SidecarTurn};
 
 use memory_center_agents::AgentFamily;
+use std::collections::HashMap;
 
 /// Agent 数据源适配器 trait（v2.46 新增）
 ///
@@ -139,4 +140,32 @@ pub trait AgentAdapter: Send {
     ///
     /// 用于日志展示和元数据记录。
     fn family(&self) -> AgentFamily;
+
+    /// 查询所有活跃 session 的 token 累积信息（v2.47 新增）
+    ///
+    /// 用于阈值监控：sidecar 每次轮询时调用，获取每个活跃 session
+    /// 从上次归档 seq 到最新 seq 之间的 token 累积值。
+    /// 达到阈值时触发主动归档 + 插入 compaction 消息对（清空上下文）。
+    ///
+    /// ## 参数
+    ///
+    /// - `last_archived_seqs`：每个 session 上次归档的 seq（来自 SidecarState）
+    ///   - key: session_id
+    ///   - value: 上次归档的 seq（该 seq 之前的数据已归档）
+    ///
+    /// ## 返回
+    ///
+    /// 所有 `accumulated_tokens > 0` 的活跃 session 列表。
+    /// 空 Vec 表示无活跃 session 或所有 session 均无新消息。
+    ///
+    /// ## 实现说明
+    ///
+    /// token 来源因 Agent 而异：
+    /// - OpenCode V2：session_message 表 step-finish part 的 input + output + reasoning
+    /// - OpenCode V1：message + part 表的 step-finish part
+    /// - 未来 ClaudeCode：可能从 JSONL 日志解析
+    fn query_active_sessions_tokens(
+        &self,
+        last_archived_seqs: &HashMap<String, i64>,
+    ) -> Result<Vec<SessionTokenInfo>, AdapterError>;
 }

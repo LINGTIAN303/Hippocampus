@@ -35,11 +35,12 @@
 
 use rusqlite::{Connection, OpenFlags};
 use std::path::Path;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::archive::{SidecarContent, SidecarFileChange, SidecarToolCall, SidecarTurn};
 // v2.46：CompactionRecord + AgentAdapter trait 从 adapter crate 导入
-use memory_center_adapter::{AgentAdapter, AdapterError, CompactionRecord};
+// v2.47：SessionTokenInfo 用于阈值监控
+use memory_center_adapter::{AgentAdapter, AdapterError, CompactionRecord, SessionTokenInfo};
 use memory_center_agents::AgentFamily;
 
 /// OpenCode SQLite 读取器
@@ -324,6 +325,208 @@ impl OpenCodeDb {
         }
 
         Ok((summary_parts.join("\n"), reasoning_parts.join("\n")))
+    }
+
+    /// 查询所有活跃 session 的 token 累积信息（v2.47 新增）
+    ///
+    /// 用于阈值监控：查询每个 session 从 `last_archived_seq` 到最新消息之间的
+    /// token 累积值。token 来源是 assistant 消息中 step-finish part 的
+    /// `input + output + reasoning`（与 v2.44 的单轮消耗定义一致）。
+    ///
+    /// ## V2 路径
+    ///
+    /// 查 `session_message` 表中 `type='assistant'` 的消息，
+    /// 解析 `data.content` 数组中 `type='step-finish'` 的 part，
+    /// 累加 `tokens.input + output + reasoning`。
+    ///
+    /// ## V1 路径（回退）
+    ///
+    /// 查 `message` + `part` 表，`part.data` 中 `type='step-finish'` 的 token 字段。
+    ///
+    /// ## 过滤逻辑
+    ///
+    /// - 只统计 `seq > last_archived_seq` 的消息（已归档的不重复计算）
+    /// - `last_archived_seqs` 中不存在的 session 视为 `last_archived_seq = 0`（全部累积）
+    /// - 跳过 compaction 类型消息本身
+    /// - 只返回 `accumulated_tokens > 0` 的 session
+    pub fn query_active_sessions_tokens(
+        &self,
+        last_archived_seqs: &std::collections::HashMap<String, i64>,
+    ) -> Result<Vec<SessionTokenInfo>, DbError> {
+        // 先试 V2 session_message 表
+        let v2_result = self.query_active_sessions_tokens_v2(last_archived_seqs)?;
+        if !v2_result.is_empty() {
+            return Ok(v2_result);
+        }
+
+        // V2 为空，回退 V1 message + part 表（桌面端）
+        tracing::debug!("V2 session_message 表无 token 数据，回退 V1 message + part 表");
+        self.query_active_sessions_tokens_v1(last_archived_seqs)
+    }
+
+    /// V2 路径：从 session_message 表查询 token 累积（v2.47 新增）
+    fn query_active_sessions_tokens_v2(
+        &self,
+        last_archived_seqs: &std::collections::HashMap<String, i64>,
+    ) -> Result<Vec<SessionTokenInfo>, DbError> {
+        // 查询所有 assistant 消息（含 step-finish part），按 session_id + seq 排序
+        let mut stmt = match self.conn.prepare(
+            "SELECT session_id, seq, data
+             FROM session_message
+             WHERE type = 'assistant'
+             ORDER BY session_id ASC, seq ASC",
+        ) {
+            Ok(s) => s,
+            Err(_) => {
+                // session_message 表可能不存在（老版本 OpenCode 或桌面端）
+                tracing::debug!("session_message 表查询失败，可能 OpenCode 版本过旧或为桌面端");
+                return Ok(Vec::new());
+            }
+        };
+
+        let rows = stmt.query_map([], |row| {
+            let session_id: String = row.get(0)?;
+            let seq: i64 = row.get(1)?;
+            let data_json: String = row.get(2)?;
+            Ok((session_id, seq, data_json))
+        })?;
+
+        // 按 session_id 分组，累加 token
+        let mut by_session: std::collections::HashMap<String, (i64, usize)> =
+            std::collections::HashMap::new();
+
+        for row in rows {
+            let (session_id, seq, data_json) = row?;
+            let last_archived = last_archived_seqs.get(&session_id).copied().unwrap_or(0);
+
+            // 只统计 seq > last_archived 的消息
+            if seq <= last_archived {
+                continue;
+            }
+
+            // 解析 data JSON，提取 step-finish part 的 tokens
+            let data: serde_json::Value =
+                serde_json::from_str(&data_json).unwrap_or_default();
+
+            let tokens_consumed = extract_step_finish_tokens_v2(&data);
+
+            // 更新该 session 的累积值和最新 seq
+            let entry = by_session
+                .entry(session_id)
+                .or_insert((seq, 0usize));
+            entry.0 = seq; // 更新为最新 seq（因按 seq ASC 遍历，最后的即最大）
+            entry.1 += tokens_consumed;
+        }
+
+        // 转换为 Vec<SessionTokenInfo>，过滤 accumulated_tokens == 0 的
+        let result: Vec<SessionTokenInfo> = by_session
+            .into_iter()
+            .filter(|(_, (_, tokens))| *tokens > 0)
+            .map(|(session_id, (last_seq, tokens))| SessionTokenInfo {
+                session_id,
+                last_seq,
+                accumulated_tokens: tokens,
+            })
+            .collect();
+
+        Ok(result)
+    }
+
+    /// V1 路径：从 message + part 表查询 token 累积（v2.47 新增）
+    ///
+    /// V1 的 part 表中 `type='step-finish'` 的 part 含 tokens 字段。
+    /// 通过 message_id 关联到 session_id 和 time_created（作为 seq）。
+    fn query_active_sessions_tokens_v1(
+        &self,
+        last_archived_seqs: &std::collections::HashMap<String, i64>,
+    ) -> Result<Vec<SessionTokenInfo>, DbError> {
+        // 查询所有 assistant 消息（V1 用 message 表，data 含 role）
+        let mut stmt = match self.conn.prepare(
+            "SELECT m.id, m.session_id, m.time_created, m.data
+             FROM message m
+             WHERE m.data LIKE '%\"role\":\"assistant\"%'
+             ORDER BY m.session_id ASC, m.time_created ASC, m.id ASC",
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(error = %e, "V1 message 表查询失败（tokens 路径）");
+                return Ok(Vec::new());
+            }
+        };
+
+        let rows = stmt.query_map([], |row| {
+            let msg_id: String = row.get(0)?;
+            let session_id: String = row.get(1)?;
+            let time_created: i64 = row.get(2)?;
+            Ok((msg_id, session_id, time_created))
+        })?;
+
+        // 收集所有 assistant 消息的 (session_id, time_created, msg_id)
+        let mut messages: Vec<(String, i64, String)> = Vec::new();
+        for row in rows {
+            let (msg_id, session_id, time_created) = row?;
+            messages.push((session_id, time_created, msg_id));
+        }
+
+        // 按 session_id 分组，查询每个消息的 part 表提取 step-finish tokens
+        let mut by_session: std::collections::HashMap<String, (i64, usize)> =
+            std::collections::HashMap::new();
+
+        for (session_id, time_created, msg_id) in &messages {
+            let last_archived = last_archived_seqs.get(session_id).copied().unwrap_or(0);
+
+            // V1 用 time_created 作为 seq，只统计 > last_archived 的
+            if *time_created <= last_archived {
+                continue;
+            }
+
+            // 查询该消息的 part 表，提取 step-finish tokens
+            let tokens = self.query_message_step_finish_tokens_v1(msg_id)?;
+
+            let entry = by_session
+                .entry(session_id.clone())
+                .or_insert((*time_created, 0usize));
+            entry.0 = *time_created; // 更新为最新 seq
+            entry.1 += tokens;
+        }
+
+        let result: Vec<SessionTokenInfo> = by_session
+            .into_iter()
+            .filter(|(_, (_, tokens))| *tokens > 0)
+            .map(|(session_id, (last_seq, tokens))| SessionTokenInfo {
+                session_id,
+                last_seq,
+                accumulated_tokens: tokens,
+            })
+            .collect();
+
+        Ok(result)
+    }
+
+    /// V1 路径：查询单条消息的 step-finish token 总量（v2.47 新增）
+    ///
+    /// 从 part 表查询 message_id 关联的所有 step-finish part，
+    /// 累加 tokens.input + output + reasoning。
+    fn query_message_step_finish_tokens_v1(&self, message_id: &str) -> Result<usize, DbError> {
+        let mut stmt = match self.conn.prepare(
+            "SELECT data FROM part WHERE message_id = ?1 AND data LIKE '%\"type\":\"step-finish\"%'",
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(error = %e, "V1 part 表查询失败（step-finish tokens）");
+                return Ok(0);
+            }
+        };
+
+        let rows = stmt.query_map([message_id], |row| row.get::<_, String>(0))?;
+
+        let mut total: usize = 0;
+        for row in rows {
+            let data_json = row?;
+            let data: serde_json::Value = serde_json::from_str(&data_json).unwrap_or_default();
+            total += extract_step_finish_tokens_v2(&data);
+        }
+        Ok(total)
     }
 
     /// 读取 session 中两个 seq 之间的消息（v2.39 新增，v2.40 改为 V2 优先 V1 回退）
@@ -2024,4 +2227,71 @@ impl AgentAdapter for OpenCodeDb {
     fn family(&self) -> AgentFamily {
         AgentFamily::OpenCode
     }
+
+    /// v2.47：查询活跃 session 的 token 累积值（阈值监控用）
+    fn query_active_sessions_tokens(
+        &self,
+        last_archived_seqs: &HashMap<String, i64>,
+    ) -> Result<Vec<SessionTokenInfo>, AdapterError> {
+        OpenCodeDb::query_active_sessions_tokens(self, last_archived_seqs)
+            .map_err(AdapterError::from)
+    }
+}
+
+// ============================================================================
+// v2.47 辅助函数：step-finish token 提取
+// ============================================================================
+
+/// 从 V2 消息 data 或 V1 part data 中提取 step-finish token 消耗（v2.47 新增）
+///
+/// 兼容两种 JSON 结构：
+///
+/// 1. **V2 消息 data**（session_message 表的 data 字段）：
+///    ```json
+///    { "content": [ {"type":"step-finish","tokens":{"input":100,"output":50,"reasoning":0}}, ... ] }
+///    ```
+///    遍历 content 数组，找所有 step-finish part 累加。
+///
+/// 2. **V1 part data**（part 表的 data 字段）：
+///    ```json
+///    { "type":"step-finish","tokens":{"input":100,"output":50,"reasoning":0} }
+///    ```
+///    直接检查单个 part。
+///
+/// 返回 `input + output + reasoning` 的累加值。无 step-finish part 时返回 0。
+fn extract_step_finish_tokens_v2(data: &serde_json::Value) -> usize {
+    // 情况 1：V2 消息 data，有 content 数组
+    if let Some(content) = data.get("content").and_then(|v| v.as_array()) {
+        let mut total: usize = 0;
+        for part in content {
+            if part.get("type").and_then(|v| v.as_str()) == Some("step-finish") {
+                total += sum_step_finish_tokens(part);
+            }
+        }
+        return total;
+    }
+
+    // 情况 2：V1 part data，自身就是单个 part
+    if data.get("type").and_then(|v| v.as_str()) == Some("step-finish") {
+        return sum_step_finish_tokens(data);
+    }
+
+    0
+}
+
+/// 从 step-finish part 提取 input + output + reasoning token 总和（v2.47 新增）
+///
+/// 与 v2.44 的单轮消耗定义一致：`input + output + reasoning`（非 total）。
+fn sum_step_finish_tokens(part: &serde_json::Value) -> usize {
+    let tokens = match part.get("tokens") {
+        Some(t) => t,
+        None => return 0,
+    };
+    let input = tokens.get("input").and_then(|v| v.as_i64()).unwrap_or(0);
+    let output = tokens.get("output").and_then(|v| v.as_i64()).unwrap_or(0);
+    let reasoning = tokens
+        .get("reasoning")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    (input + output + reasoning) as usize
 }

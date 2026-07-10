@@ -29,6 +29,13 @@ pub struct SidecarState {
     pub processed_message_ids: HashSet<String>,
     /// 每个 session 上次归档的 compaction seq（用于增量归档范围起点）
     pub last_archived_seq: HashMap<String, i64>,
+    /// 从服务器归档响应缓存的 token 阈值（v2.47 新增）
+    ///
+    /// 当 CLI 参数 `--token-threshold` 为 0 时，使用此缓存值。
+    /// 来源：服务器 `/pre-compress` 响应的 `threshold` 字段。
+    /// 首次为 0，归档后更新为服务器返回值。
+    #[serde(default)]
+    pub cached_threshold: usize,
 }
 
 impl SidecarState {
