@@ -1877,8 +1877,8 @@ impl MemoryCenterMcp {
         Ok(result.to_string())
     }
 
-    /// 列出所有内置 Scenario（7 个）。
-    #[tool(description = "列出所有内置 Scenario（7 个）。返回每个 Scenario 的 variant / display_name / archive_threshold。用于查询 preset_build 的 scenario 参数可选值。")]
+    /// 列出所有内置 Scenario（10 个）。
+    #[tool(description = "列出所有内置 Scenario（10 个）。返回每个 Scenario 的 variant / display_name / archive_threshold。用于查询 preset_build 的 scenario 参数可选值。")]
     async fn preset_list_scenarios(
         &self,
         Parameters(_): Parameters<NoParams>,

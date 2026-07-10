@@ -4,10 +4,10 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.88%2B-orange.svg)](https://www.rust-lang.org)
-[![Crates](https://img.shields.io/badge/Crates-17-yellow.svg)](#crate-矩阵)
+[![Crates](https://img.shields.io/badge/Crates-20-yellow.svg)](#crate-矩阵)
 [![Platforms](https://img.shields.io/badge/Platforms-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg)](#测试)
 [![MCP Tools](https://img.shields.io/badge/MCP%20Tools-21-blueviolet.svg)](#6-mcp-server-v237推荐用于-claude-code--cursor--trae--codex-cli)
-[![Bindings](https://img.shields.io/badge/Bindings-Rust%20%7C%20C%20%7C%20Python%20%7C%20Node%20%7C%20WASM-green.svg)](#接口概览)
+[![Bindings](https://img.shields.io/badge/Bindings-Rust%20%7C%20C%20%7C%20Python%20%7C%20Node%20%7C%20Java%20%7C%20Go%20%7C%20WASM-green.svg)](#接口概览)
 <br/>
 [![CI](https://github.com/LINGTIAN303/MemoryCenter/actions/workflows/ci.yml/badge.svg)](https://github.com/LINGTIAN303/MemoryCenter/actions/workflows/ci.yml)
 [![GitHub stars](https://img.shields.io/github/stars/LINGTIAN303/MemoryCenter)](https://github.com/LINGTIAN303/MemoryCenter/stargazers)
@@ -83,7 +83,7 @@ MemoryCenter 不存向量、不做语义检索、不做 Agent 编排，专注一
 - **压缩前完整归档**：`pre_compress_hook` 在客户端压缩上下文前一次性归档完整 raw_context，避免信息丢失
 - **project_memory 反向写入**：通过 `update_project_memory` 工具将 MemoryCenter 记忆主动写入 IDE 的 project_memory.md，影响下次会话的注入上下文
 - **Agent 自识别**：内置 11 个 Agent 预设（Claude Code / Cursor / Trae / Codex 等），自动识别客户端并注入对应使用协议
-- **场景自适应**：7 个内置 Scenario（coding / writing / research 等），根据场景调整归档阈值和检索策略
+- **场景自适应**：10 个内置 Scenario（coding / writing / research / agentcollaboration / knowledgebase / longproject 等），根据场景调整归档阈值和检索策略
 
 ## 架构分层
 
@@ -153,10 +153,10 @@ flowchart TB
 | `memory-center-python` | Python 原生绑定（PyO3 + maturin） | ✅ v2.2 |
 | `memory-center-mcp` | MCP Server（stdio + Streamable HTTP，21 个 tools） | ✅ v2.37 |
 | `memory-center-wasm` | WASM 组件（wasm-bindgen + MemoryStorage + JsStorage） | ✅ v2.35 |
-| `memory-center-models` | 型号库（11 个 Agent + 7 个 Scenario + ModelVariant 注册表） | ✅ v2.3 |
+| `memory-center-models` | 型号库（11 个 Agent + 10 个 Scenario + ModelVariant 注册表） | ✅ v2.3 |
 | `memory-center-presets` | 预设配置（CombinedProfile 构建 + 场景检测 + Agent 联动） | ✅ v2.3 |
 | `memory-center-agents` | Agent 预设管理（ClaudeCode / Cursor / Trae / Codex 等 11 个） | ✅ v2.3 |
-| `memory-center-scenarios` | 场景管理（coding / writing / research 等 7 个 + 优先级标签） | ✅ v2.3 |
+| `memory-center-scenarios` | 场景管理（coding / writing / research 等 10 个 + 优先级标签） | ✅ v2.3 |
 | `memory-center-llm` | LLM 集成（摘要生成 + 冲突检测 + Embedding + 场景检测） | ✅ v2.3 |
 | `memory-center-search` | 搜索引擎（BM25 + 语义检索 + session 级搜索） | ✅ v2.3 |
 | `memory-center-skills` | 技能管理（内置技能 + 记忆链接 + 技能画像） | ✅ v2.3 |
@@ -165,6 +165,9 @@ flowchart TB
 | `memory-center-node` | Node.js 绑定（napi-rs 3.x，异步 Promise API） | ✅ v2.14 |
 | `memory-center-go` | Go 绑定（cgo，v2.4+） | 🚧 计划中 |
 | `memory-center-java` | Java 绑定（JNA，v2.4+） | 🚧 计划中 |
+| `memory-center-sidecar` | OpenCode/Agent 旁路守护进程（compaction 监听 + tokens 阈值主动清空） | ✅ v2.47 |
+| `memory-center-adapter` | AgentAdapter trait 抽象层（多 Agent 适配根基，解耦 sidecar 与具体 Agent） | ✅ v2.46 |
+| `memory-center-dashboard` | mc-dashboard CLI（ratatui TUI，4 Tab：概览 / 记忆列表 / 检索 demo / 评测对比） | ✅ v2.37 |
 
 ## 文档
 
