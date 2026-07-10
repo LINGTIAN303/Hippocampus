@@ -24,6 +24,7 @@ members = [
     "crates/memory-center-wasm",
     "crates/memory-center-sidecar",
     "crates/memory-center-adapter",
+    "crates/memory-center-dashboard",
 ]
 
 [workspace.package]
@@ -100,6 +101,9 @@ wasm-bindgen-futures = "0.4"
 reqwest = { version = "0.12", features = ["json"] }
 # CLI 参数解析（v2.36 sidecar）
 clap = { version = "4.5", features = ["derive", "env"] }
+# TUI 终端界面（v2.37 dashboard）
+ratatui = "0.29"
+crossterm = "0.28"
 
 [profile.release]
 opt-level = 3

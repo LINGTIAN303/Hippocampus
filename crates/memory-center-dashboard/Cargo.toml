@@ -1,0 +1,22 @@
+[package]
+name = "memory-center-dashboard"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "MemoryCenter TUI Dashboard - 交互式终端界面"
+
+[[bin]]
+name = "mc-dashboard"
+path = "src/main.rs"
+
+[dependencies]
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+clap = { workspace = true }
+reqwest = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
