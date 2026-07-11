@@ -172,7 +172,7 @@ flowchart TB
 | `memory-center-node` | Node.js 绑定（napi-rs 3.x，异步 Promise API） | ✅ v2.14 |
 | `memory-center-go` | Go 绑定（cgo，v2.4+） | 🚧 计划中 |
 | `memory-center-java` | Java 绑定（JNA，v2.4+） | 🚧 计划中 |
-| `memory-center-sidecar` | OpenCode/Agent 旁路守护进程（compaction 监听 + tokens 阈值主动清空） | ✅ v2.47 |
+| `memory-center-sidecar` | OpenCode/Agent 旁路守护进程（compaction 事件监听 + 增量归档 + tokens 阈值监控基础设施） | ✅ v2.48 |
 | `memory-center-adapter` | AgentAdapter trait 抽象层（多 Agent 适配根基，解耦 sidecar 与具体 Agent） | ✅ v2.46 |
 | `memory-center-dashboard` | mc-dashboard CLI（ratatui TUI，4 Tab：概览 / 记忆列表 / 检索 demo / 评测对比） | ✅ v2.37 |
 

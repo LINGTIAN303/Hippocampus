@@ -60,9 +60,9 @@ mcp_memory-center.archive(
 - `threshold_ratio_percent >= 50` → 继续对话，但注意跟踪累计值
 - `< 50` → 继续对话
 
-> 你（LLM）无需感知自身 token 消耗——归档由 sidecar 真钩子自动触发。
+> 你（LLM）无需在压缩前手动调 `pre_compress_hook`——归档由 sidecar 自动完成。
 > 这里的 archive 调用是**补充手段**（可选），用于你在对话中主动归档重要节点。
-> 与闭源 Agent（Trae/Cursor）的伪钩子方案不同，OpenCode 不依赖 LLM 自感知 token。
+> sidecar 监听 OpenCode 原生 compaction 事件，在 compaction 完成后自动增量归档被压缩的上下文。
 
 ### OpenCode 压缩机制说明
 
@@ -71,7 +71,7 @@ OpenCode 有两种压缩方式（都走同一流程）：
 2. **自动压缩**：`compactIfNeeded` 在上下文接近窗口上限时自动触发
 
 压缩流程：`Compaction.Started` → LLM 生成摘要 → `Compaction.Ended`，
-OpenCode 往 `session_message` 表插入一条 `type='compaction'` 的消息。
+OpenCode 往 `message` + `part` 表（V1）或 `session_message` 表（V2）插入 compaction 消息对。
 
 **sidecar 检测到这条新消息后**，自动读取上次压缩到本次压缩之间的完整上下文，
 增量归档到 MemoryCenter。你无需在压缩前手动调 `pre_compress_hook`，

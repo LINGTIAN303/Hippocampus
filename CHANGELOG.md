@@ -2,48 +2,53 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。变更格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
-## v2.47 - 阈值监控 + 主动清空（2026-07-10）
+## v2.48 - 方案 B 回退：compaction 事件监听为稳定基线（2026-07-11）
 
-### 新增
-- **tokens 阈值监控 + 主动清空**：实现 v2.44 总方向的核心闭环——tokens 阈值监控 → sidecar 主动归档 → 插入 compaction 消息对 → OpenCode 无感清空 → LLM 调 prompt 召回记忆
-  - 核心创新：跳过 LLM 压缩步骤，直接清空 LLM 内部会话上下文，用 memory-center 归档摘要替代 LLM 压缩摘要
+### 变更
+- **回退 v2.47 主动清空逻辑**：经源码验证和实测，v2.47 的"主动清空"策略基于错误假设——OpenCode 的 `completedCompactions()` 只在 `processCompaction` 内部调用（不在 session 加载时），且 `hidden` 集合只包含 compaction 消息对本身（不包含旧消息）。sidecar 插入 compaction 消息对无法实现"无感清空"。
+  - `main.rs`：移除 tokens 阈值监控分支（约 100 行）和 `archive_token_event` 函数（约 90 行）
+  - `main.rs`：注释掉 `mod opencode_writer`（文件保留，供未来探索复用）
+  - 保留 `config.rs`/`watcher.rs`/`state.rs` 中的 tokens 阈值监控基础设施（`poll_tokens`/`mark_proactive_archived`/`cached_threshold`/CLI 参数等），作为方案 A/C 探索的复用基础
 
-#### 阶段 1：AgentAdapter trait 扩展（tokens 监控根基）
-- `adapter/src/record.rs`：新增 `SessionTokenInfo` 结构体（session_id / last_seq / accumulated_tokens）
-- `AgentAdapter` trait 新增第 5 个方法 `query_active_sessions_tokens()`，查询活跃 session 从 `last_archived_seq` 到最新 seq 之间的 token 累积值
-- `opencode_db.rs`：实现 V2 优先 V1 回退的 token 查询逻辑（step-finish part 的 input + output + reasoning）
-- 新增 `extract_step_finish_tokens_v2` 辅助函数，兼容 V2 消息 data 和 V1 part data 两种 JSON 结构
+### 当前稳定能力（方案 B）
+- sidecar 监听 OpenCode 原生 compaction 事件（`/compact` 命令或 `isOverflow` 自动触发）
+- 检测到新 compaction 消息后，读取上次归档到本次 compaction 之间的完整上下文，增量归档到 MemoryCenter
+- 归档内容包含结构化 turns（tool_calls / thinking / 17 种标签）
+- LLM 可通过 `prompt` 工具召回历史记忆
 
-#### 阶段 2：主动归档（sidecar watcher 扩展）
-- `watcher.rs`：新增 `poll_tokens()` 方法 + `TokenThresholdEvent` 结构体，阈值解析优先级：CLI 参数 > 服务器缓存 > 默认 120000
-- 触发条件：`accumulated_tokens >= threshold * ratio_percent / 100`（默认 ratio=80%）
-- `config.rs`：新增 3 个参数 `--token-threshold`（默认 0=从服务器获取）/ `--token-trigger-ratio`（默认 80）/ `--tail-turns`（默认 2）
-- `state.rs`：新增 `cached_threshold` 字段，缓存服务器归档响应的 threshold
-- `main.rs`：主循环新增 tokens 阈值监控分支 + `archive_token_event` 函数
+### 未来方向（搁置中）
+- **形式 2（Patch 文件）**：维护一个 OpenCode 源码 patch，修改 `compaction.ts` 使其在遇到 sidecar compaction 消息对时主动执行 `select()` 过滤旧消息
+- **形式 4（提 PR）**：向 `sst/opencode` 提交 PR，新增 `experimental.chat.messages.filter` 插件 hook，允许插件在正常对话主循环中过滤消息
 
-#### 阶段 3：插入 compaction 消息对（OpenCode DB 写入）
-- 新建 `opencode_writer.rs` 模块：
-  - `insert_compaction_pair()`：插入 user 触发消息 + assistant 摘要消息，让 OpenCode 下次加载时通过 `completedCompactions()` 将旧消息加入 hidden 集合（无感清空）
-  - `query_tail_start_id()`：查询保留尾部的起始消息 ID（默认保留最近 2 轮）
-  - 使用独立可写连接（`SQLITE_OPEN_READ_WRITE`），与 OpenCodeDb 只读连接分离
-  - 使用事务确保 4 条 INSERT 原子插入
-- compaction 消息对结构（V1 message+part 表）：
-  - 消息 A：part.data 含 `{type:"compaction", auto:false, tail_start_id}`
-  - 消息 B：message.data 含 `{mode:"compaction", summary:true}`，part.data 含 `{type:"text", text:"摘要内容"}`
+## v2.47 - tokens 阈值监控基础设施 + 主动清空探索（2026-07-10）
 
-#### 阶段 4：钩子召回规则
-- `AGENTS.md`：新增第 6.5 节"OpenCode 主动清空后：调 prompt 召回记忆"，引导 LLM 检测 MemoryCenter 主动归档信号时调用 prompt 工具
+> ⚠️ **注意**：v2.47 实现的"主动清空"策略已在 v2.48 回退。以下记录保留作为历史参考。
+> 核心问题是假设 `completedCompactions()` 会在 session 加载时识别 sidecar 插入的 compaction 消息对并隐藏旧消息，
+> 但源码验证发现该函数只在 `processCompaction` 内部调用，且 `hidden` 集合不包含旧消息。
 
-### 主动归档与 compaction 事件协调
-主动归档先更新 `last_archived_seq`，若 OpenCode 随后也触发 compaction，增量范围为空则跳过（`archive_token_event` 中检查 `turns.is_empty()`）
+### 新增（tokens 阈值监控基础设施 — 仍保留）
+- **AgentAdapter trait 扩展**：新增 `query_active_sessions_tokens()` 方法，查询活跃 session 从 `last_archived_seq` 到最新 seq 之间的 token 累积值
+  - `adapter/src/record.rs`：新增 `SessionTokenInfo` 结构体（session_id / last_seq / accumulated_tokens）
+  - `opencode_db.rs`：实现 V2 优先 V1 回退的 token 查询逻辑（step-finish part 的 input + output + reasoning）
+  - 新增 `extract_step_finish_tokens_v2` 辅助函数，兼容 V2 消息 data 和 V1 part data 两种 JSON 结构
+- **sidecar watcher 扩展**：新增 `poll_tokens()` 方法 + `TokenThresholdEvent` 结构体，阈值解析优先级：CLI 参数 > 服务器缓存 > 默认 120000
+  - 触发条件：`accumulated_tokens >= threshold * ratio_percent / 100`（默认 ratio=80%）
+  - `config.rs`：新增 3 个参数 `--token-threshold` / `--token-trigger-ratio` / `--tail-turns`
+  - `state.rs`：新增 `cached_threshold` 字段，缓存服务器归档响应的 threshold
 
-### 影响
-- 8 个修改文件 + 1 个新文件，+693/-4 行
-- 端到端测试验证通过（2026-07-10）：tokens 阈值监控 → 主动归档 → compaction 消息对插入 → OpenCode 无感清空 → prompt 召回，全链路打通
-- 已部署到服务器（162.211.183.236），systemctl 确认 active running
+### 已回退（主动清空逻辑 — v2.48 移除）
+- ~~`main.rs`：主循环 tokens 阈值监控分支 + `archive_token_event` 函数~~
+- ~~`opencode_writer.rs`：`insert_compaction_pair()` 插入 compaction 消息对~~
+- ~~`AGENTS.md`：第 6.5 节"OpenCode 主动清空后：调 prompt 召回记忆"~~
 
-### 修复
-- `config.opencode_db` 未回填导致 compaction 消息对插入被跳过（commit d310ee7）。用户不传 `--opencode-db` 时走默认路径，config.opencode_db 为 None，主循环中插入分支被跳过。修复：在 `match config.agent` 之前调用 `resolve_db_path()` 并回填到 `config.opencode_db`
+### 全链路风险修复（v2.48 仍保留）
+- `opencode_writer.rs`：assistant 消息补全 `finish:"stop"` / `modelID` / `providerID` / `path` / `variant` / `sessionID` 必填字段
+- `opencode_writer.rs`：连接打开后增加 `busy_timeout(5s)`
+- `opencode_writer.rs`：`query_tail_start_id` SQL 改用 `json_extract` 替代 `LIKE`
+- `main.rs`：`archive_compaction_event` 在 turns 读取后增加空检查
+- `main.rs`：新增 DB schema 变化检测（`db_schema_tag` 持久化 + 不一致时重置状态）
+- `opencode_db.rs`：V2/V1 路径在 step-finish tokens 为 0 时用 `data_json.len() / 3` fallback 估算
+- `docs/onboarding/opencode.md`：修正 3 处 Windows 路径错误（`%APPDATA%` → `~/.local/share/opencode` / `~/.config/opencode`）
 
 ## v2.46 - adapter trait 抽象层（2026-07-09）
 
