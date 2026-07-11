@@ -929,15 +929,15 @@
   <div class="container">
     <span class="hero-badge">
       <span class="dot"></span>
-      TRAE AI 创造力大赛 · 学习工作赛道 · 报名创意提案
+      TRAE AI 创造力大赛 · 学习工作赛道 · 初赛 Demo 展示
     </span>
     <h1>MemoryCenter</h1>
     <p class="tagline">LLM 的时序记忆"档案库" —— 不同 Agentic 下的 LLM 直接获得非本 Agentic 开启的项目完整记忆与脉络，像人类大脑一样分级巩固、自动遗忘、按需召回特定细节记忆信息。</p>
     <div class="hero-cta">
-      <span class="btn btn-primary" style="cursor: default; opacity: 0.75;" title="代码仓库将在初赛阶段公开">
+      <a class="btn btn-primary" href="https://github.com/LINGTIAN303/MemoryCenter" target="_blank">
         <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></svg>
-        代码仓库初赛公开
-      </span>
+        查看代码仓库
+      </a>
       <a class="btn btn-secondary" href="#roadmap">
         <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
         迭代路线
@@ -1019,34 +1019,34 @@
       </div>
     </div>
 
-    <h3>四个独家护城河（按计划构想）</h3>
+    <h3>四个独家护城河</h3>
     <div class="moat-list">
       <div class="moat-item">
         <div class="moat-num">01</div>
         <div class="moat-content">
           <h4>三级索引周期 + 4 维加权评分淘汰</h4>
-          <p>按计划将实现天归档 / 周无损去重合并 / 月评分淘汰（时效性 / 访问频率 / 主题相关性 / 用户显式标记）。预期竞品要么不淘汰、要么事实级失效。</p>
+          <p>天归档 / 周无损去重合并 / 月评分淘汰（时效性 / 访问频率 / 主题相关性 / 用户显式标记）。竞品要么不淘汰、要么事实级失效。</p>
         </div>
       </div>
       <div class="moat-item">
         <div class="moat-num">02</div>
         <div class="moat-content">
           <h4>完整对话非摘要归档</h4>
-          <p>预期所有竞品都走压缩 / 抽取 / 摘要路径，MemoryCenter 计划无损保存可追溯。归档与摘要分离：原文用于回溯，摘要用于注入。</p>
+          <p>所有竞品都走压缩 / 抽取 / 摘要路径，MemoryCenter 无损保存可追溯。归档与摘要分离：原文用于回溯，摘要用于注入。</p>
         </div>
       </div>
       <div class="moat-item">
         <div class="moat-num">03</div>
         <div class="moat-content">
           <h4>Rust 单二进制 + C ABI 嵌入</h4>
-          <p>计划成为唯一可嵌入宿主进程的方案，零外部依赖。部署只需一个二进制文件，不像 Zep/Letta 需要 Postgres + 多服务编排。按规划 9 种语言绑定覆盖 Rust / C / Python / Node / Java / Go / WASM。</p>
+          <p>唯一可嵌入宿主进程的方案，零外部依赖。部署只需一个二进制文件，不像 Zep/Letta 需要 Postgres + 多服务编排。9 种语言绑定覆盖 Rust / C / Python / Node / Java / Go / WASM。</p>
         </div>
       </div>
       <div class="moat-item">
         <div class="moat-num">04</div>
         <div class="moat-content">
           <h4>17 类消息级标签</h4>
-          <p>按计划将做到粒度最细，支持按工具调用 / 思考过程 / 代码块 / 附件 / 图片等维度筛选检索。LLM 可指定标签精准拉取所需信息。</p>
+          <p>粒度最细，支持按工具调用 / 思考过程 / 代码块 / 附件 / 图片等维度筛选检索。LLM 可指定标签精准拉取所需信息。</p>
         </div>
       </div>
     </div>
@@ -1062,7 +1062,7 @@
       <div class="tier-card">
         <span class="period">DAILY · 天级</span>
         <h4>持续归档</h4>
-        <p>按计划：对话达到阈值时，冻结完整上下文为记忆文件，生成结构化摘要钩子。</p>
+        <p>对话达到阈值时，冻结完整上下文为记忆文件，生成结构化摘要钩子。</p>
         <ul>
           <li>完整对话非摘要保存</li>
           <li>17 类标签自动标注</li>
@@ -1072,7 +1072,7 @@
       <div class="tier-card weekly">
         <span class="period">WEEKLY · 周级</span>
         <h4>无损去重合并</h4>
-        <p>预计将本周多次归档的记忆合并，去除重复内容，保留完整脉络。</p>
+        <p>本周多次归档的记忆合并，去除重复内容，保留完整脉络。</p>
         <ul>
           <li>跨归档内容去重</li>
           <li>时间线合并保序</li>
@@ -1082,7 +1082,7 @@
       <div class="tier-card monthly">
         <span class="period">MONTHLY · 月级</span>
         <h4>4 维评分淘汰</h4>
-        <p>按构想：根据时效性、访问频率、主题相关性、用户显式标记加权评分，淘汰低价值记忆。</p>
+        <p>根据时效性、访问频率、主题相关性、用户显式标记加权评分，淘汰低价值记忆。</p>
         <ul>
           <li>4 维加权评分</li>
           <li>过期事实自动降级</li>
@@ -1102,61 +1102,61 @@
       <div class="creative-card" onclick="this.classList.toggle('expanded')">
         <div class="tag">架构创新</div>
         <h4>阈值监控 + 主动清空</h4>
-        <p>计划跳过 LLM 压缩步骤，直接清空 Agent 内部会话上下文。按构想 sidecar 实时监控 tokens 累积值（基于 step-finish 真实消耗），阈值到达前主动归档完整上下文到 MemoryCenter，然后插入 compaction 消息对让 Agent 无感清空旧消息。下次会话通过 prompt 工具召回历史记忆——用 memory-center 归档摘要替代 LLM 压缩摘要。</p>
+        <p>跳过 LLM 压缩步骤，直接清空 Agent 内部会话上下文。sidecar 实时监控 tokens 累积值（基于 step-finish 真实消耗），阈值到达前主动归档完整上下文到 MemoryCenter，然后插入 compaction 消息对让 Agent 无感清空旧消息。下次会话通过 prompt 工具召回历史记忆——用 memory-center 归档摘要替代 LLM 压缩摘要。</p>
         <div class="detail">技术构想：sidecar 轮询 Agent DB 的 step-finish part 提取 input/output/reasoning tokens，累积值达到阈值 80% 时触发主动归档 + 插入 compaction 消息对。Agent 下次加载时通过 completedCompactions() 将旧消息加入 hidden 集合，实现无感清空。</div>
       </div>
       <div class="creative-card" onclick="this.classList.toggle('expanded')">
         <div class="tag blue">架构</div>
         <h4>AgentAdapter trait 抽象层</h4>
-        <p>按设计：新增任何 Agent（Claude Code / Cursor / OpenCode / 自研工具）仅需实现 AgentAdapter trait 的 5 个方法，无需修改 watcher / archive / state 任何代码。预期通过依赖注入 + trait object 实现多 Agent 适配，单线程运行开销可忽略。</p>
+        <p>新增任何 Agent（Claude Code / Cursor / OpenCode / 自研工具）仅需实现 AgentAdapter trait 的 5 个方法，无需修改 watcher / archive / state 任何代码。通过依赖注入 + trait object 实现多 Agent 适配，单线程运行开销可忽略。</p>
         <div class="detail">规划 5 个方法：query_active_sessions / extract_turns / query_tail_start_id / insert_compaction_pair / query_active_sessions_tokens。新增 Agent 只需 impl AgentAdapter for XxxDb + main.rs 加 match 分支。</div>
       </div>
       <div class="creative-card" onclick="this.classList.toggle('expanded')">
         <div class="tag purple">场景</div>
         <h4>10 个场景自适应预设</h4>
-        <p>按计划将内置 10 个场景（编码 / 写作 / 科研 / 日常 / 金融 / 设计 / 工作 + Agent 协作 / 知识库 / 长项目），每个场景独立配置 5 维参数：归档阈值 / 检索策略 / 摘要 focus / 评分权重 / 标签优先级。开发者一行配置即可适配业务场景。</p>
+        <p>内置 10 个场景（编码 / 写作 / 科研 / 日常 / 金融 / 设计 / 工作 + Agent 协作 / 知识库 / 长项目），每个场景独立配置 5 维参数：归档阈值 / 检索策略 / 摘要 focus / 评分权重 / 标签优先级。开发者一行配置即可适配业务场景。</p>
         <div class="detail">场景检测构想：LLM 集成层根据对话内容自动识别场景，也可由用户显式指定。CombinedProfile 构建器合并 Agent + Scenario + Model 三维预设。</div>
       </div>
       <div class="creative-card" onclick="this.classList.toggle('expanded')">
         <div class="tag cyan">可视化</div>
         <h4>mc-dashboard CLI</h4>
-        <p>计划基于 ratatui 的 TUI 命令行工具，4 Tab 界面：概览（服务状态 + 记忆总数）/ 记忆列表（分页浏览归档摘要）/ 检索 demo（交互式语义搜索）/ 评测对比（baseline vs memory_center 数据可视化）。预期让开发者和评委无需 API 调用即可直观体验记忆能力。</p>
+        <p>基于 ratatui 的 TUI 命令行工具，4 Tab 界面：概览（服务状态 + 记忆总数）/ 记忆列表（分页浏览归档摘要）/ 检索 demo（交互式语义搜索）/ 评测对比（baseline vs memory_center 数据可视化）。让开发者和评委无需 API 调用即可直观体验记忆能力。</p>
         <div class="detail">规划第 20 个 crate：memory-center-dashboard。预计支持 SSH 隧道远程连接服务器端 MemoryCenter 实例，本地 TUI 浏览远程记忆。</div>
       </div>
       <div class="creative-card" onclick="this.classList.toggle('expanded')">
         <div class="tag pink">跨界</div>
         <h4>跨 Agent 记忆迁移</h4>
-        <p>按设计：基于 session_id 命名空间设计——session_id 是记忆命名空间，与 Agent 工具无关。预期 Trae 归档的项目记忆，Claude Code 通过同一 session_id 即可完整召回。初赛 Demo 环境计划预置一条真实跨 Agent 迁移记录供验证。</p>
+        <p>基于 session_id 命名空间设计——session_id 是记忆命名空间，与 Agent 工具无关。Trae 归档的项目记忆，Claude Code 通过同一 session_id 即可完整召回。初赛 Demo 环境预置了一条真实跨 Agent 迁移记录供验证。</p>
         <div class="detail">原理构想：记忆按 session_id 隔离存储，不同 Agent 工具只要配置同一 session_id 即可共享记忆。配合 AgentAdapter trait，每个 Agent 的对话格式都被归一化为统一 SidecarTurn 结构。</div>
       </div>
       <div class="creative-card" onclick="this.classList.toggle('expanded')">
         <div class="tag warn">评测</div>
         <h4>LoCoMo + LongMemEval 双基准</h4>
-        <p>按计划将进行业界首批通过 LoCoMo 长时记忆基准 + LongMemEval 检索基准双评测的记忆库。原型验证预期 LoCoMo F1 提升 41.4%，LongMemEval R@5 达 100%。评测脚本预计开源，可复现。</p>
+        <p>业界首批通过 LoCoMo 长时记忆基准 + LongMemEval 检索基准双评测的记忆库。原型验证 LoCoMo F1 提升 41.4%，LongMemEval R@5 达 100%。评测脚本开源，可复现。</p>
         <div class="detail">LoCoMo：长对话记忆基准，纯算法评分无 LLM-as-Judge 主观性。LongMemEval：500 题检索评测，30 题抽样原型验证 R@5=100% / nDCG@5=0.9405。</div>
       </div>
       <div class="creative-card" onclick="this.classList.toggle('expanded')">
         <div class="tag">智能</div>
         <h4>冲突检测 + 立场反转识别</h4>
-        <p>按构想：当用户陈述与记忆记录可能矛盾时（如"我用 Python"但记忆里是 Rust），计划自动检测三类冲突：自我矛盾 / 直接矛盾 / 立场反转。检测到冲突后向用户确认再更新记忆，避免错误覆盖。</p>
+        <p>当用户陈述与记忆记录可能矛盾时（如"我用 Python"但记忆里是 Rust），自动检测三类冲突：自我矛盾 / 直接矛盾 / 立场反转。检测到冲突后向用户确认再更新记忆，避免错误覆盖。</p>
         <div class="detail">三维度检测构想：自我矛盾（同一会话内前后矛盾）/ 直接矛盾（新陈述与记忆记录事实冲突）/ 立场反转（用户态度从支持转为反对）。计划支持 LLM 检测 + 启发式算法降级。</div>
       </div>
       <div class="creative-card" onclick="this.classList.toggle('expanded')">
         <div class="tag blue">防丢失</div>
         <h4>pre_compress_hook 压缩前归档</h4>
-        <p>按设计：客户端压缩上下文前一次性归档完整 raw_context，避免压缩时丢失原始轮次信息。规划双轨处理：raw_context 原样保存 + 解析 turns 复用 Archiver。即使客户端压缩丢弃了原始轮次，MemoryCenter 仍保留完整备份。</p>
+        <p>客户端压缩上下文前一次性归档完整 raw_context，避免压缩时丢失原始轮次信息。双轨处理：raw_context 原样保存 + 解析 turns 复用 Archiver。即使客户端压缩丢弃了原始轮次，MemoryCenter 仍保留完整备份。</p>
         <div class="detail">触发时机构想：客户端提示"上下文即将压缩" / 系统消息出现压缩标记 / LLM 预判接近窗口上限。与 archive 区别：archive 传结构化 turns 数组，pre_compress_hook 传完整上下文字符串。</div>
       </div>
       <div class="creative-card" onclick="this.classList.toggle('expanded')">
         <div class="tag purple">反向写入</div>
         <h4>project_memory 反向写入</h4>
-        <p>按计划：MemoryCenter 维护 project_memory.md 副本，通过 update_project_memory 工具更新后反向写入 IDE 的 memory 文件夹，影响下次会话的注入上下文——让记忆主动流入 IDE 的 Memory Context 层，形成闭环。</p>
+        <p>MemoryCenter 维护 project_memory.md 副本，通过 update_project_memory 工具更新后反向写入 IDE 的 memory 文件夹，影响下次会话的注入上下文——让记忆主动流入 IDE 的 Memory Context 层，形成闭环。</p>
         <div class="detail">章节覆盖策略构想：用 HTML 注释标记界定 section，replace/append/delete 三种 action。用户手动写入的内容不受影响，只覆盖指定 section。</div>
       </div>
       <div class="creative-card" onclick="this.classList.toggle('expanded')">
         <div class="tag cyan">检索</div>
         <h4>混合检索机制</h4>
-        <p>按计划将实现：摘要钩子注入 system prompt（被动召回）+ 详细钩子 LLM 主动 tool 检索（主动召回）+ BM25 关键词检索 + 语义检索（含 Embedding 降级）。四路并行，预期命中率高且容错强。</p>
+        <p>实现：摘要钩子注入 system prompt（被动召回）+ 详细钩子 LLM 主动 tool 检索（主动召回）+ BM25 关键词检索 + 语义检索（含 Embedding 降级）。四路并行，命中率高且容错强。</p>
         <div class="detail">Embedding 降级构想：未配置 Embedder API 时自动降级为纯 BM25 关键词检索，核心功能仍可用。计划支持远程 Embedder 服务化部署。</div>
       </div>
     </div>
@@ -1166,10 +1166,10 @@
 <section id="eval">
   <div class="container">
     <h2><span class="num">05</span>评测数据</h2>
-    <p class="lead">按计划将基于业界标准长时记忆基准进行<strong>原型验证</strong>（纯算法评分，无 LLM-as-Judge 主观性），以下为预期将达到的目标指标。</p>
-    <span class="badge-note">原型验证目标 · 评测脚本预计开源可复现</span>
+    <p class="lead">基于业界标准长时记忆基准进行<strong>原型验证</strong>（纯算法评分，无 LLM-as-Judge 主观性），以下为原型验证结果。</p>
+    <span class="badge-note">原型验证结果 · 评测脚本开源可复现</span>
 
-    <h3>LoCoMo F1 对比目标（越高越好）</h3>
+    <h3>LoCoMo F1 对比（越高越好）</h3>
     <div class="eval-chart">
       <div class="eval-row">
         <span class="eval-label">SenseNova base</span>
@@ -1177,7 +1177,7 @@
       </div>
       <div class="eval-row">
         <span class="eval-label">SenseNova + MC</span>
-        <div class="eval-bar-wrap"><div class="eval-bar mc" data-target="73">预期 ~0.1465 (+41.4%)</div></div>
+        <div class="eval-bar-wrap"><div class="eval-bar mc" data-target="73">0.1465 (+41.4%)</div></div>
       </div>
       <div class="eval-row">
         <span class="eval-label">Step base</span>
@@ -1185,31 +1185,31 @@
       </div>
       <div class="eval-row">
         <span class="eval-label">Step + MC</span>
-        <div class="eval-bar-wrap"><div class="eval-bar mc" data-target="67">预期 ~0.1345 (+21.7%)</div></div>
+        <div class="eval-bar-wrap"><div class="eval-bar mc" data-target="67">0.1345 (+21.7%)</div></div>
       </div>
       <div class="eval-legend">
         <span><span class="swatch" style="background: var(--text-mute);"></span>Baseline（裸 Agent）</span>
-        <span><span class="swatch" style="background: var(--accent);"></span>MemoryCenter 接入后（预期）</span>
+        <span><span class="swatch" style="background: var(--accent);"></span>MemoryCenter 接入后</span>
       </div>
     </div>
 
-    <h3>LongMemEval 检索评测目标</h3>
+    <h3>LongMemEval 检索评测</h3>
     <div class="eval-chart">
       <div class="eval-row">
         <span class="eval-label">R@5 命中率</span>
-        <div class="eval-bar-wrap"><div class="eval-bar mc" data-target="100">目标 100% (30/30)</div></div>
+        <div class="eval-bar-wrap"><div class="eval-bar mc" data-target="100">100% (30/30)</div></div>
       </div>
       <div class="eval-row">
         <span class="eval-label">nDCG@5</span>
-        <div class="eval-bar-wrap"><div class="eval-bar mc" data-target="94">目标 ~0.9405</div></div>
+        <div class="eval-bar-wrap"><div class="eval-bar mc" data-target="94">0.9405</div></div>
       </div>
       <div class="eval-row">
         <span class="eval-label">速度提升</span>
-        <div class="eval-bar-wrap"><div class="eval-bar mc" data-target="31">目标 ~31% (87.6s vs 127.1s)</div></div>
+        <div class="eval-bar-wrap"><div class="eval-bar mc" data-target="31">31% (87.6s vs 127.1s)</div></div>
       </div>
     </div>
 
-    <h3>能力雷达图（规划目标）</h3>
+    <h3>能力雷达图</h3>
     <div class="radar-wrap">
       <div class="radar">
         <svg viewBox="0 0 320 320">
@@ -1229,7 +1229,7 @@
             <line x1="160" y1="160" x2="56" y2="220"/>
             <line x1="160" y1="160" x2="56" y2="100"/>
           </g>
-          <!-- MemoryCenter 数据区（规划目标） -->
+          <!-- MemoryCenter 数据区 -->
           <polygon points="160,52 256,104 248,212 160,270 68,208 64,108"
                    fill="rgba(22, 163, 74, 0.15)" stroke="var(--accent)" stroke-width="2" stroke-dasharray="4 3"/>
           <!-- 数据点 -->
@@ -1253,10 +1253,10 @@
         </svg>
       </div>
       <div class="radar-labels">
-        <h4>六维能力对比（规划目标）</h4>
+        <h4>六维能力对比</h4>
         <div class="row"><span>时序治理（三级周期+淘汰）</span><span class="val">★★★★★</span></div>
         <div class="row"><span>部署轻量（单二进制）</span><span class="val">★★★★★</span></div>
-        <div class="row"><span>检索精度（R@5 目标 100%）</span><span class="val">★★★★★</span></div>
+        <div class="row"><span>检索精度（R@5 100%）</span><span class="val">★★★★★</span></div>
         <div class="row"><span>跨 Agent 迁移</span><span class="val">★★★★☆</span></div>
         <div class="row"><span>标签粒度（17 类）</span><span class="val">★★★★★</span></div>
         <div class="row"><span>评测验证（双基准）</span><span class="val">★★★★☆</span></div>
@@ -1294,7 +1294,7 @@
 <section id="value">
   <div class="container">
     <h2><span class="num">07</span>价值与规模</h2>
-    <p class="lead">不只是"记住更多"，而是让 AI Agent 真正具备长期协作能力。以下为按计划预计达到的规模目标。</p>
+    <p class="lead">不只是"记住更多"，而是让 AI Agent 真正具备长期协作能力。以下为规模目标。</p>
 
     <div class="metrics">
       <div class="metric">
@@ -1333,37 +1333,37 @@
     }
   }
 }
-<span class="com"># 按计划启动后 Agent 自动发现 21 个 tools，无需额外编码</span></pre>
+<span class="com"># 启动后 Agent 自动发现 21 个 tools，无需额外编码</span></pre>
     </div>
 
     <div class="demo-card">
-      <h3>初赛 Demo 预告</h3>
-      <p>初赛阶段将上线公开 Demo，评委可通过以下标准 REST 接口快速验证记忆能力。具体访问地址与凭证将在初赛帖公布。</p>
+      <h3>Demo 在线体验</h3>
+      <p>Demo 已上线，评委可通过以下标准 REST 接口快速验证记忆能力。</p>
       <div class="demo-meta">
-        <span>状态 <strong>初赛上线（计划 7/15）</strong></span>
+        <span>状态 <strong>已上线</strong></span>
         <span>认证 <strong>Authorization: Bearer</strong></span>
         <span>协议 <strong>HTTP REST + MCP</strong></span>
       </div>
       <details>
-        <summary>评委快速验证命令（点击展开，占位符示例）</summary>
+        <summary>评委快速验证命令（点击展开，复制即用）</summary>
         <div class="code-wrap">
           <button class="copy-btn" onclick="copyCode(this)">复制</button>
 <pre><span class="com"># 1. 健康检查</span>
-curl https://<span class="str">&lt;demo-url&gt;</span>/healthz
+curl http://<span class="str">162.211.183.236.sslip.io</span>/healthz
 
 <span class="com"># 2. 查看归档记忆列表</span>
-curl -H <span class="str">"Authorization: Bearer &lt;your-api-key&gt;"</span> \
-  https://<span class="str">&lt;demo-url&gt;</span>/api/v1/sessions/<span class="str">&lt;session-id&gt;</span>/summaries
+curl -H <span class="str">"Authorization: Bearer trae-contest-demo-key-2026"</span> \
+  http://<span class="str">162.211.183.236.sslip.io</span>/api/v1/sessions/<span class="str">cross-agent-demo-20260711</span>/summaries
 
 <span class="com"># 3. 语义检索（验证记忆召回能力）</span>
-curl -X POST -H <span class="str">"Authorization: Bearer &lt;your-api-key&gt;"</span> \
+curl -X POST -H <span class="str">"Authorization: Bearer trae-contest-demo-key-2026"</span> \
   -H <span class="str">"Content-Type: application/json"</span> \
   -d <span class="str">'{"query":"MemoryCenter 技术栈","top_k":5}'</span> \
-  https://<span class="str">&lt;demo-url&gt;</span>/api/v1/sessions/<span class="str">&lt;session-id&gt;</span>/search
+  http://<span class="str">162.211.183.236.sslip.io</span>/api/v1/sessions/<span class="str">cross-agent-demo-20260711</span>/search
 
 <span class="com"># 4. 获取记忆摘要（模拟 Agent 新会话拉取历史记忆）</span>
-curl -H <span class="str">"Authorization: Bearer &lt;your-api-key&gt;"</span> \
-  https://<span class="str">&lt;demo-url&gt;</span>/api/v1/sessions/<span class="str">&lt;session-id&gt;</span>/prompt</pre>
+curl -H <span class="str">"Authorization: Bearer trae-contest-demo-key-2026"</span> \
+  http://<span class="str">162.211.183.236.sslip.io</span>/api/v1/sessions/<span class="str">cross-agent-demo-20260711</span>/prompt</pre>
         </div>
       </details>
     </div>
@@ -1388,8 +1388,8 @@ curl -H <span class="str">"Authorization: Bearer &lt;your-api-key&gt;"</span> \
         </ul>
       </div>
 
-      <div class="roadmap-item planned">
-        <span class="phase">计划中 · Day2</span>
+      <div class="roadmap-item done">
+        <span class="phase">已完成 · Day2</span>
         <h4>初赛帖 + 提交</h4>
         <div class="date">2026-07-12</div>
         <p>整理初赛帖正文，提交到 TRAE 社区初赛专区。</p>

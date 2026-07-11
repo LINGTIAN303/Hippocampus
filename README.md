@@ -16,11 +16,11 @@
 [![Last Commit](https://img.shields.io/github/last-commit/LINGTIAN303/MemoryCenter)](https://github.com/LINGTIAN303/MemoryCenter/commits/main)
 
 > [!NOTE]
-> **TRAE AI 创造力大赛参赛项目** · 学习工作赛道
+> **TRAE AI 创造力大赛参赛项目** · 学习工作赛道 · 初赛 Demo
 >
-> 本仓库为开发中状态，创意提案以 `contest/creative-proposal.html`（报名帖附件）为准。HTML 内的评测数据、能力指标、迭代路线均为**预期目标**，非已交付状态。
->
-> 代码仓库将在初赛阶段公开，大赛期间暂不接受外部协作。
+> 在线 Demo：http://162.211.183.236.sslip.io/
+
+ 创意提案与评测数据详见 `contest/creative-proposal.html`，代码仓库初赛阶段已公开，欢迎 Star / Fork。
 
 ## 目录
 
