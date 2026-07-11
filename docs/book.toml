@@ -22,6 +22,9 @@ edit-url-template = "https://github.com/LINGTIAN303/MemoryCenter/edit/main/docs/
 additional-css = []
 additional-js = []
 no-section-label = false
+# 站点 favicon（位于 docs/src/favicon.png，构建时会被复制到站点根目录）
+site-url = "/MemoryCenter/"
+favicon = "favicon.png"
 
 # 启用搜索功能
 [output.html.search]

@@ -1,3 +1,7 @@
+<p align="center">
+  <img src=".github/assets/logo.png" alt="MemoryCenter Logo" width="200">
+</p>
+
 # MemoryCenter
 
 > Agent 记忆库依赖库 —— 跨语言可引用的持久化高效完整记忆系统
