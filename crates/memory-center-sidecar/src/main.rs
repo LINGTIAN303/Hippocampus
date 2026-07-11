@@ -42,7 +42,8 @@
 
 mod config;
 mod opencode_db;
-mod opencode_writer;
+// v2.48：方案 B 回退 — opencode_writer 暂不启用（方案 A/C 探索时恢复）
+// mod opencode_writer;
 mod archive;
 mod state;
 mod watcher;
@@ -52,7 +53,7 @@ use config::SidecarConfig;
 use opencode_db::OpenCodeDb;
 use archive::{ArchiveClient, SidecarContent, SidecarTurn};
 use state::{resolve_state_path, SidecarState};
-use watcher::{CompactionChangeEvent, CompactionWatcher, TokenThresholdEvent};
+use watcher::{CompactionChangeEvent, CompactionWatcher};
 // v2.46：AgentAdapter trait 用于动态分发
 use memory_center_adapter::AgentAdapter;
 
@@ -300,101 +301,11 @@ async fn main() {
             }
         }
 
-        // v2.47：tokens 阈值监控（主动归档 + 清空）
-        // 检查每个活跃 session 的 token 累积值，达到阈值时主动归档
-        let token_events = match watcher.poll_tokens(
-            db.as_ref(),
-            config.token_threshold,
-            config.token_trigger_ratio,
-        ) {
-            Ok(events) => events,
-            Err(e) => {
-                tracing::warn!(error = %e, "tokens 阈值监控轮询失败，等待下次重试");
-                continue;
-            }
-        };
-
-        let mut had_proactive = false;
-        for event in token_events {
-            match archive_token_event(db.as_ref(), &archive_client, &event, &config).await {
-                Ok(()) => {
-                    // 主动归档成功，更新 last_archived_seq
-                    watcher.mark_proactive_archived(&event.session_id, event.last_seq);
-                    had_proactive = true;
-
-                    // v2.47 阶段 3：插入 compaction 消息对（主动清空）
-                    // 让 OpenCode 下次加载时跳过旧消息，无需 LLM 压缩
-                    if let Some(db_path) = &config.opencode_db {
-                        match opencode_writer::query_tail_start_id(
-                            db_path,
-                            &event.session_id,
-                            config.tail_turns,
-                        ) {
-                            Ok(tail_start_id) => {
-                                // 用 memory-center 归档摘要作为 compaction summary
-                                let summary = format!(
-                                    "MemoryCenter 主动归档（tokens={}/threshold={}）\n\n\
-                                    上下文已归档到 MemoryCenter，请调用 \
-                                    mcp_memory-center.prompt(session_id) 获取历史记忆。",
-                                    event.accumulated_tokens, event.threshold
-                                );
-
-                                match opencode_writer::insert_compaction_pair(
-                                    db_path,
-                                    &event.session_id,
-                                    &summary,
-                                    &tail_start_id,
-                                    "memory_center_proactive",
-                                ) {
-                                    Ok((user_msg_id, assistant_msg_id)) => {
-                                        tracing::info!(
-                                            session_id = %event.session_id,
-                                            last_seq = event.last_seq,
-                                            accumulated_tokens = event.accumulated_tokens,
-                                            tail_start_id = %tail_start_id,
-                                            user_msg_id = %user_msg_id,
-                                            assistant_msg_id = %assistant_msg_id,
-                                            "主动归档 + compaction 消息对插入完成（上下文已清空）"
-                                        );
-                                    }
-                                    Err(e) => {
-                                        tracing::warn!(
-                                            session_id = %event.session_id,
-                                            error = %e,
-                                            "compaction 消息对插入失败（归档已成功，但上下文未清空，下次 OpenCode compaction 时会兜底）"
-                                        );
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    session_id = %event.session_id,
-                                    error = %e,
-                                    "查询 tail_start_id 失败，跳过 compaction 消息对插入"
-                                );
-                            }
-                        }
-                    } else {
-                        tracing::warn!(
-                            "未配置 --opencode-db，跳过 compaction 消息对插入"
-                        );
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        session_id = %event.session_id,
-                        error = %e,
-                        "主动归档失败，下次 poll_tokens 会重试"
-                    );
-                }
-            }
-        }
-
-        if had_proactive {
-            if let Err(e) = watcher.state().save(&state_path) {
-                tracing::warn!(error = %e, "状态保存失败（不影响本次主动归档）");
-            }
-        }
+        // v2.48：方案 B 回退 — 移除 tokens 阈值监控分支
+        // 原因：completedCompactions() 不在 session 加载时调用，hidden 集合不包含旧消息，
+        // sidecar 插入的 compaction 消息对无法实现"无感清空"。
+        // 回退到只监听 OpenCode 原生 compaction 事件，让 OpenCode 自己处理清空。
+        // 方案 A（触发 OpenCode 原生 compaction）/ 方案 C（修改 OpenCode 源码）待探索。
     }
 }
 
@@ -544,94 +455,7 @@ async fn archive_compaction_event(
     }
 }
 
-/// 主动归档 token 阈值事件（v2.47 新增）
-///
-/// 与 `archive_compaction_event` 类似，但触发源是 tokens 阈值监控（而非 compaction 消息）。
-/// 归档范围：`(from_seq, last_seq)` 之间的结构化 turns。
-///
-/// v2.47 阶段 2：只做归档，不插入 compaction 消息对（阶段 3 实现）。
-async fn archive_token_event(
-    db: &dyn AgentAdapter,
-    archive_client: &ArchiveClient,
-    event: &TokenThresholdEvent,
-    config: &SidecarConfig,
-) -> Result<(), String> {
-    tracing::info!(
-        session_id = %event.session_id,
-        accumulated_tokens = event.accumulated_tokens,
-        threshold = event.threshold,
-        ratio_percent = event.ratio_percent,
-        from_seq = ?event.from_seq,
-        last_seq = event.last_seq,
-        "开始主动归档（tokens 阈值触发）"
-    );
-
-    // 读取结构化 turns（与 archive_compaction_event 相同的读取逻辑）
-    let turns = match db.read_turns_between(
-        &event.session_id,
-        event.from_seq,
-        event.last_seq,
-        config.max_turns,
-    ) {
-        Ok(t) => t,
-        Err(e) => {
-            tracing::error!(
-                session_id = %event.session_id,
-                error = %e,
-                "主动归档：读取增量 turns 失败"
-            );
-            return Err(format!("读取增量 turns 失败: {e}"));
-        }
-    };
-
-    if turns.is_empty() {
-        tracing::info!(
-            session_id = %event.session_id,
-            "主动归档：增量范围内无 turns，跳过（可能已被 compaction 归档）"
-        );
-        return Ok(());
-    }
-
-    tracing::info!(
-        session_id = %event.session_id,
-        turns_count = turns.len(),
-        accumulated_tokens = event.accumulated_tokens,
-        "主动归档：读取增量 turns 完成，调用 MemoryCenter pre-compress"
-    );
-
-    // 调用 MemoryCenter 归档
-    match archive_client
-        .pre_compress(
-            &event.session_id,
-            turns,
-            event.accumulated_tokens,
-            &config.project_id,
-        )
-        .await
-    {
-        Ok(resp) => {
-            tracing::info!(
-                session_id = %event.session_id,
-                last_seq = event.last_seq,
-                hook_id = %resp.hook_id,
-                parse_success = resp.parse_success,
-                parsed_turns = resp.parsed_turns_count,
-                archived_tokens = resp.archived_tokens,
-                threshold = resp.threshold,
-                ratio_percent = resp.threshold_ratio_percent,
-                suggestion = %resp.suggestion,
-                "主动归档成功"
-            );
-            Ok(())
-        }
-        Err(e) => {
-            tracing::error!(
-                session_id = %event.session_id,
-                last_seq = event.last_seq,
-                error = %e,
-                "主动归档失败（不更新 last_archived_seq，下次 poll_tokens 会重试）"
-            );
-            Err(format!("主动归档失败: {e}"))
-        }
-    }
-}
+// v2.48：方案 B 回退 — archive_token_event 函数已移除
+// 原因：completedCompactions() 不会在 session 加载时隐藏旧消息，
+// sidecar 主动插入 compaction 消息对无法实现"无感清空"。
+// 方案 A（触发 OpenCode 原生 compaction）/ 方案 C（修改 OpenCode 源码）待探索。
