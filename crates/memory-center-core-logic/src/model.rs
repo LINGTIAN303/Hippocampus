@@ -4,7 +4,7 @@
 //! - [`MemoryFile`]：记忆文件（一次归档的完整上下文）
 //! - [`IndexHook`]：索引钩子（指向记忆文件的指针 + 标签）
 //! - [`IndexDocument`]：索引文档（钩子集合）
-//! - [`Tag`]：17 类细粒度标签
+//! - [`Tag`]：19 类细粒度标签
 //! - [`MessageTurn`]：一轮消息（用户消息 + LLM 消息）
 
 use chrono::{DateTime, Utc};
@@ -40,6 +40,7 @@ fn default_tags() -> Vec<Tag> {
 ///
 /// 判定规则（按优先级，可叠加）：
 /// 1. `tool_calls` 非空 → `ToolCall` + `AgentTool`
+/// 1.5. `tool_calls` 中存在 SubAgent 派遣类工具 → 追加 `SubAgent`（v2.51 兜底）
 /// 2. `attachments` 含图片 → `Image`
 /// 3. `attachments` 含视频 → `Video`
 /// 4. `attachments` 含语音 → `Voice`
@@ -48,6 +49,7 @@ fn default_tags() -> Vec<Tag> {
 /// 7. `thinking` 非空 → `Thinking`
 /// 8. `text` 含代码块（``` ） → `CodeBlock`
 /// 9. `text` 含 URL（http:// 或 https://） → `Url`
+/// 9.5. `text` 含疑问短语或末尾问号 → `Question`（v2.51 兜底）
 /// 10. 以上都不匹配 → `Text`（兜底）
 pub fn infer_tags(content: &MessageContent) -> Vec<Tag> {
     let mut tags: Vec<Tag> = Vec::new();
@@ -56,6 +58,12 @@ pub fn infer_tags(content: &MessageContent) -> Vec<Tag> {
     if !content.tool_calls.is_empty() {
         tags.push(Tag::ToolCall);
         tags.push(Tag::AgentTool);
+
+        // 1.5. SubAgent 派遣兜底识别（v2.51）
+        // 条件：tool_calls 中存在 name 等于 Task 或包含 subagent/delegate/spawn 等关键词
+        if content.tool_calls.iter().any(|tc| is_subagent_tool(&tc.name)) {
+            tags.push(Tag::SubAgent);
+        }
     }
 
     // 2-5. 附件类型
@@ -108,6 +116,12 @@ pub fn infer_tags(content: &MessageContent) -> Vec<Tag> {
         if text.contains("http://") || text.contains("https://") {
             tags.push(Tag::Url);
         }
+        // 9.5. Question 兜底识别（v2.51）
+        // 条件：文本末尾为问号 或 含疑问短语
+        // 注：仅在非代码块文本中识别，避免代码中的问号误报
+        if !tags.contains(&Tag::CodeBlock) && is_question_text(text) {
+            tags.push(Tag::Question);
+        }
     }
 
     // 10. 兜底：如果没有任何特征标签，标为 Text
@@ -116,6 +130,44 @@ pub fn infer_tags(content: &MessageContent) -> Vec<Tag> {
     }
 
     tags
+}
+
+/// 判断工具名是否为 SubAgent 派遣类（v2.51 兜底）
+///
+/// 命中条件（大小写不敏感）：
+/// - name == "Task"（TRAE / Claude Code 的 Task 工具就是派遣子 Agent）
+/// - name 包含：subagent / sub_agent / delegate / dispatch / spawn
+fn is_subagent_tool(name: &str) -> bool {
+    let lower = name.trim().to_lowercase();
+    lower == "task" // TRAE / Claude Code Task 工具
+        || lower.contains("subagent")
+        || lower.contains("sub_agent")
+        || lower.contains("delegate")
+        || lower.contains("dispatch")
+        || lower.contains("spawn")
+}
+
+/// 判断文本是否为提问（v2.51 兜底）
+///
+/// 命中条件（满足任一）：
+/// - 去除末尾空白后，最后一个字符为 `?` 或 `？`
+/// - 含疑问短语：请问 / 是否 / 能否 / 可以吗 / 您希望 / 您是否 / 请确认 / 请您
+///
+/// 局限性：
+/// - 代码块中的问号会触发误报（调用方应先排除 CodeBlock 标签）
+/// - 无问号的陈述式提问会漏报
+fn is_question_text(text: &str) -> bool {
+    // 末尾问号检测
+    let trimmed = text.trim_end();
+    if trimmed.ends_with('?') || trimmed.ends_with('？') {
+        return true;
+    }
+    // 疑问短语检测
+    const TRIGGERS: &[&str] = &[
+        "请问", "是否", "能否", "可以吗", "您希望", "您是否", "请确认", "请您",
+        "需要我", "要不要", "想不想", "确认一下",
+    ];
+    TRIGGERS.iter().any(|t| text.contains(t))
 }
 
 /// 估算 MessageContent 的 token 数
@@ -196,10 +248,17 @@ pub fn apply_turn_defaults(turn: &mut MessageTurn) {
     }
 }
 
-/// 17 类细粒度标签（索引钩子细粒度）
+/// 19 类细粒度标签（索引钩子细粒度）
 ///
 /// 标签可叠加（一条消息可有多个标签），非互斥。
 /// 预留 `Other(String)` 兜底以支持未来扩展。
+///
+/// v2.51 新增 `Question`（提问）与 `SubAgent`（子 Agent 派遣）两个兜底标签：
+/// - **Question**：识别 LLM 主动向用户提问的轮次（疑问短语 + 末尾问号）
+/// - **SubAgent**：识别主 Agent 通过 Task 等工具派遣子 Agent 的轮次
+///
+/// 这两个标签不引入新的数据模型字段，仅作为索引维度补充，
+/// 让"提问"与"SubAgent 派遣"维度在记忆检索时可被命中。
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value")]
 pub enum Tag {
@@ -235,7 +294,26 @@ pub enum Tag {
     Plan,
     /// 16. 使用的 Agent 工具（如 Codex 等）
     AgentTool,
-    /// 17. 其他待定类型（预留扩展位）
+    /// 17. LLM 主动向用户提问（v2.51 兜底识别）
+    ///
+    /// 兜底识别条件（满足任一）：
+    /// - 文本末尾为问号 `?` / `？`（去除空白后）
+    /// - 文本包含疑问短语：请问 / 是否 / 能否 / 可以吗 / 您希望 / 您是否 / 请确认 / 请您
+    ///
+    /// 不引入结构化 `question` 字段，仅作为检索维度。
+    /// 识别精度依赖启发式，存在少量误报（代码块中的问号）和漏报（无问号的提问）。
+    Question,
+    /// 18. 子 Agent 派遣（v2.51 兜底识别）
+    ///
+    /// 兜底识别条件：`tool_calls` 中存在 name 满足任一：
+    /// - 等于 `Task`（TRAE / Claude Code 的 Task 工具就是派遣子 Agent）
+    /// - name 转小写后包含：`subagent` / `sub_agent` / `delegate` / `dispatch` / `spawn`
+    ///
+    /// 与 `AgentTool` 的语义区分：
+    /// - `AgentTool`：用户使用了某个 Agent 工具（如调用 Codex）
+    /// - `SubAgent`：LLM 在自己的工具调用里派了一个子 Agent 去执行子任务
+    SubAgent,
+    /// 19. 其他待定类型（预留扩展位）
     Other(String),
 }
 
@@ -760,6 +838,8 @@ impl std::fmt::Display for Tag {
             Self::Voice => write!(f, "语音"),
             Self::Plan => write!(f, "计划"),
             Self::AgentTool => write!(f, "Agent工具"),
+            Self::Question => write!(f, "提问"),
+            Self::SubAgent => write!(f, "子Agent派遣"),
             Self::Other(s) => write!(f, "{}", s),
         }
     }
@@ -795,6 +875,8 @@ impl Tag {
             "voice" => Self::Voice,
             "plan" => Self::Plan,
             "agenttool" | "agent_tool" => Self::AgentTool,
+            "question" => Self::Question,
+            "subagent" | "sub_agent" | "subagentdispatch" => Self::SubAgent,
             // 中文显示名（与 Display 输出对应）
             "文本消息" => Self::Text,
             "文件附件" => Self::FileAttachment,
@@ -810,6 +892,8 @@ impl Tag {
             "语音" => Self::Voice,
             "计划" => Self::Plan,
             "agent工具" => Self::AgentTool,
+            "提问" => Self::Question,
+            "子agent派遣" | "子agent" => Self::SubAgent,
             // 未识别 → 包装为 Other
             _ => Self::Other(name.trim().to_string()),
         }
@@ -993,6 +1077,116 @@ mod tests {
         apply_turn_defaults(&mut turn);
 
         assert!(turn.tags.contains(&Tag::Thinking), "应含 Thinking");
+    }
+
+    /// v2.51：验证 SubAgent 派遣的 tags 兜底识别
+    #[test]
+    fn test_infer_tags_subagent_task() {
+        // TRAE / Claude Code Task 工具 = 子 Agent 派遣
+        let json = r#"{
+            "user_message":{"text":"帮我研究 X"},
+            "llm_message":{
+                "text":"派遣子 Agent 执行",
+                "tool_calls":[{"name":"Task","arguments":"{}","result":"done"}]
+            }
+        }"#;
+        let mut turn: MessageTurn = serde_json::from_str(json).unwrap();
+        apply_turn_defaults(&mut turn);
+
+        assert!(turn.tags.contains(&Tag::ToolCall), "应含 ToolCall");
+        assert!(turn.tags.contains(&Tag::AgentTool), "应含 AgentTool");
+        assert!(turn.tags.contains(&Tag::SubAgent), "Task 工具应识别为 SubAgent");
+    }
+
+    /// v2.51：验证 SubAgent 兜底识别（含 subagent 关键词的工具名）
+    #[test]
+    fn test_infer_tags_subagent_keyword() {
+        let json = r#"{
+            "user_message":{"text":"派遣子 Agent"},
+            "llm_message":{
+                "text":"已派遣",
+                "tool_calls":[{"name":"spawn_subagent","arguments":"{}","result":"ok"}]
+            }
+        }"#;
+        let mut turn: MessageTurn = serde_json::from_str(json).unwrap();
+        apply_turn_defaults(&mut turn);
+
+        assert!(turn.tags.contains(&Tag::SubAgent), "spawn_subagent 应识别为 SubAgent");
+    }
+
+    /// v2.51：验证普通工具调用不会被识别为 SubAgent
+    #[test]
+    fn test_infer_tags_not_subagent_for_normal_tool() {
+        let json = r#"{
+            "user_message":{"text":"搜索"},
+            "llm_message":{
+                "text":"调用搜索",
+                "tool_calls":[{"name":"WebSearch","arguments":"{}","result":"[]"}]
+            }
+        }"#;
+        let mut turn: MessageTurn = serde_json::from_str(json).unwrap();
+        apply_turn_defaults(&mut turn);
+
+        assert!(!turn.tags.contains(&Tag::SubAgent), "WebSearch 不应识别为 SubAgent");
+        assert!(turn.tags.contains(&Tag::ToolCall), "应含 ToolCall");
+    }
+
+    /// v2.51：验证 Question 提问的 tags 兜底识别（末尾问号）
+    #[test]
+    fn test_infer_tags_question_question_mark() {
+        let json = r#"{
+            "user_message":{"text":"做点什么"},
+            "llm_message":{"text":"请问您希望使用哪种技术栈？"}
+        }"#;
+        let mut turn: MessageTurn = serde_json::from_str(json).unwrap();
+        apply_turn_defaults(&mut turn);
+
+        assert!(turn.tags.contains(&Tag::Question), "末尾问号应识别为 Question");
+    }
+
+    /// v2.51：验证 Question 兜底识别（疑问短语，无问号）
+    #[test]
+    fn test_infer_tags_question_trigger_phrase() {
+        let json = r#"{
+            "user_message":{"text":"继续"},
+            "llm_message":{"text":"请确认一下是否需要我继续执行"}
+        }"#;
+        let mut turn: MessageTurn = serde_json::from_str(json).unwrap();
+        apply_turn_defaults(&mut turn);
+
+        assert!(turn.tags.contains(&Tag::Question), "疑问短语应识别为 Question");
+    }
+
+    /// v2.51：验证代码块中的问号不触发 Question 误报
+    #[test]
+    fn test_infer_tags_question_not_in_codeblock() {
+        let json = r#"{
+            "user_message":{"text":"看代码"},
+            "llm_message":{"text":"这是代码：\n```rust\nlet x = condition?;\n```"}
+        }"#;
+        let mut turn: MessageTurn = serde_json::from_str(json).unwrap();
+        apply_turn_defaults(&mut turn);
+
+        assert!(!turn.tags.contains(&Tag::Question), "代码块中的问号不应触发 Question");
+        assert!(turn.tags.contains(&Tag::CodeBlock), "应含 CodeBlock");
+    }
+
+    /// v2.51：验证 Tag::from_name 能解析 Question 和 SubAgent
+    #[test]
+    fn test_tag_from_name_question_subagent() {
+        assert_eq!(Tag::from_name("question"), Tag::Question);
+        assert_eq!(Tag::from_name("Question"), Tag::Question);
+        assert_eq!(Tag::from_name("subagent"), Tag::SubAgent);
+        assert_eq!(Tag::from_name("sub_agent"), Tag::SubAgent);
+        assert_eq!(Tag::from_name("子Agent派遣"), Tag::SubAgent);
+        assert_eq!(Tag::from_name("提问"), Tag::Question);
+    }
+
+    /// v2.51：验证 Tag Display 输出
+    #[test]
+    fn test_tag_display_question_subagent() {
+        assert_eq!(format!("{}", Tag::Question), "提问");
+        assert_eq!(format!("{}", Tag::SubAgent), "子Agent派遣");
     }
 
     /// v2.30.1：验证 token_count 估算（Agent 传了不覆盖）

@@ -1342,10 +1342,11 @@ pub async fn search(
 
     let top_k = req.top_k.unwrap_or(5);
 
+    // v2.51：改用 search_with_rebuild，修复 server 重启后索引丢失导致检索失效的隐患
     // v2.31：使用 session_search（session 级隔离）
     // v2.8 起由 session_search 替代全局 retriever，未配置时返回错误
     let results = if let Some(router) = &state.session_search {
-        router.search(&sid, &query, top_k).await?
+        router.search_with_rebuild(&sid, None, &query, top_k).await?
     } else {
         return Err(AppError::NotImplemented(
             "语义检索未配置：请通过环境变量配置 Embedder API 后重启服务".to_string(),
@@ -1370,6 +1371,123 @@ pub async fn search(
         results_count = results.len(),
         mode,
         "语义检索完成"
+    );
+
+    Ok(Json(SearchResponse {
+        results,
+        mode: mode.to_string(),
+    }))
+}
+
+// ============================================================================
+// v2.51：全局跨 session 检索端点
+// ============================================================================
+
+/// 全局搜索 scope 枚举
+#[derive(Deserialize, Clone, Copy, Debug)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchScope {
+    /// 仅搜索指定 session（需传 session_id）
+    Session,
+    /// 跨 session 搜索指定 project（需传 project_id）
+    Project,
+    /// 跨 Agentic 搜索多个 project（需传 project_ids 数组）
+    /// 解决不同 Agentic 的 Agent 用不同 project_id 归档的问题
+    MultiProject,
+}
+
+/// 全局搜索请求体（v2.51 新增）
+#[derive(Deserialize)]
+pub struct GlobalSearchRequest {
+    /// 搜索查询文本
+    pub query: String,
+    /// 搜索范围（默认 session）
+    pub scope: Option<SearchScope>,
+    /// scope=session 时必填
+    pub session_id: Option<String>,
+    /// scope=project 时必填
+    pub project_id: Option<String>,
+    /// scope=multi_project 时必填，跨 Agentic 聚合搜索
+    pub project_ids: Option<Vec<String>>,
+    /// 返回 top-K 结果（默认 5）
+    pub top_k: Option<usize>,
+}
+
+/// POST /api/v1/search
+///
+/// 全局跨 session 检索记忆文件（v2.51 新增）。
+///
+/// 支持 3 种 scope：
+/// - `session`：仅搜索指定 session（向后兼容，等同 /api/v1/sessions/{sid}/search）
+/// - `project`：跨 session 搜索同一 project_id 的记忆
+/// - `multi_project`：跨 Agentic 搜索多个 project_id 的记忆（解决不同 Agentic 不同 project_id 问题）
+///
+/// 需要在服务启动时配置 SessionSearchRouter。
+pub async fn search_global(
+    State(state): State<AppState>,
+    Json(req): Json<GlobalSearchRequest>,
+) -> Result<Json<SearchResponse>, AppError> {
+    let query = req.query.trim().to_string();
+    if query.is_empty() {
+        return Err(AppError::BadRequest("query 不能为空".to_string()));
+    }
+
+    let top_k = req.top_k.unwrap_or(5);
+    let scope = req.scope.unwrap_or(SearchScope::Session);
+
+    let router = state.session_search.as_ref().ok_or_else(|| {
+        AppError::NotImplemented(
+            "语义检索未配置：请通过环境变量配置 Embedder API 后重启服务".to_string(),
+        )
+    })?;
+
+    let results = match scope {
+        SearchScope::Session => {
+            let sid = req.session_id.ok_or_else(|| {
+                AppError::BadRequest("scope=session 需传 session_id".to_string())
+            })?;
+            router.search_with_rebuild(&sid, None, &query, top_k).await?
+        }
+        SearchScope::Project => {
+            let pid = req.project_id.ok_or_else(|| {
+                AppError::BadRequest("scope=project 需传 project_id".to_string())
+            })?;
+            router.search_project(&pid, &query, top_k).await?
+        }
+        SearchScope::MultiProject => {
+            let pids = req.project_ids.ok_or_else(|| {
+                AppError::BadRequest(
+                    "scope=multi_project 需传 project_ids 数组".to_string(),
+                )
+            })?;
+            if pids.is_empty() {
+                return Err(AppError::BadRequest(
+                    "project_ids 不能为空".to_string(),
+                ));
+            }
+            let pid_refs: Vec<&str> = pids.iter().map(|s| s.as_str()).collect();
+            router.search_multi_project(&pid_refs, &query, top_k).await?
+        }
+    };
+
+    // 推断检索模式
+    let mode = if results.is_empty() {
+        "empty"
+    } else {
+        match results[0].source {
+            memory_center_core::semantic::RetrievalSource::Keyword => "keyword",
+            memory_center_core::semantic::RetrievalSource::Semantic => "semantic",
+            memory_center_core::semantic::RetrievalSource::Hybrid => "hybrid",
+        }
+    };
+
+    tracing::info!(
+        scope = ?scope,
+        query = %query,
+        top_k,
+        results_count = results.len(),
+        mode,
+        "全局检索完成"
     );
 
     Ok(Json(SearchResponse {

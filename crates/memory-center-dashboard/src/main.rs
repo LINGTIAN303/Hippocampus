@@ -6,7 +6,7 @@
 //!   mc-dashboard --eval-dir ./eval/results   # 指定评测数据目录
 
 use clap::Parser;
-use crossterm::event::{self, Event};
+use crossterm::event::{self, Event, KeyEventKind};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -76,6 +76,7 @@ async fn run(
     app: &mut App,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut last_session = String::new();
+    let mut last_search_query = String::new();
 
     loop {
         terminal.draw(|f| ui::render(f, app))?;
@@ -93,8 +94,23 @@ async fn run(
             continue;
         }
 
-        // 检查搜索请求
-        if !app.search_input_focused && !app.search_input.is_empty() && app.search_results.is_empty() && !app.session_input.is_empty() {
+        // v2.51 修复：r 键刷新重新加载（loading=true 且 session 未变）
+        if app.loading && !app.session_input.is_empty() && app.session_input == last_session {
+            let client = app.client();
+            match client.get_summaries(&app.session_input).await {
+                Ok(summaries) => app.set_summaries(summaries),
+                Err(e) => app.set_error(e),
+            }
+            continue;
+        }
+
+        // 检查搜索请求（v2.51 修复：用 last_search_query 跟踪，允许重新搜索）
+        if !app.search_input_focused
+            && !app.search_input.is_empty()
+            && app.search_input != last_search_query
+            && !app.session_input.is_empty()
+        {
+            last_search_query = app.search_input.clone();
             let client = app.client();
             match client.search(&app.session_input, &app.search_input, 10).await {
                 Ok(resp) => {
@@ -112,7 +128,11 @@ async fn run(
         // 等待按键事件 (100ms 超时, 让异步任务有机会运行)
         if event::poll(std::time::Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
-                app.handle_key(key);
+                // v2.51 修复：Windows 下 crossterm 发送 Press + Release 两个事件
+                // 只处理 Press 事件，避免按键被处理两次（输入重复、Tab 跳两个）
+                if key.kind == KeyEventKind::Press {
+                    app.handle_key(key);
+                }
             }
         }
 

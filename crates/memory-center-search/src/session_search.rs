@@ -559,6 +559,76 @@ impl SessionSearchRouter {
         indices.retriever.search(query, top_k).await
     }
 
+    /// v2.51：跨 session 项目级检索（单 project_id）
+    ///
+    /// 用虚拟 session_id `_project_{pid}` 创建独立的 SessionIndices 桶，
+    /// 通过 `search_with_rebuild` + `project_id` 从 storage 读取 project 级聚合索引。
+    ///
+    /// ## 跨 session 原理
+    ///
+    /// 归档时 storage 层双写：session 级 + project 级聚合索引。
+    /// `read_project_index(pid, period)` 返回该 project 下所有 session 的 IndexHook。
+    /// 所以用虚拟 session_id + project_id 调用 search_with_rebuild 即可跨 session 检索。
+    pub async fn search_project(
+        &self,
+        project_id: &str,
+        query: &str,
+        top_k: usize,
+    ) -> memory_center_core::Result<Vec<SearchHit>> {
+        let virtual_sid = format!("_project_{}", project_id);
+        self.search_with_rebuild(&virtual_sid, Some(project_id), query, top_k)
+            .await
+    }
+
+    /// v2.51：跨 Agentic 多项目聚合检索
+    ///
+    /// 解决不同 Agentic 的 Agent 归档时使用不同 project_id 的问题：
+    /// - Trae 归档用 project_id="mc-trae"
+    /// - OpenCode 归档用 project_id="mc-opencode"
+    /// - 调用方传 project_ids=["mc-trae", "mc-opencode"] 即可跨 Agentic 检索
+    ///
+    /// ## 聚合策略
+    ///
+    /// 1. 遍历每个 project_id，调用 `search_project` 获取各 project 的 top_k 结果
+    /// 2. 合并所有结果，按 score 降序排序
+    /// 3. 截取最终 top_k 条
+    pub async fn search_multi_project(
+        &self,
+        project_ids: &[&str],
+        query: &str,
+        top_k: usize,
+    ) -> memory_center_core::Result<Vec<SearchHit>> {
+        if project_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // 单 project 直接走 search_project
+        if project_ids.len() == 1 {
+            return self.search_project(project_ids[0], query, top_k).await;
+        }
+
+        // 多 project 聚合
+        let mut all_hits = Vec::new();
+        for pid in project_ids {
+            let hits = self.search_project(pid, query, top_k).await?;
+            all_hits.extend(hits);
+        }
+
+        // 按 score 降序排序，取 top_k
+        all_hits.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        all_hits.truncate(top_k);
+        Ok(all_hits)
+    }
+
+    /// v2.51：检查是否配置了 Embedder（用于推断检索模式）
+    pub fn has_embedder(&self) -> bool {
+        self.embedder.is_some()
+    }
+
     /// 从 storage 重建 session 索引（v2.18 新增）
     ///
     /// 读取该 session（或 project）所有周期的索引文档，批量提取文本并 embed，

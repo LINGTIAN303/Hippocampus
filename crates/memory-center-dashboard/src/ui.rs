@@ -34,7 +34,7 @@ fn render_header(f: &mut Frame, _app: &App, area: Rect) {
 }
 
 fn render_tabs(f: &mut Frame, app: &App, area: Rect) {
-    let titles = vec!["概览", "记忆列表", "检索演示", "评测对比"];
+    let titles = vec!["概览", "记忆列表", "检索演示", "评测对比", "Tag 体系"];
     let tabs = Tabs::new(titles.iter().map(|t| Span::raw(*t)).collect::<Vec<_>>())
         .block(Block::default().borders(Borders::ALL).title("Tab"))
         .select(app.tab.index())
@@ -49,6 +49,7 @@ fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
         Tab::Memories => render_memories(f, app, area),
         Tab::Search => render_search(f, app, area),
         Tab::Eval => render_eval(f, app, area),
+        Tab::Tags => render_tags(f, app, area),
     }
 }
 
@@ -127,6 +128,47 @@ fn render_overview(f: &mut Frame, app: &mut App, area: Rect) {
             ]));
         }
 
+        // v2.51：Tag 分布统计（19 类标签全景）
+        let tag_stats = app.tag_stats();
+        if !tag_stats.is_empty() {
+            lines.push(Line::from(""));
+            let total_tags: usize = tag_stats.iter().map(|(_, c)| c).sum();
+            lines.push(Line::from(vec![
+                Span::styled("Tag 分布: ", Style::default().fg(Color::Cyan)),
+                Span::styled(
+                    format!("（共 {} 类 / {} 次命中）", tag_stats.len(), total_tags),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]));
+            // 按命中次数降序展示前 8 个 Tag
+            for (i, (tag, count)) in tag_stats.iter().take(8).enumerate() {
+                let badge_color = tag_color(tag);
+                lines.push(Line::from(vec![
+                    Span::styled(format!("  {:>2}. ", i + 1), Style::default().fg(Color::DarkGray)),
+                    Span::styled(format!(" {}", tag), Style::default().fg(badge_color).add_modifier(Modifier::BOLD)),
+                    Span::styled("  ", Style::default()),
+                    // 条形图：每个 █ 代表 1 次
+                    Span::styled(
+                        "█".repeat((*count).min(20)),
+                        Style::default().fg(badge_color),
+                    ),
+                    Span::styled(
+                        format!(" {}", count),
+                        Style::default().fg(Color::Green),
+                    ),
+                ]));
+            }
+            if tag_stats.len() > 8 {
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("  … 还有 {} 类，按 4 切换到 Tag 体系 Tab 查看",
+                                tag_stats.len() - 8),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]));
+            }
+        }
+
         // 最近记忆
         lines.push(Line::from(""));
         lines.push(Line::from("最近记忆:"));
@@ -165,8 +207,17 @@ fn render_memories(f: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
 
-    if app.summaries.is_empty() {
-        let msg = Paragraph::new("无记忆数据\n请先在「概览」Tab 输入 session_id 并加载")
+    let filtered = app.filtered_summaries();
+    if filtered.is_empty() {
+        let msg = if app.tag_filter.is_some() {
+            format!(
+                "无匹配记忆（Tag 过滤: {}）\n按 t 清除过滤",
+                app.tag_filter.as_deref().unwrap_or("")
+            )
+        } else {
+            "无记忆数据\n请先在「概览」Tab 输入 session_id 并加载".to_string()
+        };
+        let msg = Paragraph::new(msg)
             .style(Style::default().fg(Color::DarkGray))
             .alignment(Alignment::Center)
             .block(Block::default().borders(Borders::ALL).title("记忆列表"));
@@ -174,13 +225,35 @@ fn render_memories(f: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
 
-    let items: Vec<ListItem> = app
-        .summaries
+    // v2.51：标题显示过滤状态
+    let title = if let Some(tag) = &app.tag_filter {
+        format!("记忆列表 [过滤: {}] ({} 条, j/k 选择, Enter 详情, t 清除)", tag, filtered.len())
+    } else {
+        format!("记忆列表 ({} 条, j/k 选择, Enter 详情, t 过滤)", filtered.len())
+    };
+
+    let items: Vec<ListItem> = filtered
         .iter()
         .enumerate()
         .map(|(i, s)| {
             let title = s.summary_title.chars().take(50).collect::<String>();
-            let tags = s.tags.join(",");
+            let mut tag_spans: Vec<Span> = Vec::new();
+            for (idx, t) in s.tags.iter().enumerate() {
+                if idx > 0 {
+                    tag_spans.push(Span::raw(" "));
+                }
+                tag_spans.push(Span::styled(
+                    format!("[{}]", t),
+                    Style::default().fg(tag_color(t)),
+                ));
+            }
+            let tag_line = if tag_spans.is_empty() {
+                vec![Span::styled("    tags: (无)", Style::default().fg(Color::DarkGray))]
+            } else {
+                let mut v = vec![Span::styled("    ", Style::default())];
+                v.extend(tag_spans);
+                v
+            };
             ListItem::new(vec![
                 Line::from(vec![
                     Span::styled(
@@ -198,10 +271,7 @@ fn render_memories(f: &mut Frame, app: &mut App, area: Rect) {
                     Span::styled("    ", Style::default()),
                     Span::styled(title, Style::default().fg(Color::White)),
                 ]),
-                Line::from(vec![
-                    Span::styled("    tags: ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(tags, Style::default().fg(Color::Yellow)),
-                ]),
+                Line::from(tag_line),
             ])
         })
         .collect();
@@ -210,7 +280,7 @@ fn render_memories(f: &mut Frame, app: &mut App, area: Rect) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("记忆列表 (j/k 选择, Enter 查看详情)"),
+                .title(title),
         )
         .highlight_style(
             Style::default()
@@ -220,7 +290,10 @@ fn render_memories(f: &mut Frame, app: &mut App, area: Rect) {
         )
         .highlight_symbol(">> ");
 
-    f.render_stateful_widget(list, area, &mut ratatui::widgets::ListState::default());
+    // v2.51 修复：同步光标位置到 selected_memory
+    let mut state = ratatui::widgets::ListState::default();
+    state.select(Some(app.selected_memory));
+    f.render_stateful_widget(list, area, &mut state);
 }
 
 fn render_memory_detail(f: &mut Frame, app: &App, area: Rect) {
@@ -231,7 +304,9 @@ fn render_memory_detail(f: &mut Frame, app: &App, area: Rect) {
         Style::default().fg(Color::Yellow),
     )]));
 
-    if let Some(idx) = app.summaries.get(app.selected_memory) {
+    // v2.51 修复：从过滤后的列表取数据，避免 Tag 过滤时详情错位
+    let filtered = app.filtered_summaries();
+    if let Some(idx) = filtered.get(app.selected_memory) {
         lines.push(Line::from(""));
         lines.push(Line::from(vec![
             Span::styled("Hook ID: ", Style::default().fg(Color::Cyan)),
@@ -245,10 +320,38 @@ fn render_memory_detail(f: &mut Frame, app: &App, area: Rect) {
             Span::styled("周期: ", Style::default().fg(Color::Cyan)),
             Span::styled(&idx.period, Style::default().fg(Color::White)),
         ]));
+        // v2.51：Tag 彩色徽章（每行徽章 + 颜色）
+        lines.push(Line::from(""));
         lines.push(Line::from(vec![
-            Span::styled("标签: ", Style::default().fg(Color::Cyan)),
-            Span::styled(idx.tags.join(", "), Style::default().fg(Color::Yellow)),
+            Span::styled("Tags: ", Style::default().fg(Color::Cyan)),
         ]));
+        if idx.tags.is_empty() {
+            lines.push(Line::from(vec![
+                Span::styled("  (无标签)", Style::default().fg(Color::DarkGray)),
+            ]));
+        } else {
+            // 每行最多 3 个徽章
+            let mut row_spans: Vec<Span> = Vec::new();
+            for (i, t) in idx.tags.iter().enumerate() {
+                if i > 0 && i % 3 == 0 {
+                    lines.push(Line::from(row_spans.clone()));
+                    row_spans = Vec::new();
+                }
+                let color = tag_color(t);
+                row_spans.push(Span::styled("  ", Style::default()));
+                row_spans.push(Span::styled(
+                    format!(" {} ", t),
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(color)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            }
+            if !row_spans.is_empty() {
+                lines.push(Line::from(row_spans));
+            }
+        }
+        lines.push(Line::from(""));
         lines.push(Line::from(vec![
             Span::styled("标题: ", Style::default().fg(Color::Cyan)),
             Span::styled(&idx.summary_title, Style::default().fg(Color::White)),
@@ -267,6 +370,148 @@ fn render_memory_detail(f: &mut Frame, app: &App, area: Rect) {
         .wrap(Wrap { trim: true })
         .block(Block::default().borders(Borders::ALL).title("记忆详情"));
     f.render_widget(content, area);
+}
+
+/// v2.51：Tag 体系 Tab 渲染
+///
+/// 参考 demo 场景 11 的"17 类标签全景"卡片网格风格，
+/// 但因 TUI 限制改为列表式呈现：
+/// - 每行一个 Tag，按命中次数降序
+/// - 当前选中的 Tag 高亮显示
+/// - j/k 选择，Enter 跳转到记忆列表并应用过滤
+fn render_tags(f: &mut Frame, app: &mut App, area: Rect) {
+    let tag_stats = app.tag_stats();
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(1)])
+        .split(area);
+
+    // 标题栏
+    let total_count: usize = tag_stats.iter().map(|(_, c)| c).sum();
+    let title_text = format!(
+        "Tag 体系（19 类标签 · 命中 {} 次 · j/k 选择, Enter 跳转过滤, c 清除）",
+        total_count
+    );
+    let title = Paragraph::new(title_text)
+        .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+        .block(Block::default().borders(Borders::ALL));
+    f.render_widget(title, chunks[0]);
+
+    // 列表
+    if tag_stats.is_empty() {
+        let msg = Paragraph::new("无 Tag 数据\n请先在「概览」Tab 输入 session_id 并加载记忆")
+            .style(Style::default().fg(Color::DarkGray))
+            .alignment(Alignment::Center)
+            .block(Block::default().borders(Borders::ALL).title("Tag 列表"));
+        f.render_widget(msg, chunks[1]);
+        return;
+    }
+
+    let items: Vec<ListItem> = tag_stats
+        .iter()
+        .enumerate()
+        .map(|(i, (tag, count))| {
+            let color = tag_color(tag);
+            let badge = format!(" {} ", tag);
+            // 简易条形图
+            let bar_len = (*count).min(30);
+            let bar: String = "█".repeat(bar_len);
+            let percentage = if total_count > 0 {
+                (*count as f64 / total_count as f64 * 100.0).round() as u64
+            } else {
+                0
+            };
+            ListItem::new(vec![
+                Line::from(vec![
+                    Span::styled(
+                        format!("{:>2}. ", i + 1),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                    Span::styled(badge, Style::default().fg(Color::Black).bg(color).add_modifier(Modifier::BOLD)),
+                    Span::raw("  "),
+                    Span::styled(bar, Style::default().fg(color)),
+                    Span::styled(
+                        format!(" {} ({}%)", count, percentage),
+                        Style::default().fg(Color::Green),
+                    ),
+                ]),
+            ])
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(format!("Tag 列表 ({})", tag_stats.len())),
+        )
+        .highlight_style(
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol(">> ");
+
+    // 同步光标位置
+    let mut state = ratatui::widgets::ListState::default();
+    state.select(Some(app.tags_selected));
+    f.render_stateful_widget(list, chunks[1], &mut state);
+}
+
+/// v2.51：Tag 颜色映射
+///
+/// 为 19 类 Tag 分配语义化颜色：
+/// - Text/FileAttachment: 中性灰
+/// - Image/Video/URL: 蓝色系
+/// - ToolCall/AgentTool: 紫色
+/// - Thinking/Plan: 黄色
+/// - CodeBlock: 绿色
+/// - Question/SubAgent: 高亮色（突出新维度）
+fn tag_color(tag: &str) -> Color {
+    match tag {
+        // 英文变体名
+        "Text" => Color::Gray,
+        "FileAttachment" => Color::DarkGray,
+        "Image" => Color::Blue,
+        "Video" => Color::LightBlue,
+        "ToolCall" => Color::Magenta,
+        "Thinking" => Color::Yellow,
+        "SessionId" => Color::DarkGray,
+        "ProjectId" => Color::DarkGray,
+        "Url" => Color::Cyan,
+        "Citation" => Color::Blue,
+        "Status" => Color::LightGreen,
+        "Ui" => Color::LightCyan,
+        "CodeBlock" => Color::Green,
+        "Voice" => Color::LightMagenta,
+        "Plan" => Color::LightYellow,
+        "AgentTool" => Color::LightMagenta,
+        // v2.51 新增：高亮色突出新维度
+        "Question" => Color::Red,
+        "SubAgent" => Color::LightRed,
+        // 中文显示名（与 Display 输出对应）
+        "文本消息" => Color::Gray,
+        "文件附件" => Color::DarkGray,
+        "图片" => Color::Blue,
+        "视频" => Color::LightBlue,
+        "工具调用" => Color::Magenta,
+        "思考过程" => Color::Yellow,
+        "会话ID" => Color::DarkGray,
+        "项目ID" => Color::DarkGray,
+        "URL" => Color::Cyan,
+        "引用" => Color::Blue,
+        "状态" => Color::LightGreen,
+        "UI" => Color::LightCyan,
+        "代码块" => Color::Green,
+        "语音" => Color::LightMagenta,
+        "计划" => Color::LightYellow,
+        "Agent工具" => Color::LightMagenta,
+        "提问" => Color::Red,
+        "子Agent派遣" => Color::LightRed,
+        _ => Color::White,
+    }
 }
 
 fn render_search(f: &mut Frame, app: &mut App, area: Rect) {

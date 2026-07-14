@@ -177,6 +177,11 @@ pub fn create_router(state: AppState) -> axum::Router {
             "/api/v1/sessions/{sid}/search",
             post(handlers::search),
         )
+        // v2.51：全局跨 session 检索端点（支持 scope=session|project|multi_project）
+        .route(
+            "/api/v1/search",
+            post(handlers::search_global),
+        )
         // v2.6 批次 8：冲突查询端点（GET 单条记忆的所有冲突记录）
         .route(
             "/api/v1/sessions/{sid}/memories/{hook_id}/conflicts",
