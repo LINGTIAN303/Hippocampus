@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MemoryCenter 演示 · TRAE AI 创造力大赛</title>
+<link rel="stylesheet" href="demo.css">
+</head>
+<body>
+
+<!-- 顶部标题栏 -->
+<header id="topbar">
+  <div class="topbar-left">
+    <span class="logo-mark" aria-hidden="true">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+        <rect x="3" y="4" width="18" height="16" rx="2" stroke="currentColor" stroke-width="1.8"/>
+        <path d="M7 8h10M7 12h6M7 16h8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+      </svg>
+    </span>
+    <span class="title-text">MemoryCenter 演示</span>
+    <span class="title-sub">TRAE AI 创造力大赛</span>
+  </div>
+  <div class="topbar-right">
+    <div class="topbar-progress-wrap">
+      <span class="scene-counter">
+        <span id="scene-current">0</span> / <span id="scene-total">31</span>
+      </span>
+      <div id="progress-track" class="progress-track">
+        <div id="progress-fill" class="progress-fill"></div>
+      </div>
+      <span class="scene-name" id="scene-name">—</span>
+    </div>
+    <span id="act-label" class="act-badge">第一幕 · 接入</span>
+    <a href="/" class="back-link">返回提案页</a>
+  </div>
+  <!-- 场景进度条（嵌入 topbar 底部） -->
+  <div id="scene-progress-bar"></div>
+</header>
+
+<!-- 场景舞台：16:9 电脑屏幕容器（桌面背景图充填 stage 外区域） -->
+<main id="stage-container" class="desktop-bg">
+  <div id="stage" class="stage">
+    <!-- 场景内容由 demo.js 动态渲染 -->
+    <div id="scene-content" class="scene-content">
+      <div class="loading-hint">正在加载演示…</div>
+    </div>
+  </div>
+</main>
+
+<!-- 旁白字幕条 -->
+<div id="caption-bar">
+  <div class="caption-prefix" aria-hidden="true">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+      <circle cx="12" cy="12" r="3" fill="currentColor"/>
+      <circle cx="12" cy="12" r="8" stroke="currentColor" stroke-width="1.5" stroke-opacity="0.4"/>
+    </svg>
+  </div>
+  <div id="caption-text" class="caption-text">演示即将开始</div>
+</div>
+
+<!-- 控制条 -->
+<div id="control-bar">
+  <div class="control-group">
+    <button id="btn-prev" class="ctrl-btn" title="上一步 (←)" aria-label="上一步">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M15 6l-6 6 6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+    <button id="btn-play" class="ctrl-btn ctrl-btn-primary" title="播放/暂停 (空格)" aria-label="播放/暂停">
+      <svg id="icon-play" width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M8 5v14l11-7z" fill="currentColor"/></svg>
+      <svg id="icon-pause" width="18" height="18" viewBox="0 0 24 24" fill="none" style="display:none"><rect x="6" y="5" width="4" height="14" fill="currentColor"/><rect x="14" y="5" width="4" height="14" fill="currentColor"/></svg>
+    </button>
+    <button id="btn-next" class="ctrl-btn" title="下一步 (→)" aria-label="下一步">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M9 6l6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+    <button id="btn-restart" class="ctrl-btn" title="重新开始" aria-label="重新开始">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M3 12a9 9 0 1 0 3-6.7M3 4v5h5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+  </div>
+
+  <div class="control-group">
+    <button id="btn-speed" class="ctrl-btn ctrl-btn-toggle" title="切换播放速度" aria-label="播放速度">
+      <span id="speed-label">1x</span>
+    </button>
+  </div>
+</div>
+
+<!-- 场景标签页（右上角浮动，显示当前场景信息） -->
+<div id="scene-info-panel" class="scene-info-panel">
+  <div class="info-row">
+    <span class="info-label">场景</span>
+    <span id="info-scene-id" class="info-value">—</span>
+  </div>
+  <div class="info-row">
+    <span class="info-label">幕</span>
+    <span id="info-act" class="info-value">—</span>
+  </div>
+  <div class="info-row">
+    <span class="info-label">展示能力</span>
+    <span id="info-capability" class="info-value">—</span>
+  </div>
+  <div class="info-row">
+    <span class="info-label">时长</span>
+    <span id="info-duration" class="info-value">—</span>
+  </div>
+</div>
+
+<script src="demo.js"></script>
+</body>
+</html>
