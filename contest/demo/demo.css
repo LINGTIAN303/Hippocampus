@@ -346,6 +346,27 @@ html, body {
   height: 28px;
 }
 
+/* 四幕快捷跳转按钮 */
+.control-acts {
+  gap: 4px;
+}
+
+.btn-act {
+  width: auto;
+  padding: 0 12px;
+  font-size: 11px;
+  font-weight: 500;
+  height: 26px;
+  border-radius: 13px;
+}
+
+.btn-act.active {
+  background: var(--accent-glow);
+  border-color: var(--accent-dim);
+  color: var(--accent);
+  font-weight: 600;
+}
+
 .progress-wrap {
   flex: 1;
   display: flex;
@@ -390,42 +411,6 @@ html, body {
 }
 
 /* ============================================================
-   场景信息浮窗
-   ============================================================ */
-.scene-info-panel {
-  position: fixed;
-  top: calc(var(--topbar-h) + 8px);
-  right: 18px;
-  background: rgba(255, 255, 255, 0.96);
-  backdrop-filter: blur(8px);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 6px 10px;
-  box-shadow: var(--shadow-sm);
-  font-size: 10px;
-  min-width: 160px;
-  z-index: 50;
-  transition: opacity 0.3s;
-}
-
-.info-row {
-  display: flex;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 1px 0;
-}
-
-.info-label {
-  color: var(--text-mute);
-}
-
-.info-value {
-  color: var(--text);
-  font-weight: 500;
-  text-align: right;
-}
-
-/* ============================================================
    占位符（未提供截图时显示）
    ============================================================ */
 .screenshot-placeholder {
@@ -460,46 +445,77 @@ html, body {
 }
 
 /* ============================================================
-   场景过渡动画
+   场景过渡动画（交叉淡入，消除中间空白闪烁）
    ============================================================ */
-.scene-content.fade-in {
-  animation: sceneFadeIn 0.4s ease-out;
+#scene-content {
+  transition: opacity 0.15s ease-out;
 }
 
-@keyframes sceneFadeIn {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: translateY(0); }
+/* ============================================================
+   演示结束态浮层
+   ============================================================ */
+.demo-end-overlay {
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 20;
+  animation: fadeIn 0.4s ease;
 }
 
-.scene-content.fade-out {
-  animation: sceneFadeOut 0.3s ease-in forwards;
+.demo-end-card {
+  background: var(--surface);
+  border-radius: 16px;
+  padding: 32px 48px;
+  text-align: center;
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.25);
+  animation: scaleIn 0.4s ease;
 }
 
-@keyframes sceneFadeOut {
-  from { opacity: 1; }
-  to { opacity: 0; }
+.demo-end-title {
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 20px;
+}
+
+.demo-end-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 24px;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.demo-end-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(22, 163, 74, 0.35);
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes scaleIn {
+  from { opacity: 0; transform: scale(0.9); }
+  to { opacity: 1; transform: scale(1); }
 }
 
 /* ============================================================
    通用场景元素
    ============================================================ */
-
-/* 桌面背景（macOS Sonoma 风格流体壁纸） */
-.desktop-scene {
-  width: 100%;
-  height: 100%;
-  background:
-    radial-gradient(ellipse 60% 80% at 20% 30%, rgba(139, 26, 61, 0.6), transparent 60%),
-    radial-gradient(ellipse 50% 70% at 80% 20%, rgba(22, 33, 62, 0.7), transparent 55%),
-    radial-gradient(ellipse 70% 60% at 60% 80%, rgba(91, 44, 131, 0.5), transparent 60%),
-    radial-gradient(ellipse 40% 50% at 30% 60%, rgba(41, 182, 205, 0.3), transparent 50%),
-    linear-gradient(135deg, #1a1a3e 0%, #16213e 40%, #2d1b4e 70%, #8b1a3d 100%);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  position: relative;
-  overflow: hidden;
-}
 
 /* macOS Dock 栏 */
 .mac-dock {

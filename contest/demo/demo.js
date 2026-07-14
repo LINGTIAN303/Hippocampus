@@ -60,10 +60,7 @@ const btnSpeed = $("#btn-speed");
 const speedLabel = $("#speed-label");
 const iconPlay = $("#icon-play");
 const iconPause = $("#icon-pause");
-const infoSceneId = $("#info-scene-id");
-const infoAct = $("#info-act");
-const infoCapability = $("#info-capability");
-const infoDuration = $("#info-duration");
+
 
 // ============================================================
 // 初始化
@@ -85,20 +82,19 @@ function renderScene(index) {
 
   state.currentIndex = index;
 
-  // 淡出旧内容
-  stage.classList.add("fade-out");
+  // 交叉淡入：先淡出旧内容，渲染新内容后再淡入
+  stage.style.opacity = "0";
   setTimeout(() => {
-    stage.classList.remove("fade-out");
-    // 渲染新内容
     const renderer = SCENE_RENDERERS[scene.id];
     if (renderer) {
       renderer(stage, scene);
     } else {
       stage.innerHTML = `<div class="loading-hint">场景 ${scene.id} 渲染器待实现</div>`;
     }
-    stage.classList.add("fade-in");
-    setTimeout(() => stage.classList.remove("fade-in"), 400);
-  }, 250);
+    requestAnimationFrame(() => {
+      stage.style.opacity = "1";
+    });
+  }, 150);
 
   // 更新 UI
   updateUI(scene);
@@ -128,11 +124,11 @@ function updateUI(scene) {
   // 幕标签
   actLabel.textContent = `第${["一","二","三","四"][scene.act - 1]}幕 · ${scene.actName}`;
 
-  // 信息面板
-  infoSceneId.textContent = `${scene.id} / ${SCENES.length}`;
-  infoAct.textContent = `第${["一","二","三","四"][scene.act - 1]}幕 ${scene.actName}`;
-  infoCapability.textContent = scene.capability;
-  infoDuration.textContent = (scene.duration / 1000).toFixed(1) + "s";
+  // 高亮当前幕快捷按钮
+  document.querySelectorAll('.btn-act').forEach(btn => {
+    btn.classList.toggle('active', parseInt(btn.dataset.act) === scene.act);
+  });
+
 }
 
 // ============================================================
@@ -198,7 +194,7 @@ function restart() {
 }
 
 function toggleSpeed() {
-  const speeds = [1, 1.5, 2, 0.5];
+  const speeds = [0.5, 1, 1.5, 2];
   const i = speeds.indexOf(state.speed);
   state.speed = speeds[(i + 1) % speeds.length];
   speedLabel.textContent = state.speed + "x";
@@ -229,6 +225,14 @@ function bindControls() {
   btnPlay.addEventListener("click", () => state.isPlaying ? pause() : play());
   btnRestart.addEventListener("click", restart);
   btnSpeed.addEventListener("click", toggleSpeed);
+  // 四幕快捷跳转
+  document.querySelectorAll('.btn-act').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const act = parseInt(btn.dataset.act);
+      const sceneIndex = SCENES.findIndex(s => s.act === act);
+      if (sceneIndex >= 0) jumpTo(sceneIndex);
+    });
+  });
 }
 
 function bindKeyboard() {
@@ -835,16 +839,19 @@ function renderScene02(stage, scene) {
   const list = $("#mcp-list");
   const items = [
     { name: "filesystem", highlight: false, color: "#888" },
-    { name: "MemoryCenter", highlight: true, version: "v2.37", color: "#7c3aed", expanded: true },
+    { name: "MemoryCenter", highlight: true, version: "v2.37", color: "#7c3aed", expanded: true, icon: "assets/MemoryCenter.png" },
     { name: "git", highlight: false, color: "#f1502f" },
   ];
   items.forEach((item, i) => {
     delay(i * 400, () => {
       const toolsHtml = item.expanded ? `<div class="trae-mcp-tools" id="tool-list"></div>` : "";
+      const iconHtml = item.icon
+        ? `<div class="trae-mcp-icon" style="background: ${item.color}; padding: 0; overflow: hidden;"><img src="${item.icon}" alt="${item.name}" style="width: 100%; height: 100%; object-fit: cover; border-radius: 4px;"></div>`
+        : `<div class="trae-mcp-icon" style="background: ${item.color};">${item.name.charAt(0).toUpperCase()}</div>`;
       list.insertAdjacentHTML("beforeend", `
         <div class="trae-mcp-item ${item.highlight ? 'expanded' : ''}">
           <span class="trae-mcp-expand">▸</span>
-          <div class="trae-mcp-icon" style="background: ${item.color};">${item.name.charAt(0).toUpperCase()}</div>
+          ${iconHtml}
           <span class="trae-mcp-name">${item.name}</span>
           ${item.version ? `<span style="font-size: 11px; color: var(--trae-text-mute); padding: 2px 6px; background: var(--trae-card-bg); border-radius: 4px;">${item.version}</span>` : ''}
           <span class="trae-mcp-check">✓</span>
@@ -938,7 +945,7 @@ function renderScene04(stage, scene) {
     ]},
     { name: "NovaCraft", tasks: [{ title: "产品介绍页" }] },
   ];
-  stage.innerHTML = `<div class="desktop-scene">${traeWindow(`
+  stage.innerHTML = traeWindow(`
     <div class="trae-layout">
       ${traeSidebarHtml(projects)}
       <div class="trae-chat">
@@ -947,7 +954,7 @@ function renderScene04(stage, scene) {
         ${traeInputArea({ typing: true })}
       </div>
     </div>
-  `)}</div>`;
+  `);
   const inputBox = $("#input-box");
   const chatBody = $("#chat-body");
   typewriter(inputBox, "接下来都将用 MemoryCenter 辅助我们进行开发项目", 35, () => {
@@ -1088,15 +1095,22 @@ function renderScene06(stage, scene) {
       ${traeSidebarHtml(projects)}
       <div class="trae-chat">
         ${traeChatHeader("用 MC 辅助开发", { timer: "00:38" })}
-        <div class="trae-chat-body">
-          ${traeUserMsg("开始实现用户登录模块")}
-          ${traeAgentMsg(`<div id="agent-reply" style="font-size: 13px; line-height: 1.7;"></div>`)}
-        </div>
-        ${traeInputArea()}
+        <div class="trae-chat-body" id="chat-body"></div>
+        ${traeInputArea({ typing: true })}
       </div>
     </div>
   `);
-  typewriter($("#agent-reply"), "好的，基于已归档的项目信息（task_state + decisions + architecture），我来实现用户登录模块。会沿用已有的认证中间件分层和 Argon2 密码哈希约定…", 30);
+  const inputBox = $("#input-box");
+  const chatBody = $("#chat-body");
+  typewriter(inputBox, "开始实现用户登录模块", 30, () => {
+    delay(300, () => {
+      inputBox.classList.remove("typing");
+      inputBox.classList.add("placeholder");
+      inputBox.textContent = "输入消息…";
+      chatBody.insertAdjacentHTML("beforeend", traeUserMsg("开始实现用户登录模块") + traeAgentMsg(`<div id="agent-reply" style="font-size: 13px; line-height: 1.7;"></div>`));
+      typewriter($("#agent-reply"), "好的，基于已归档的项目信息（task_state + decisions + architecture），我来实现用户登录模块。会沿用已有的认证中间件分层和 Argon2 密码哈希约定…", 30);
+    });
+  });
 }
 
 // 场景 7：时间跳转：第三天（原14：侧栏任务依次出现 → 旧会话淡出）
@@ -1116,13 +1130,21 @@ function renderScene07(stage, scene) {
       ${traeSidebarHtml(projects)}
       <div class="trae-chat">
         ${traeChatHeader("继续优化登录模块", { timer: "00:05" })}
-        <div class="trae-chat-body">
-          ${traeUserMsg("继续优化登录模块")}
-        </div>
-        ${traeInputArea()}
+        <div class="trae-chat-body" id="chat-body"></div>
+        ${traeInputArea({ typing: true })}
       </div>
     </div>
   `);
+  const inputBox = $("#input-box");
+  const chatBody = $("#chat-body");
+  typewriter(inputBox, "继续优化登录模块", 30, () => {
+    delay(300, () => {
+      inputBox.classList.remove("typing");
+      inputBox.classList.add("placeholder");
+      inputBox.textContent = "输入消息…";
+      chatBody.insertAdjacentHTML("beforeend", traeUserMsg("继续优化登录模块"));
+    });
+  });
   // 先隐藏所有任务条目，逐个淡入
   const taskItems = document.querySelectorAll('.trae-task-item');
   taskItems.forEach(el => { el.style.opacity = '0'; el.style.transition = 'opacity 0.3s'; });
@@ -1152,23 +1174,38 @@ function renderScene08(stage, scene) {
       ${timeLabel("第五天")}
       <div class="trae-chat">
         ${traeChatHeader("登录鉴权问题", { timer: "00:08" })}
-        <div class="trae-chat-body" id="chat-body">
-          ${traeUserMsg(`<span id="user-msg-1"></span>`)}
-        </div>
-        ${traeInputArea()}
+        <div class="trae-chat-body" id="chat-body"></div>
+        ${traeInputArea({ typing: true })}
       </div>
     </div>
   `);
-  // 0.5s: 打字第一条用户消息
-  typewriter($("#user-msg-1"), "这个登录鉴权方案有问题，记得第二天我们讨论过一个关键的安全策略，但我找不到那个会话了", 30);
+  const inputBox = $("#input-box");
+  const chatBody = $("#chat-body");
+  // 第一条用户消息：输入框 typing
+  typewriter(inputBox, "这个登录鉴权方案有问题，记得第二天我们讨论过一个关键的安全策略，但我找不到那个会话了", 30, () => {
+    delay(300, () => {
+      inputBox.classList.remove("typing");
+      inputBox.classList.add("placeholder");
+      inputBox.textContent = "输入消息…";
+      chatBody.insertAdjacentHTML("beforeend", traeUserMsg("这个登录鉴权方案有问题，记得第二天我们讨论过一个关键的安全策略，但我找不到那个会话了"));
+    });
+  });
   // 2.5s: Agent 提示检索
   delay(2500, () => {
-    $("#chat-body").insertAdjacentHTML("beforeend", traeAgentMsg(`<div style="font-size: 13px;">该会话可能在第三天被清理了，但 MemoryCenter 中应已归档。让我检索…</div>`));
+    chatBody.insertAdjacentHTML("beforeend", traeAgentMsg(`<div style="font-size: 13px;">该会话可能在第三天被清理了，但 MemoryCenter 中应已归档。让我检索…</div>`));
   });
-  // 3.5s: 打字第二条用户消息
+  // 3.5s: 第二条用户消息：输入框重新 typing
   delay(3500, () => {
-    $("#chat-body").insertAdjacentHTML("beforeend", traeUserMsg(`<span id="user-msg-2"></span>`));
-    typewriter($("#user-msg-2"), "找找第二天关于登录鉴权安全策略的历史记忆", 30);
+    inputBox.classList.remove("placeholder");
+    inputBox.classList.add("typing");
+    typewriter(inputBox, "找找第二天关于登录鉴权安全策略的历史记忆", 30, () => {
+      delay(300, () => {
+        inputBox.classList.remove("typing");
+        inputBox.classList.add("placeholder");
+        inputBox.textContent = "输入消息…";
+        chatBody.insertAdjacentHTML("beforeend", traeUserMsg("找找第二天关于登录鉴权安全策略的历史记忆"));
+      });
+    });
   });
   // 5s: 切换到分屏（检索可视化）
   delay(5000, () => {
@@ -1247,19 +1284,27 @@ function renderScene08(stage, scene) {
         ${timeLabel("第五天")}
         <div class="trae-chat">
           ${traeChatHeader("登录鉴权问题", { timer: "00:21" })}
-          <div class="trae-chat-body">
+          <div class="trae-chat-body" id="chat-body">
             ${traeAgentMsg(`<div style="font-size: 13px; line-height: 1.7;">找到了。第二天讨论的安全策略是：<strong>Argon2 哈希 + JWT 双 token</strong>。建议据此调整当前实现…</div>`)}
-            ${traeUserMsg("好的，按这个方案修复")}
-            ${traeAgentMsg(`
-              <div class="trae-collapse-bar">思考过程</div>
-              ${toolCard("Edit", "crates/server/src/middleware/auth.rs", "done")}
-              <div class="trae-step" style="margin-top: 8px;"><span class="trae-step-check">✓</span>正在修改 auth.rs 中的密码哈希逻辑…</div>
-            `)}
           </div>
-          ${traeInputArea()}
+          ${traeInputArea({ typing: true })}
         </div>
       </div>
     `);
+    const inputBox = $("#input-box");
+    const chatBody = $("#chat-body");
+    typewriter(inputBox, "好的，按这个方案修复", 30, () => {
+      delay(300, () => {
+        inputBox.classList.remove("typing");
+        inputBox.classList.add("placeholder");
+        inputBox.textContent = "输入消息…";
+        chatBody.insertAdjacentHTML("beforeend", traeUserMsg("好的，按这个方案修复") + traeAgentMsg(`
+          <div class="trae-collapse-bar">思考过程</div>
+          ${toolCard("Edit", "crates/server/src/middleware/auth.rs", "done")}
+          <div class="trae-step" style="margin-top: 8px;"><span class="trae-step-check">✓</span>正在修改 auth.rs 中的密码哈希逻辑…</div>
+        `));
+      });
+    });
   });
 }
 
@@ -1388,10 +1433,8 @@ function renderScene10(stage, scene) {
         <div class="trae-layout">
           <div class="trae-chat">
             ${traeChatHeader("项目迁移", { timer: "00:05" })}
-            <div class="trae-chat-body">
-              ${traeUserMsg(`<span id="user-msg"></span>`)}
-            </div>
-            ${traeInputArea()}
+            <div class="trae-chat-body" id="chat-body"></div>
+            ${traeInputArea({ typing: true })}
           </div>
         </div>
       `)}</div>
@@ -1403,7 +1446,16 @@ function renderScene10(stage, scene) {
       `, { title: "OpenCode" })}</div>
     </div>
   `;
-  typewriter($("#user-msg"), "突然想起来 OpenCode 那边有个项目要迁移到 TRAE，但怕细节丢失…", 30);
+  const inputBox = $("#input-box");
+  const chatBody = $("#chat-body");
+  typewriter(inputBox, "突然想起来 OpenCode 那边有个项目要迁移到 TRAE，但怕细节丢失…", 30, () => {
+    delay(300, () => {
+      inputBox.classList.remove("typing");
+      inputBox.classList.add("placeholder");
+      inputBox.textContent = "输入消息…";
+      chatBody.insertAdjacentHTML("beforeend", traeUserMsg("突然想起来 OpenCode 那边有个项目要迁移到 TRAE，但怕细节丢失…"));
+    });
+  });
   // Phase 2: 切换到 OpenCode 聊天界面（3-8.5s：空聊天+水印 → 打字 → 思考 → 回复）
   delay(3000, () => {
     stage.innerHTML = opencodeWindow(`
@@ -1464,34 +1516,42 @@ function renderScene10(stage, scene) {
         ${traeSidebarHtml(projects)}
         <div class="trae-chat">
           ${traeChatHeader("项目迁移到 TRAE", { timer: "00:12" })}
-          <div class="trae-chat-body">
-            ${traeUserMsg("请阅读本项目的 MemoryCenter 钩子表")}
-            ${traeAgentMsg(`
-              <div class="trae-collapse-bar">思考过程</div>
-              <div id="tool-cards"></div>
-            `)}
-          </div>
-          ${traeInputArea()}
+          <div class="trae-chat-body" id="chat-body"></div>
+          ${traeInputArea({ typing: true })}
         </div>
       </div>
     `);
-    const toolCards = $("#tool-cards");
-    const tools = [
-      { name: "prompt", args: 'session_id="cross-agent-demo"', d: 300 },
-      { name: "summaries", args: "获取所有周期摘要", d: 1200 },
-      { name: "retrieve", args: "逐条读取钩子", d: 2100 },
-    ];
-    tools.forEach(t => {
-      delay(t.d, () => {
-        toolCards.insertAdjacentHTML("beforeend", toolCard(t.name, t.args, "running"));
-        delay(700, () => {
-          const last = toolCards.querySelector(".tool-card:last-child .tool-status");
-          if (last) { last.classList.remove("running"); last.classList.add("done"); last.textContent = "完成"; }
+    const inputBox = $("#input-box");
+    const chatBody = $("#chat-body");
+    typewriter(inputBox, "请阅读本项目的 MemoryCenter 钩子表", 30, () => {
+      delay(300, () => {
+        inputBox.classList.remove("typing");
+        inputBox.classList.add("placeholder");
+        inputBox.textContent = "输入消息…";
+        chatBody.insertAdjacentHTML("beforeend", traeUserMsg("请阅读本项目的 MemoryCenter 钩子表") + traeAgentMsg(`
+          <div class="trae-collapse-bar">思考过程</div>
+          <div id="tool-cards"></div>
+        `));
+        // 工具调用序列
+        const toolCards = $("#tool-cards");
+        const tools = [
+          { name: "prompt", args: 'session_id="cross-agent-demo"', d: 300 },
+          { name: "summaries", args: "获取所有周期摘要", d: 1200 },
+          { name: "retrieve", args: "逐条读取钩子", d: 2100 },
+        ];
+        tools.forEach(t => {
+          delay(t.d, () => {
+            toolCards.insertAdjacentHTML("beforeend", toolCard(t.name, t.args, "running"));
+            delay(700, () => {
+              const last = toolCards.querySelector(".tool-card:last-child .tool-status");
+              if (last) { last.classList.remove("running"); last.classList.add("done"); last.textContent = "完成"; }
+            });
+          });
+        });
+        delay(3200, () => {
+          toolCards.insertAdjacentHTML("beforeend", `<div class="trae-step" style="margin-top: 8px;"><span class="trae-step-check">✓</span>已召回 MemoryCenter 钩子表，共 N 条记忆：<br>· 项目背景：XXX（来自 OpenCode, 第二天）<br>· 架构决策：XXX（来自 OpenCode, 第三天）<br>· 已实现模块：XXX<br>我已掌握该项目的完整开发周期与信息。</div>`);
         });
       });
-    });
-    delay(3200, () => {
-      toolCards.insertAdjacentHTML("beforeend", `<div class="trae-step" style="margin-top: 8px;"><span class="trae-step-check">✓</span>已召回 MemoryCenter 钩子表，共 N 条记忆：<br>· 项目背景：XXX（来自 OpenCode, 第二天）<br>· 架构决策：XXX（来自 OpenCode, 第三天）<br>· 已实现模块：XXX<br>我已掌握该项目的完整开发周期与信息。</div>`);
     });
   });
 }
@@ -1825,6 +1885,25 @@ function renderScene14(stage, scene) {
   tags.forEach((t, i) => {
     delay(i * 100, () => {
       mcTags.insertAdjacentHTML("beforeend", `<span class="tag-chip">${t}<span class="tag-count">${Math.floor(Math.random() * 15 + 1)}</span></span>`);
+    });
+  });
+  // 演示结束态：所有标签添加完后显示"演示已结束·重新播放"
+  delay(tags.length * 100 + 600, () => {
+    const overlay = document.createElement("div");
+    overlay.className = "demo-end-overlay";
+    overlay.innerHTML = `
+      <div class="demo-end-card">
+        <div class="demo-end-title">演示已结束</div>
+        <button class="demo-end-btn" id="btn-demo-replay">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M3 12a9 9 0 1 0 3-6.7M3 4v5h5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          重新播放
+        </button>
+      </div>
+    `;
+    stage.appendChild(overlay);
+    overlay.querySelector("#btn-demo-replay").addEventListener("click", () => {
+      overlay.remove();
+      restart();
     });
   });
 }
