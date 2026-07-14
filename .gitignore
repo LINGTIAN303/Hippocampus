@@ -2,7 +2,6 @@
 /target
 **/target
 target_new/
-Cargo.lock
 *.pdb
 
 # IDE
@@ -43,6 +42,7 @@ eval/mc_data/
 
 # MCP 客户端配置（含服务器地址，不提交）
 .mcp.json
+.mcp.json*.backup
 
 # MCP 本地测试数据（stdio 模式归档的记忆文件，不提交）
 .mcp-data/
@@ -52,6 +52,18 @@ eval/LongMemEval/data/longmemeval_s_cleaned.json
 
 # 本地记忆数据（运行时产生的 memory_data 目录，不提交）
 memory_data/
+memory_store/
+
+# 评测临时数据（v2.35 测试产物，不提交）
+eval/tmp_*/
+
+# 比赛 demo 截图与审计产物（本地生成，不提交）
+contest/demo/audit/
+contest/demo/assets/screenshots/
+contest/demo/scene*.png
+
+# 比赛产物临时目录
+.omo/
 
 # 本地测试归档数据（capability test 产物，不提交）
 test-data/

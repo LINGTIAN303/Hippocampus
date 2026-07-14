@@ -282,6 +282,7 @@ pub async fn pre_compress(
                     req.project_id.as_deref(),
                     preset_ref.as_ref(),
                     snap_ref.as_ref(),
+                    None,
                 )
                 .await
                 .map_err(|e| match e {
@@ -329,6 +330,7 @@ pub async fn pre_compress(
             req.project_id.as_deref(),
             preset_ref.as_ref(),
             snap_ref.as_ref(),
+            None,
         )
         .await
         .map_err(|e| match e {

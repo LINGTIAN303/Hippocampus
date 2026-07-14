@@ -78,6 +78,7 @@ impl SidecarArchiveEngine {
                 Some(project_id),
                 None, // preset：sidecar 不使用预设
                 None, // task_state_snapshot：sidecar 不传任务状态
+                None, // raw_context_override：sidecar 用 turns JSON
             )
             .await
     }

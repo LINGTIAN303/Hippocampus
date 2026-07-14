@@ -18,6 +18,8 @@ path = "src/main.rs"
 
 [dependencies]
 memory-center-core = { path = "../memory-center-core" }
+# v2.52：归档核心引擎（A-01 委托 archive/pre_compress 逻辑）
+memory-center-archive-core = { path = "../memory-center-archive-core" }
 # v2.12：复用 HttpLlmDetector + LlmDetectorConfig（从 memory-center-llm，避免引入 axum/moka 重依赖）
 memory-center-llm = { path = "../memory-center-llm" }
 # v2.18 批次2：复用 SessionSearchRouter（从 memory-center-search，避免引入 axum 重依赖）

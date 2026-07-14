@@ -2,6 +2,88 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。变更格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## v2.52 - 架构审计修复：安全加固 + CI 强化 + 密钥防护（2026-07-15）
+
+### 背景
+
+基于全面架构审计（38 项问题），本次处理 12 项 🔴+🟠 优先级问题，涵盖安全、CI、文档三个维度。**所有修改仅影响仓库代码与模板配置，不影响运行中的服务**（比赛 demo 站点不受影响）。
+
+### 安全加固（S-01 ~ S-08）
+
+- **S-01 LLM API Key 硬编码**：`contest/setup-demo.sh` 重写，LLM API Key 通过环境变量 `LLM_API_KEY` 传入，使用 `__LLM_API_KEY__` 占位符 + `sed` 替换；git filter-repo 已清洗历史中的泄露密钥
+- **S-02 .mcp.json.stdio.backup 误入库**：`git rm --cached` 移除，`.gitignore` 新增 `.mcp.json*.backup` 模式
+- **S-03 MCP /mcp 端点裸奔**：3 个 Nginx 配置（`deploy/mc-demo-memory-center.conf` / `deploy/openworld_nginx_with_mcp.conf` / `contest/mc-demo-nginx.conf`）新增 `Authorization: Bearer` 预校验，过滤明显非法请求
+- **S-04 鉴权方式注释错误**：`mc-demo-memory-center.conf` 注释从 `X-API-Key` 修正为 `Authorization: Bearer <key>`
+- **S-05 缺少安全响应头**：3 个 Nginx 配置新增 `X-Content-Type-Options` / `X-Frame-Options` / `X-XSS-Protection` / `Referrer-Policy` + `client_max_body_size 10m`
+- **S-06 systemd 以 root 运行**：`deploy/memory-center.service.example` 改为 `User=memory-center` + `NoNewPrivileges=true` / `ProtectSystem=strict` / `ProtectHome=true` / `PrivateTmp=true` / `ReadWritePaths=/opt/memory-center/data`
+- **S-07 auth.rs 时序攻击风险**：
+  - 新增 `MEMORY_CENTER_REQUIRE_API_KEY` 环境变量（true=强制鉴权，未配置 API Key 时返回 500）
+  - `constant_time_eq` 改为长度安全版本（长度不同时仍执行完整循环，避免长度泄露）
+  - 401 响应新增 `WWW-Authenticate: Bearer realm="MemoryCenter"` 头
+  - 新增 `server_error_response` 用于配置错误场景
+  - 测试：55/56 通过（1 个预存在的 `test_preset_list_scenarios_returns_7_builtin` 失败，scenario 数量已扩展到 10）
+- **S-08 tools/verify_archive*.py 硬编码 key**：文件已不存在，跳过（历史已清理）
+
+### CI 强化（T-01）
+
+- `.github/workflows/ci.yml`：
+  - 移除 `cargo fmt` 和 `cargo clippy` 的 `continue-on-error: true`（MVP 阶段已过，格式与 lint 必须通过）
+  - 新增 `workspace-test` job：运行 `cargo test --workspace --all-targets`，覆盖所有 crate 的单元测试
+
+### 密钥防护（prevent）
+
+- **新增 `scripts/pre-commit-secret-scan.sh`**：8 类密钥模式扫描（SiliconFlow / OpenAI / AWS / GitHub / 通用 API Key / SSH 私钥 / 服务器 root 登录 / Bearer Token）+ MEMORY_CENTER_API_KEY 硬编码检查
+- **新增 `.github/workflows/secret-scan.yml`**：detect-secrets + gitleaks 双重扫描（push / PR 触发，支持 baseline 白名单）
+
+### 架构优化（A-01）
+
+- **MCP server 委托 ArchiveEngine**：`crates/memory-center-mcp/src/lib.rs` 重构 `pre_compress_hook`，删除 ~418 行重复的 archive 逻辑，改委托给 `archive_engine.pre_compress()`
+  - 新增 `map_archive_error` 函数（ArchiveError → McpError）
+  - 保留 `raw_context_override` + `build_preset_request` 三级阈值回退语义
+  - 测试：55/56 通过（1 个预存在的 `test_preset_list_scenarios_returns_7_builtin` 失败，scenario 数量已扩展到 10）
+
+### 文档同步（Doc-02）
+
+- `README.md`：MCP tools 数量 21→22（4 处）
+- `docs/ARCHITECTURE.md`：MCP tools 21→22（4 处）+ Scenario 7→10（2 处）
+
+### .gitignore 优化（misc1）
+
+- 移除 `Cargo.lock`（二进制项目应提交 lock 文件确保可重复构建）
+- 新增忽略模式：`.mcp.json*.backup` / `memory_store/` / `eval/tmp_*/` / `contest/demo/audit/` / `contest/demo/assets/screenshots/` / `contest/demo/scene*.png` / `.omo/`
+
+### 受影响文件
+
+**修改**：
+- `contest/setup-demo.sh`（S-01 + S-03 + S-05 + S-06）
+- `deploy/mc-demo-memory-center.conf`（S-03 + S-04 + S-05）
+- `deploy/openworld_nginx_with_mcp.conf`（S-03 + S-05）
+- `contest/mc-demo-nginx.conf`（S-03 + S-05）
+- `deploy/memory-center.service.example`（S-06）
+- `crates/memory-center-server/src/middleware/auth.rs`（S-07）
+- `crates/memory-center-mcp/src/lib.rs`（A-01）
+- `crates/memory-center-mcp/src/main.rs`（A-01）
+- `crates/memory-center-mcp/Cargo.toml`（A-01）
+- `crates/memory-center-archive-core/src/lib.rs`（A-01 配套修复）
+- `crates/memory-center-server/src/handlers.rs`（A-01 配套清理）
+- `crates/memory-center-sidecar/src/engine.rs`（A-01 配套清理）
+- `.gitignore`（misc1）
+- `.github/workflows/ci.yml`（T-01）
+- `CHANGELOG.md`（Doc-01）
+- `README.md`（Doc-02）
+- `docs/ARCHITECTURE.md`（Doc-02）
+
+**新增**：
+- `scripts/pre-commit-secret-scan.sh`（prevent）
+- `.github/workflows/secret-scan.yml`（prevent）
+
+**移除（git rm --cached）**：
+- `.mcp.json.stdio.backup`（S-02）
+
+### 比赛安全声明
+
+本次修改仅影响 GitHub 仓库（origin），**未 push 到 production 远端**，服务器实际运行的配置文件未变更。比赛 demo 站点（http://162.211.183.236.sslip.io/）的 nginx 配置、systemd 服务、API 行为均不受影响。
+
 ## v2.50 - sidecar 直写存储 + 跨进程并发安全（2026-07-11）
 
 ### 重大变更

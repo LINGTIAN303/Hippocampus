@@ -144,10 +144,13 @@ pub enum ArchiveError {
 ///     Some("myproject"),
 ///     None,
 ///     None,
+///     None,
 /// ).await?;
 /// # Ok(())
 /// # }
 /// ```
+// v2.52：派生 Clone 以便 MCP 端 MemoryCenterMcp（派生 Clone）能持有此引擎
+#[derive(Clone)]
 pub struct ArchiveEngine {
     /// 存储根目录
     storage_root: PathBuf,
@@ -249,6 +252,9 @@ impl ArchiveEngine {
     /// - `project_id`: 项目 ID（可选，影响存储路径）
     /// - `preset`: 预设配置（可选）
     /// - `task_state_snapshot`: 任务状态快照（可选，持久化供下次 prompt 校准）
+    /// - `raw_context_override`: 覆盖 raw_context 内容（可选）。
+    ///   传 `Some(content)` 时用 `content` 作为 raw_context 内容（MCP 端传 full_context）；
+    ///   传 `None` 时用 turns 的 JSON 序列化（server/sidecar 默认行为）。
     pub async fn pre_compress(
         &self,
         session_id: &str,
@@ -257,19 +263,23 @@ impl ArchiveEngine {
         project_id: Option<&str>,
         preset: Option<&PresetRequest>,
         task_state_snapshot: Option<&TaskStateSnapshotRequest>,
+        raw_context_override: Option<&str>,
     ) -> Result<PreCompressResult, ArchiveError> {
-        if turns.is_empty() {
-            return Err(ArchiveError::BadRequest(
-                "turns 不能为空".to_string(),
-            ));
-        }
+        // v2.52：移除空 turns 早返回，让空 turns 场景（full_context 解析失败）
+        // 正确走"仅存 raw_context"路径，避免后续空 turns 处理分支成为死代码。
 
         // 1. 生成 hook_id（提前生成，用于 raw_context 文件命名）
         let hook_id = uuid::Uuid::new_v4().to_string();
 
-        // 2. 确定 raw_context 内容：用 turns 的 JSON 序列化
-        let raw_context_content = serde_json::to_string_pretty(&turns)
-            .unwrap_or_else(|_| "<turns 序列化失败>".to_string());
+        // 2. 确定 raw_context 内容
+        // - raw_context_override 有值：用调用方传入的内容（MCP 传 full_context）
+        // - 否则：用 turns 的 JSON 序列化（server/sidecar 默认行为）
+        let raw_context_content = if let Some(override_content) = raw_context_override {
+            override_content.to_string()
+        } else {
+            serde_json::to_string_pretty(&turns)
+                .unwrap_or_else(|_| "<turns 序列化失败>".to_string())
+        };
 
         // 3. 写 raw_context（spec 第七章：永远先存，失败才阻塞返回错误）
         let storage = self.create_storage();
@@ -662,7 +672,7 @@ impl ArchiveEngine {
 /// 1. preset.archive_threshold（用户显式覆盖，最高优先级）
 /// 2. preset 构建的 CombinedProfile.archive_threshold()
 /// 3. 默认 120000
-fn get_archive_threshold(preset: Option<&PresetRequest>) -> usize {
+pub fn get_archive_threshold(preset: Option<&PresetRequest>) -> usize {
     if let Some(preset_req) = preset {
         if let Some(t) = preset_req.archive_threshold {
             return t;

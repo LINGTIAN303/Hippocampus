@@ -151,14 +151,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         "启动 MemoryCenter MCP server (stdio 传输)"
     );
 
+    // v2.52：构造 ArchiveEngine 并注入 scenario_detector
+    //（summary_generator / session_search 通过 with_summary_generator / with_session_search
+    //  链式方法同步注入到 archive_engine，无需在此处重复注入）
+    let archive_engine = memory_center_archive_core::ArchiveEngine::new(storage_root.clone())
+        .with_scenario_detector(build_scenario_detector());
+
     // 启动 stdio MCP server
     let service = MemoryCenterMcp::with_conflict_detector(
         storage_root,
         Some(conflict_detector),
     )
+    .with_archive_engine(archive_engine)
     .with_session_search(session_search)
     .with_summary_generator(summary_generator)
-    .with_scenario_detector(Some(build_scenario_detector()))
     .with_combined_profile(combined_profile)
     .with_runtime_status(runtime_status)
     .serve(stdio())

@@ -117,8 +117,8 @@ Layer 1 由两个 crate 协同组成：`memory-center-core-logic`（纯逻辑，
 |------|------|
 | `MemoryCenterMcp` 结构体 | 持有 storage_root（无状态，每次 tool 调用创建独立 LocalStorage） |
 | 参数结构体 | 各 tool 对应 `*Params` 结构体（derive `JsonSchema` 自动生成参数 schema） |
-| `#[tool_router]` 宏 | rmcp 自动注册 21 个 `#[tool]` 方法为 MCP tools |
-| 21 个 MCP tools | 见下方 tools 分类表 |
+| `#[tool_router]` 宏 | rmcp 自动注册 22 个 `#[tool]` 方法为 MCP tools |
+| 22 个 MCP tools | 见下方 tools 分类表 |
 | `main.rs` | stdio 传输入口（被 Claude Code / Cursor / Trae / Codex 等客户端拉起子进程） |
 | 错误映射 | Core Error → `McpError::invalid_params` / `McpError::internal_error` |
 | 传输方式 | stdio（默认，v2.3）+ Streamable HTTP（v2.36，通过 memory-center-server 的 `/mcp` 端点） |
@@ -480,9 +480,9 @@ MemoryCenter 维护一份 `project_memory.md` 副本（`projects/{project_id}/pr
 
 通过 `preset_list_agents` tool 可查询所有预设；通过 `preset_build` 可构建自定义 `CombinedProfile`。
 
-### 9.4 场景自适应（7 个 Scenario）
+### 9.4 场景自适应（10 个 Scenario）
 
-内置 7 个 Scenario（coding / writing / research / chat / review / debug / refactor），每个场景有不同的归档阈值、检索策略、标签权重配置。根据场景自动调整：
+内置 10 个 Scenario（coding / writing / research / agentcollaboration / knowledgebase / longproject 等），每个场景有不同的归档阈值、检索策略、标签权重配置。根据场景自动调整：
 
 - **coding**：高阈值（400K），保留代码块和工具调用标签
 - **writing**：低阈值（100K），保留文本和引用标签

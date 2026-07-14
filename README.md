@@ -162,7 +162,7 @@ flowchart TB
 | `memory-center-ffi` | C ABI 动态库 + C 头文件 | ✅ MVP |
 | `memory-center-server` | Axum HTTP REST API + MCP Streamable HTTP 服务（无状态，水平扩展） | ✅ v2.36 |
 | `memory-center-python` | Python 原生绑定（PyO3 + maturin） | ✅ v2.2 |
-| `memory-center-mcp` | MCP Server（stdio + Streamable HTTP，21 个 tools） | ✅ v2.37 |
+| `memory-center-mcp` | MCP Server（stdio + Streamable HTTP，22 个 tools） | ✅ v2.37 |
 | `memory-center-wasm` | WASM 组件（wasm-bindgen + MemoryStorage + JsStorage） | ✅ v2.35 |
 | `memory-center-models` | 型号库（11 个 Agent + 10 个 Scenario + ModelVariant 注册表） | ✅ v2.3 |
 | `memory-center-presets` | 预设配置（CombinedProfile 构建 + 场景检测 + Agent 联动） | ✅ v2.3 |
@@ -418,7 +418,7 @@ Streamable HTTP 模式配置（DeepSeek 网页端等远程客户端）：
 }
 ```
 
-启动后，Agent 会自动发现 21 个 tools：
+启动后，Agent 会自动发现 22 个 tools：
 
 | 类别 | Tools |
 |------|-------|

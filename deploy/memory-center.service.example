@@ -1,13 +1,17 @@
 # MemoryCenter systemd 服务模板
 # 使用方式：
-#   1. 复制此文件到服务器：scp deploy/memory-center.service.example root@your-server:/etc/systemd/system/memory-center.service
-#   2. 替换所有 <PLACEHOLDER> 占位符为真实值
-#   3. systemctl daemon-reload && systemctl enable --now memory-center
+#   1. 创建专用用户：useradd -r -s /sbin/nologin -d /opt/memory-center memory-center
+#   2. 复制此文件到服务器：scp deploy/memory-center.service.example root@your-server:/etc/systemd/system/memory-center.service
+#   3. 替换所有 <PLACEHOLDER> 占位符为真实值
+#   4. systemctl daemon-reload && systemctl enable --now memory-center
+#   5. chmod 600 /etc/systemd/system/memory-center.service  # 保护密钥
 #
 # 安全提示：
+#   - 使用专用用户 memory-center 运行，禁止以 root 身份运行
 #   - MEMORY_CENTER_API_KEY 用 `openssl rand -hex 32` 生成强随机值
 #   - LLM API Key 切勿提交到 Git 仓库
 #   - 生产环境的真实 service 文件不应入库，仅在服务器本地维护
+#   - 生产模式建议设置 MEMORY_CENTER_REQUIRE_API_KEY=true 强制鉴权
 
 [Unit]
 Description=MemoryCenter Memory Service
@@ -15,20 +19,29 @@ After=network.target
 
 [Service]
 Type=simple
-User=root
+User=memory-center
+Group=memory-center
 WorkingDirectory=/opt/memory-center
+# 安全加固（systemd hardening）
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/memory-center/data
 Environment=MEMORY_CENTER_HOST=127.0.0.1
 Environment=MEMORY_CENTER_PORT=8765
 Environment=MEMORY_CENTER_ROOT=/opt/memory-center/data
 # 必填：API Key（openssl rand -hex 32 生成）
 Environment=MEMORY_CENTER_API_KEY=<your-api-key-here>
+# 可选：强制鉴权模式（true=未配置 API Key 时拒绝启动，生产环境推荐）
+Environment=MEMORY_CENTER_REQUIRE_API_KEY=false
 # MCP Streamable HTTP 端点（v2.36+）
 Environment=MEMORY_CENTER_MCP_ENABLED=true
 # MCP session 模式（true: 支持 SSE 流 + session 管理）
 Environment=MEMORY_CENTER_MCP_STATEFUL=true
 # DNS rebinding 防护：允许的 Host 列表（逗号分隔）
 Environment=MEMORY_CENTER_MCP_ALLOWED_HOSTS=localhost,127.0.0.1,::1,<your-domain>
-# CORS 防护：允许的 Origin 列表（逗号分隔）
+# CORS 防护：允许的 Origin 列表表（逗号分隔）
 Environment=MEMORY_CENTER_MCP_ALLOWED_ORIGINS=https://<your-domain>
 # 日志级别
 Environment=RUST_LOG=memory_center_server=info,tower_http=info

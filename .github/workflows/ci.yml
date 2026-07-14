@@ -67,7 +67,6 @@ jobs:
 
       - name: Check formatting
         run: cargo fmt --all -- --check
-        continue-on-error: true  # MVP 阶段不阻断
 
       - name: Build (core)
         run: cargo build --package memory-center-core --verbose
@@ -110,7 +109,6 @@ jobs:
 
       - name: Run Clippy
         run: cargo clippy --all-targets -- -D warnings
-        continue-on-error: true  # MVP 阶段不阻断
 
   # ============================================================================
   # C 集成测试（实际编译 C 程序加载动态库验证 ABI）
@@ -201,6 +199,30 @@ jobs:
 
       - name: Run MCP integration tests
         run: cargo test -p memory-center-mcp --all-targets --verbose
+
+  # ============================================================================
+  # Workspace 全量测试（v2.51 新增：覆盖所有 crate 的单元测试）
+  # ============================================================================
+  workspace-test:
+    name: Workspace Test (all crates)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: linux-workspace-test-cargo-${{ hashFiles('**/Cargo.toml') }}
+
+      - name: Run workspace tests
+        run: cargo test --workspace --all-targets --verbose
 
   # ============================================================================
   # Python 集成测试（PyO3 绑定全链路）
