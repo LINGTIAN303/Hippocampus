@@ -182,13 +182,14 @@ flowchart TB
 
 ## 文档
 
-完整文档位于 [GitHub Wiki](https://github.com/LINGTIAN303/MemoryCenter/wiki)：
+完整文档位于 [GitHub Wiki](https://github.com/LINGTIAN303/MemoryCenter/wiki)，mdBook 在线版部署于 GitHub Pages：[MemoryCenter Book](https://lingtian303.github.io/MemoryCenter/)。
 
 | 文档 | 说明 |
 |------|------|
 | [Getting Started](https://github.com/LINGTIAN303/MemoryCenter/wiki/Getting-Started) | 快速上手试用 |
 | [Architecture](https://github.com/LINGTIAN303/MemoryCenter/wiki/Architecture) | 整体架构设计 |
 | [Crate Guide](https://github.com/LINGTIAN303/MemoryCenter/wiki/Crate-Guide) | 各 Crate 选择指南 |
+| [Preset Crates](https://github.com/LINGTIAN303/MemoryCenter/wiki/Preset-Crates) | 5 个特配 Crate（agents/scenarios/skills/windows/models）配置清单 |
 | [MCP Integration](https://github.com/LINGTIAN303/MemoryCenter/wiki/MCP-Integration) | MCP 接入概览与 21 个工具列表 |
 | [MCP Configuration Guide](https://github.com/LINGTIAN303/MemoryCenter/wiki/MCP-Configuration-Guide) | MCP 各环境详细配置 + 踩坑排查 |
 | [API Reference](https://github.com/LINGTIAN303/MemoryCenter/wiki/API-Reference) | REST API 文档 |

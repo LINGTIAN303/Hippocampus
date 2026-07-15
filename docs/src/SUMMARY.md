@@ -36,6 +36,7 @@
 - [架构文档（完整版）](../ARCHITECTURE.md)
 - [性能基准](../BENCHMARKS.md)
 - [部署文档（完整版）](../DEPLOY.md)
+- [特配 Crate 配置参考](../preset-crates-inventory.md)
 
 ## 接入指南
 

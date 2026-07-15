@@ -77,7 +77,7 @@
 // v2.36：复用 memory-center-mcp::bootstrap 的 build_* 函数（与 stdio 模式一致）
 use memory_center_mcp::bootstrap::{
     build_conflict_detector, build_scenario_detector, build_session_search,
-    build_summary_generator,
+    build_summary_generator, build_token_estimator_from_env,
 };
 // v2.36：MCP Streamable HTTP 传输（/mcp 端点）
 use memory_center_server::mcp::{mount_mcp_route, McpConfig};
@@ -108,13 +108,31 @@ async fn main() {
     let scenario_detector = build_scenario_detector();
 
     // v2.50：构建归档引擎（复用 bootstrap 构造的组件，避免重复初始化）
-    let mut archive_engine = memory_center_archive_core::ArchiveEngine::new(config.storage_root.clone());
+    // v2.52 阶段 4：注入 token_estimator（替换 chars/3 简化估算）
+    let mut archive_engine = memory_center_archive_core::ArchiveEngine::new(config.storage_root.clone())
+        .with_token_estimator(build_token_estimator_from_env());
     if let Some(gen) = &summary_generator {
         archive_engine = archive_engine.with_summary_generator(gen.clone());
     }
     archive_engine = archive_engine.with_scenario_detector(scenario_detector.clone());
     if let Some(router) = &session_search {
         archive_engine = archive_engine.with_session_search(router.clone());
+    }
+
+    // v2.53 P8：构造 CooperativeService（仅在 session_search 可用时启用 Cooperative 模式）
+    // - CooperativeService 持有 archive_engine + session_search，由 HTTP handler 直接调用
+    // - archive_engine 派生 Clone，clone 给 CooperativeService 后原对象仍可注入到 AppState
+    // - session_search 未配置时 cooperative_service = None（Independent 模式，向后兼容）
+    let cooperative_service = session_search.as_ref().map(|router| {
+        std::sync::Arc::new(memory_center_archive_core::CooperativeService::new(
+            archive_engine.clone(),
+            router.clone(),
+        ))
+    });
+    if cooperative_service.is_some() {
+        tracing::info!("Cooperative 协作模式已启用（session_search 可用）");
+    } else {
+        tracing::info!("Cooperative 协作模式未启用（session_search 未配置，走 Independent 模式）");
     }
 
     let state = AppState {
@@ -124,6 +142,7 @@ async fn main() {
         conflict_detector: Some(conflict_detector),
         summary_generator,
         scenario_detector: Some(scenario_detector),
+        cooperative_service,
     };
 
     let app = create_router(state).layer(TraceLayer::new_for_http());
@@ -161,6 +180,8 @@ async fn main() {
     tracing::info!("API 端点:");
     tracing::info!("  POST   /api/v1/sessions/{{sid}}/archive");
     tracing::info!("  GET    /api/v1/sessions/{{sid}}/memories/{{hook_id}}");
+    tracing::info!("  POST   /api/v1/sessions/{{sid}}/memories/standalone");
+    tracing::info!("  POST   /api/v1/projects/{{pid}}/memories/linked");
     tracing::info!("  GET    /api/v1/sessions/{{sid}}/summaries");
     tracing::info!("  GET    /api/v1/sessions/{{sid}}/prompt");
     tracing::info!("  POST   /api/v1/sessions/{{sid}}/compaction");

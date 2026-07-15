@@ -7,6 +7,4 @@ description = "MemoryCenter 上下文窗口特配库 - Agent 工具压缩方式�
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
-thiserror = { workspace = true }
-tracing = { workspace = true }
 memory-center-core = { path = "../memory-center-core", version = "0.1.0" }

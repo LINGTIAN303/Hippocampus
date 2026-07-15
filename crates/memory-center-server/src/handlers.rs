@@ -10,10 +10,12 @@ use std::sync::Arc;
 use crate::error::AppError;
 use crate::AppState;
 use memory_center_core::compact::Compactor;
-use memory_center_core::model::{MemoryFile, MessageTurn, Tag};
+use memory_center_core::model::{ArchivePeriod, MemoryFile, MemoryUpdateRecord, MessageContent, MessageTurn, Tag};
 use memory_center_core::retrieve::{Retriever, SummaryView};
 use memory_center_core::score::DefaultScorer;
 use memory_center_core::storage::{LocalStorage, Storage};
+// v2.53 P8：导入 CooperativeHandler trait（调用其 pre_compress_hint / post_compress_ack 方法）
+use memory_center_archive_core::CooperativeHandler;
 
 // ============================================================================
 // 请求 / 响应结构
@@ -148,7 +150,7 @@ pub struct ProjectQuery {
     pub max_hooks: Option<usize>,
 }
 
-/// retrieve 端点查询参数（v2.43 新增 tags 过滤）
+/// retrieve 端点查询参数（v2.43 新增 tags 过滤，P7 Phase 2 新增 link_type）
 #[derive(Deserialize)]
 pub struct RetrieveQuery {
     pub project_id: Option<String>,
@@ -156,14 +158,105 @@ pub struct RetrieveQuery {
     ///
     /// 逗号分隔的标签名列表，如 `?tags=ToolCall,CodeBlock`。
     /// 支持英文变体名和中文显示名，详见 `Tag::from_name`。
-    /// 不传则返回完整记忆文件。
+    /// 不传则返回完整记忆文件。仅在 link_type 未设置或为 normal 时生效。
     #[serde(default)]
     pub tags: Option<String>,
+    /// 记忆类型（P7 Phase 2 新增，可选）
+    ///
+    /// - 不传或 "normal"：按 hook_id 检索周期记忆（默认行为）
+    /// - "standalone"：检索当前 session 的所有独立记忆（忽略 hook_id）
+    /// - "linked"：检索当前 project 的所有关联记忆（忽略 hook_id，需 project_id）
+    #[serde(default)]
+    pub link_type: Option<String>,
+}
+
+/// write_standalone_memory 请求体（P7 Phase 3 新增）
+#[derive(Deserialize)]
+pub struct WriteStandaloneBody {
+    /// 记忆内容（必填）
+    pub content: String,
+    /// 标题（可选，用于摘要展示）
+    #[serde(default)]
+    pub title: Option<String>,
+    /// 标签（可选）
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
+}
+
+/// write_linked_memory 请求体（P7 Phase 3 新增）
+#[derive(Deserialize)]
+pub struct WriteLinkedBody {
+    /// 记忆内容（必填）
+    pub content: String,
+    /// 标题（可选，用于摘要展示）
+    #[serde(default)]
+    pub title: Option<String>,
+    /// 标签（可选）
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
+    /// 来源 session ID（可选，用于追溯写入来源）
+    #[serde(default)]
+    pub session_id: Option<String>,
 }
 
 // ============================================================================
 // 辅助函数
 // ============================================================================
+
+/// 构造 standalone/linked 记忆的 MemoryFile（P7 Phase 3 新增）
+///
+/// 与 mcp crate 的 build_memory_file 逻辑一致（独立实现避免跨入口层依赖）。
+/// content 作为单轮 MessageTurn 的 user_message.text，
+/// title（若有）作为 llm_message.text 用于摘要展示。
+fn build_memory_file_for_api(
+    session_id: &str,
+    project_id: Option<&str>,
+    content: &str,
+    title: Option<&str>,
+    tags: Vec<Tag>,
+) -> MemoryFile {
+    let now = chrono::Utc::now();
+    let token_count = content.chars().count() / 3;
+
+    let turn = MessageTurn {
+        id: uuid::Uuid::new_v4(),
+        user_message: MessageContent {
+            text: Some(content.to_string()),
+            attachments: Vec::new(),
+            tool_calls: Vec::new(),
+            thinking: None,
+            file_changes: Vec::new(),
+        },
+        llm_message: MessageContent {
+            text: title.map(|s| s.to_string()),
+            attachments: Vec::new(),
+            tool_calls: Vec::new(),
+            thinking: None,
+            file_changes: Vec::new(),
+        },
+        tags: tags.clone(),
+        timestamp: now,
+        token_count,
+        stop_reason: None,
+        cost: None,
+    };
+
+    MemoryFile {
+        id: uuid::Uuid::new_v4(),
+        schema_version: 1,
+        archived_at: now,
+        session_id: session_id.to_string(),
+        project_id: project_id.map(|s| s.to_string()),
+        turns: vec![turn],
+        tags,
+        total_tokens: token_count,
+        truncated: false,
+        period: ArchivePeriod::Daily,
+        access_count: 0,
+        importance: 0,
+        updates: Vec::<MemoryUpdateRecord>::new(),
+    }
+}
 
 /// 创建 Storage 实例（每次请求创建，无内存缓存）
 fn create_storage(state: &AppState) -> Arc<dyn Storage> {
@@ -343,52 +436,264 @@ pub async fn pre_compress(
     Ok(Json(serde_json::to_value(result).unwrap_or_default()))
 }
 
+// ============================================================================
+// v2.53 P8：Cooperative 协作模式端点
+// ============================================================================
+
+/// POST /api/v1/cooperative/pre_compress
+///
+/// Cooperative 协作模式：压缩前获取保留建议（v2.53 P8 新增）。
+///
+/// 与 Independent 模式的 `/pre-compress` 区别：
+/// - `/pre-compress`：立即归档，输入 full_context 或 turns
+/// - `/cooperative/pre_compress`：仅返回保留建议，不触发归档
+///
+/// 请求体复用 archive-core 的 `PreCompressHintRequest`（含 session_id /
+/// current_tokens / context_snapshot 等）。
+///
+/// Cooperative 模式未启用时返回 501（引导客户端降级为 Independent 模式）。
+pub async fn cooperative_pre_compress(
+    State(state): State<AppState>,
+    Json(req): Json<memory_center_archive_core::PreCompressHintRequest>,
+) -> Result<Json<memory_center_archive_core::RetentionSuggestion>, AppError> {
+    let service = state.cooperative_service.as_ref().ok_or_else(|| {
+        AppError::BadRequest(
+            "Cooperative 模式未启用（cooperative_service 未注入）。请降级为 Independent 模式：调用 /pre-compress 或 /archive"
+                .to_string(),
+        )
+    })?;
+
+    let suggestion = service
+        .pre_compress_hint(req)
+        .await
+        .map_err(map_cooperative_error)?;
+
+    Ok(Json(suggestion))
+}
+
+/// POST /api/v1/cooperative/post_compress
+///
+/// Cooperative 协作模式：压缩后确认 + 归档（v2.53 P8 新增）。
+///
+/// 归档被压缩内容并记录建议采纳率，复用现有 archive 链路。
+/// 请求体复用 archive-core 的 `PostCompressAckRequest`（含 session_id /
+/// suggestion_id / archived_turns 等）。
+///
+/// Cooperative 模式未启用时返回 501。
+pub async fn cooperative_post_compress(
+    State(state): State<AppState>,
+    Json(req): Json<memory_center_archive_core::PostCompressAckRequest>,
+) -> Result<Json<SummaryView>, AppError> {
+    let service = state.cooperative_service.as_ref().ok_or_else(|| {
+        AppError::BadRequest(
+            "Cooperative 模式未启用（cooperative_service 未注入）。请降级为 Independent 模式：调用 /archive"
+                .to_string(),
+        )
+    })?;
+
+    let archive_result = service
+        .post_compress_ack(req)
+        .await
+        .map_err(map_cooperative_error)?;
+
+    Ok(Json(archive_result.summary))
+}
+
+/// 将 CooperativeError 映射到 AppError（v2.53 P8 新增）。
+///
+/// 6 个 CooperativeError 变体的映射策略：
+/// - SessionNotFound / InvalidState → BadRequest（客户端参数错误，可修正后重试）
+/// - SearchFailed / ArchiveFailed / Timeout / Degraded → Internal（服务端故障，建议降级）
+fn map_cooperative_error(err: memory_center_archive_core::CooperativeError) -> AppError {
+    use memory_center_archive_core::CooperativeError;
+    match err {
+        CooperativeError::SessionNotFound(msg) => AppError::BadRequest(msg),
+        CooperativeError::InvalidState { current, expected } => AppError::BadRequest(format!(
+            "状态非法: 当前 {current}, 期望 {expected}。可能是会话已超时降级，请重试或降级为 Independent 模式"
+        )),
+        CooperativeError::SearchFailed(msg) => {
+            AppError::Internal(format!("语义检索失败: {msg}。建议降级为 Independent 模式"))
+        }
+        CooperativeError::ArchiveFailed(msg) => AppError::Internal(format!(
+            "归档失败: {msg}。建议降级为 Independent 模式直接调 /archive"
+        )),
+        CooperativeError::Timeout(msg) => {
+            AppError::Internal(format!("Cooperative 超时: {msg}。建议降级为 Independent 模式"))
+        }
+        CooperativeError::Degraded { reason } => AppError::Internal(format!(
+            "Cooperative 已降级为 Independent: {reason}。请直接调 /archive 归档"
+        )),
+    }
+}
+
 /// GET /api/v1/sessions/{sid}/memories/{hook_id}
 ///
-/// 按钩子 ID 检索完整记忆文件（v2.43 支持 tags 查询参数过滤）。
+/// 按钩子 ID 检索完整记忆文件（v2.43 支持 tags 过滤，P7 Phase 2 支持 link_type）。
 ///
 /// 查询参数：
 /// - `project_id`（可选）：项目级隔离
 /// - `tags`（可选，v2.43）：逗号分隔的标签名，如 `?tags=ToolCall,CodeBlock`
 ///   传入后只返回含这些标签的轮次，避免完整文件过度占用上下文
+/// - `link_type`（可选，P7 Phase 2）：记忆类型
+///   - 不传或 "normal"：按 hook_id 检索周期记忆（返回单个对象）
+///   - "standalone"：检索 session 独立记忆（忽略 hook_id，返回数组）
+///   - "linked"：检索 project 关联记忆（忽略 hook_id，需 project_id，返回数组）
 pub async fn retrieve(
     State(state): State<AppState>,
     Path((sid, hook_id)): Path<(String, String)>,
     Query(query): Query<RetrieveQuery>,
-) -> Result<Json<MemoryFile>, AppError> {
+) -> Result<Json<serde_json::Value>, AppError> {
     let storage = create_storage(&state);
-    let retriever = Retriever::new(storage, &sid, query.project_id);
+    let retriever = Retriever::new(storage, &sid, query.project_id.clone());
 
-    // v2.43：tags 参数存在且非空时按标签过滤
-    let memory = if let Some(tags_str) = &query.tags {
-        let tags_str = tags_str.trim();
-        if tags_str.is_empty() {
-            retriever.retrieve_memory(&hook_id).await?
-        } else {
-            let tags: Vec<Tag> = tags_str
-                .split(',')
-                .map(|s| Tag::from_name(s.trim()))
-                .filter(|t| !matches!(t, Tag::Other(s) if s.is_empty()))
-                .collect();
-            if tags.is_empty() {
-                retriever.retrieve_memory(&hook_id).await?
-            } else {
-                retriever.retrieve_memory_filtered(&hook_id, &tags).await?
-            }
+    // P7 Phase 2：link_type 参数分流
+    let result = match query.link_type.as_deref() {
+        Some("standalone") => {
+            let memories = retriever.retrieve_standalone_memories().await?;
+            tracing::info!(
+                session = %sid,
+                count = memories.len(),
+                "standalone 记忆检索成功"
+            );
+            serde_json::to_value(memories).unwrap_or_default()
         }
-    } else {
-        retriever.retrieve_memory(&hook_id).await?
+        Some("linked") => {
+            let memories = retriever.retrieve_linked_memories().await?;
+            tracing::info!(
+                session = %sid,
+                project_id = ?query.project_id,
+                count = memories.len(),
+                "linked 记忆检索成功"
+            );
+            serde_json::to_value(memories).unwrap_or_default()
+        }
+        _ => {
+            // 默认：按 hook_id 检索周期记忆
+            // v2.43：tags 参数存在且非空时按标签过滤
+            let memory = if let Some(tags_str) = &query.tags {
+                let tags_str = tags_str.trim();
+                if tags_str.is_empty() {
+                    retriever.retrieve_memory(&hook_id).await?
+                } else {
+                    let tags: Vec<Tag> = tags_str
+                        .split(',')
+                        .map(|s| Tag::from_name(s.trim()))
+                        .filter(|t| !matches!(t, Tag::Other(s) if s.is_empty()))
+                        .collect();
+                    if tags.is_empty() {
+                        retriever.retrieve_memory(&hook_id).await?
+                    } else {
+                        retriever.retrieve_memory_filtered(&hook_id, &tags).await?
+                    }
+                }
+            } else {
+                retriever.retrieve_memory(&hook_id).await?
+            };
+
+            tracing::info!(
+                session = %sid,
+                hook_id = %hook_id,
+                turns = memory.turns.len(),
+                tags_filter = ?query.tags,
+                "检索成功"
+            );
+
+            serde_json::to_value(memory).unwrap_or_default()
+        }
     };
+
+    Ok(Json(result))
+}
+
+/// POST /api/v1/sessions/{sid}/memories/standalone
+///
+/// 写入 session 级独立记忆（P7 Phase 3 新增）。
+///
+/// 适用场景：临时知识、计算结果、会话级约定、调试输出等
+/// 需要独立检索但不属于轮次归档的内容。
+///
+/// 路径参数 `sid`：会话 ID
+/// 请求体：WriteStandaloneBody（content 必填，title/tags 可选）
+pub async fn write_standalone_memory(
+    State(state): State<AppState>,
+    Path(sid): Path<String>,
+    Json(body): Json<WriteStandaloneBody>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let storage = create_storage(&state);
+
+    let tags: Vec<Tag> = body
+        .tags
+        .as_ref()
+        .map(|names| names.iter().map(|s| Tag::from_name(s)).collect())
+        .unwrap_or_else(|| vec![Tag::Text]);
+
+    let file = build_memory_file_for_api(&sid, None, &body.content, body.title.as_deref(), tags);
+
+    let path = storage.write_standalone_memory(&sid, &file).await?;
 
     tracing::info!(
         session = %sid,
-        hook_id = %hook_id,
-        turns = memory.turns.len(),
-        tags_filter = ?query.tags,
-        "检索成功"
+        memory_id = %file.id,
+        path = %path,
+        "standalone 记忆写入成功"
     );
 
-    Ok(Json(memory))
+    Ok(Json(serde_json::json!({
+        "memory_id": file.id.to_string(),
+        "path": path,
+        "link_type": "standalone",
+        "session_id": sid,
+    })))
+}
+
+/// POST /api/v1/projects/{pid}/memories/linked
+///
+/// 写入 project 级关联记忆（P7 Phase 3 新增）。
+///
+/// 适用场景：项目级约定、通用规则、架构共识、跨会话知识等。
+/// 跨 session 共享，后续可通过 `retrieve(link_type="linked", project_id=...)` 检索。
+///
+/// 路径参数 `pid`：项目 ID
+/// 请求体：WriteLinkedBody（content 必填，title/tags/session_id 可选）
+pub async fn write_linked_memory(
+    State(state): State<AppState>,
+    Path(pid): Path<String>,
+    Json(body): Json<WriteLinkedBody>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let storage = create_storage(&state);
+
+    let tags: Vec<Tag> = body
+        .tags
+        .as_ref()
+        .map(|names| names.iter().map(|s| Tag::from_name(s)).collect())
+        .unwrap_or_else(|| vec![Tag::Text]);
+
+    // session_id 用于追溯写入来源，若无则用 project_id 占位
+    let session_id_for_file = body.session_id.as_deref().unwrap_or(&pid);
+    let file = build_memory_file_for_api(
+        session_id_for_file,
+        Some(&pid),
+        &body.content,
+        body.title.as_deref(),
+        tags,
+    );
+
+    let path = storage.write_linked_memory(&pid, &file).await?;
+
+    tracing::info!(
+        project = %pid,
+        memory_id = %file.id,
+        path = %path,
+        source_session = ?body.session_id,
+        "linked 记忆写入成功"
+    );
+
+    Ok(Json(serde_json::json!({
+        "memory_id": file.id.to_string(),
+        "path": path,
+        "link_type": "linked",
+        "project_id": pid,
+    })))
 }
 
 /// GET /api/v1/sessions/{sid}/summaries

@@ -35,10 +35,11 @@ pyo3.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 serde_json.workspace = true
 serde = { workspace = true }
+# P7 Phase 3：build_memory_file_for_py 使用（与 server/mcp/node 一致）
+chrono.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 tempfile = "3.0"
 async-trait = "0.1"
-chrono = { workspace = true }
-uuid = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

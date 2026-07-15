@@ -83,9 +83,19 @@ impl SkillProfile {
 
     /// 校验配置合法性
     ///
-    /// - 无强制校验项（所有字段组合都合法）
-    /// - 预留扩展点：未来可加 skill+link 兼容性校验
+    /// ## 校验规则
+    ///
+    /// - **destructive 技能强制 AttachedToTurn**：Write/Edit/Bash 的输出必须绑定到具体轮次，
+    ///   不允许设为 SkipArchive / StandaloneMemory / LinkedToProject
+    ///   （破坏性操作需可追溯到具体轮次，StandaloneMemory/LinkedToProject 不绑定轮次，无法追溯）
+    /// - 其他组合合法（非破坏性技能可自由选择任意 MemoryLink）
     pub fn validate(&self) -> Result<(), String> {
+        if self.skill.is_destructive() && !self.memory_link.is_attached_to_turn() {
+            return Err(format!(
+                "destructive 技能 {} 必须绑定到轮次（AttachedToTurn），不允许 {}（破坏性操作需可追溯，StandaloneMemory/LinkedToProject/SkipArchive 不绑定轮次）",
+                self.skill, self.memory_link
+            ));
+        }
         Ok(())
     }
 }
@@ -193,12 +203,62 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_always_ok() {
+    fn test_validate_non_destructive_ok() {
+        // 非破坏性技能 + 默认 AttachedToTurn → ok
         let p = SkillProfile::new(BuiltinSkill::Read);
         assert!(p.validate().is_ok());
 
+        // 非破坏性技能 + SkipArchive → ok（可自由选择不归档）
+        let p = SkillProfile::new(BuiltinSkill::Read).with_memory_link(MemoryLink::SkipArchive);
+        assert!(p.validate().is_ok());
+
+        // v2.52 P7：非破坏性技能 + StandaloneMemory → ok（可自由选择独立记忆）
+        let p = SkillProfile::new(BuiltinSkill::Read).with_memory_link(MemoryLink::StandaloneMemory);
+        assert!(p.validate().is_ok());
+
+        // v2.52 P7：非破坏性技能 + LinkedToProject → ok（可自由选择项目级记忆）
+        let p = SkillProfile::new(BuiltinSkill::Read).with_memory_link(MemoryLink::LinkedToProject);
+        assert!(p.validate().is_ok());
+
+        // Schedule 默认 SkipArchive + disabled → ok
         let p = SkillProfile::new(BuiltinSkill::Schedule).with_disabled();
         assert!(p.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_destructive_default_ok() {
+        // destructive 技能默认 AttachedToTurn → ok
+        for skill in [BuiltinSkill::Write, BuiltinSkill::Edit, BuiltinSkill::Bash] {
+            let p = SkillProfile::new(skill.clone());
+            assert!(p.validate().is_ok(), "{} 默认应通过", skill);
+        }
+    }
+
+    #[test]
+    fn test_validate_destructive_non_attached_fails() {
+        // v2.52 P7：destructive 技能 + 所有非 AttachedToTurn 变体 → Err
+        // （破坏性操作需可追溯到具体轮次，StandaloneMemory/LinkedToProject/SkipArchive 不绑定轮次）
+        let non_attached_links = [
+            MemoryLink::SkipArchive,
+            MemoryLink::StandaloneMemory,
+            MemoryLink::LinkedToProject,
+        ];
+        for skill in [BuiltinSkill::Write, BuiltinSkill::Edit, BuiltinSkill::Bash] {
+            for link in &non_attached_links {
+                let p = SkillProfile::new(skill.clone()).with_memory_link(*link);
+                let err = p.validate();
+                assert!(
+                    err.is_err(),
+                    "{} + {} 应失败",
+                    skill, link
+                );
+                assert!(
+                    err.unwrap_err().contains("destructive"),
+                    "错误信息应包含 destructive（{} + {}）",
+                    skill, link
+                );
+            }
+        }
     }
 
     #[test]

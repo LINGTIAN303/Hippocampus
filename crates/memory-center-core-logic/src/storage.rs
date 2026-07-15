@@ -537,4 +537,86 @@ pub trait Storage: Send + Sync {
             "delete_raw_context 未实现: 后端不支持 raw_context 持久化".into(),
         ))
     }
+
+    // ========================================================================
+    // standalone / linked 记忆（v2.52 P7 Phase 2 新增）
+    //
+    // 对应 MemoryLink 的 StandaloneMemory 和 LinkedToProject 变体：
+    // - StandaloneMemory：session 内独立记忆，存到 sessions/{sid}/standalone/
+    // - LinkedToProject：项目级记忆，存到 projects/{pid}/linked/
+    //
+    // 与 AttachedToTurn 的区别：不绑定到具体轮次，不进入 IndexHook 索引，
+    // 直接以文件列表形式检索（量少，无需索引开销）。
+    //
+    // read/delete 复用现有 read_memory / delete_memory（memory_id 路径自解释）。
+    // ========================================================================
+
+    /// 写入 standalone 记忆文件（session 内独立，v2.52 P7 Phase 2 新增）
+    ///
+    /// 存储路径：`sessions/{session_id}/standalone/{filename}`
+    ///
+    /// 适用场景：当前会话的临时知识（中途计算结果、调试输出、会话级约定），
+    /// 需要独立检索但不绑定到轮次。
+    ///
+    /// ## 默认实现
+    ///
+    /// 默认返回 `Err`（旧后端不支持 standalone 记忆）。
+    async fn write_standalone_memory(
+        &self,
+        _session_id: &str,
+        _file: &MemoryFile,
+    ) -> crate::Result<String> {
+        Err(crate::Error::Storage(
+            "write_standalone_memory 未实现: 后端不支持 standalone 记忆".into(),
+        ))
+    }
+
+    /// 列出 session 的所有 standalone 记忆文件路径（v2.52 P7 Phase 2 新增）
+    ///
+    /// 返回 `sessions/{session_id}/standalone/` 目录下所有记忆文件的相对路径（POSIX 分隔符）。
+    /// 目录不存在时返回空 Vec。
+    ///
+    /// ## 默认实现
+    ///
+    /// 默认返回空 Vec（旧后端不支持 standalone 记忆）。
+    async fn list_standalone_memories(
+        &self,
+        _session_id: &str,
+    ) -> crate::Result<Vec<String>> {
+        Ok(Vec::new())
+    }
+
+    /// 写入 linked 记忆文件（项目级，跨 session 共享，v2.52 P7 Phase 2 新增）
+    ///
+    /// 存储路径：`projects/{project_id}/linked/{filename}`
+    ///
+    /// 适用场景：项目级约定、通用规则、跨会话共享的知识。
+    ///
+    /// ## 默认实现
+    ///
+    /// 默认返回 `Err`（旧后端不支持 linked 记忆）。
+    async fn write_linked_memory(
+        &self,
+        _project_id: &str,
+        _file: &MemoryFile,
+    ) -> crate::Result<String> {
+        Err(crate::Error::Storage(
+            "write_linked_memory 未实现: 后端不支持 linked 记忆".into(),
+        ))
+    }
+
+    /// 列出 project 的所有 linked 记忆文件路径（v2.52 P7 Phase 2 新增）
+    ///
+    /// 返回 `projects/{project_id}/linked/` 目录下所有记忆文件的相对路径（POSIX 分隔符）。
+    /// 目录不存在时返回空 Vec。
+    ///
+    /// ## 默认实现
+    ///
+    /// 默认返回空 Vec（旧后端不支持 linked 记忆）。
+    async fn list_linked_memories(
+        &self,
+        _project_id: &str,
+    ) -> crate::Result<Vec<String>> {
+        Ok(Vec::new())
+    }
 }

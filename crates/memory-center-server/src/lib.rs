@@ -106,6 +106,16 @@ pub struct AppState {
     /// 未配置时使用 req.preset 原行为(无场景识别)。
     pub scenario_detector:
         Option<std::sync::Arc<memory_center_presets::HybridScenarioDetector>>,
+    /// v2.53 P8：Cooperative 协作服务（可选，Cooperative 模式启用标志）
+    ///
+    /// - `Some`：`/api/v1/cooperative/pre_compress` 和
+    ///   `/api/v1/cooperative/post_compress` 端点可用
+    /// - `None`：上述端点返回 501 错误（向后兼容，Independent 模式）
+    ///
+    /// 由 `main.rs` 构造 `CooperativeService::new(archive_engine, session_search)`
+    /// 后注入到 AppState。
+    pub cooperative_service:
+        Option<std::sync::Arc<memory_center_archive_core::CooperativeService>>,
 }
 
 impl Default for AppState {
@@ -119,6 +129,7 @@ impl Default for AppState {
             conflict_detector: None,
             summary_generator: None,
             scenario_detector: None,
+            cooperative_service: None,
         }
     }
 }
@@ -143,9 +154,27 @@ pub fn create_router(state: AppState) -> axum::Router {
             "/api/v1/sessions/{sid}/pre-compress",
             post(handlers::pre_compress),
         )
+        // v2.53 P8：Cooperative 协作模式端点（session_id 在请求体中，非路径参数）
+        .route(
+            "/api/v1/cooperative/pre_compress",
+            post(handlers::cooperative_pre_compress),
+        )
+        .route(
+            "/api/v1/cooperative/post_compress",
+            post(handlers::cooperative_post_compress),
+        )
         .route(
             "/api/v1/sessions/{sid}/memories/{hook_id}",
             get(handlers::retrieve).patch(handlers::update_memory),
+        )
+        // P7 Phase 3：主动写入 standalone/linked 记忆端点
+        .route(
+            "/api/v1/sessions/{sid}/memories/standalone",
+            post(handlers::write_standalone_memory),
+        )
+        .route(
+            "/api/v1/projects/{pid}/memories/linked",
+            post(handlers::write_linked_memory),
         )
         .route(
             "/api/v1/sessions/{sid}/summaries",

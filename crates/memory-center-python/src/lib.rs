@@ -28,7 +28,7 @@
 use memory_center_core::archive::Archiver;
 use memory_center_core::compact::Compactor;
 use memory_center_core::generate::SummaryGenerator;
-use memory_center_core::model::ArchiveConfig;
+use memory_center_core::model::{ArchiveConfig, ArchivePeriod, MemoryFile, MemoryUpdateRecord, MessageContent, MessageTurn, Tag};
 use memory_center_core::retrieve::Retriever;
 use memory_center_core::score::DefaultScorer;
 use memory_center_core::storage::{LocalStorage, Storage};
@@ -187,6 +187,59 @@ fn json_string_to_py<'py>(
 /// 创建 Storage 实例
 fn create_storage(root: &std::path::Path) -> Arc<dyn Storage> {
     Arc::new(LocalStorage::new(root.to_path_buf()))
+}
+
+/// 构造 standalone/linked 记忆的 MemoryFile（P7 Phase 3 新增）
+///
+/// 与 mcp/server 的 build_memory_file 逻辑一致（独立实现避免跨 crate 依赖）。
+fn build_memory_file_for_py(
+    session_id: &str,
+    project_id: Option<&str>,
+    content: &str,
+    title: Option<&str>,
+    tags: Vec<Tag>,
+) -> MemoryFile {
+    let now = chrono::Utc::now();
+    let token_count = content.chars().count() / 3;
+
+    let turn = MessageTurn {
+        id: uuid::Uuid::new_v4(),
+        user_message: MessageContent {
+            text: Some(content.to_string()),
+            attachments: Vec::new(),
+            tool_calls: Vec::new(),
+            thinking: None,
+            file_changes: Vec::new(),
+        },
+        llm_message: MessageContent {
+            text: title.map(|s| s.to_string()),
+            attachments: Vec::new(),
+            tool_calls: Vec::new(),
+            thinking: None,
+            file_changes: Vec::new(),
+        },
+        tags: tags.clone(),
+        timestamp: now,
+        token_count,
+        stop_reason: None,
+        cost: None,
+    };
+
+    MemoryFile {
+        id: uuid::Uuid::new_v4(),
+        schema_version: 1,
+        archived_at: now,
+        session_id: session_id.to_string(),
+        project_id: project_id.map(|s| s.to_string()),
+        turns: vec![turn],
+        tags,
+        total_tokens: token_count,
+        truncated: false,
+        period: ArchivePeriod::Daily,
+        access_count: 0,
+        importance: 0,
+        updates: Vec::<MemoryUpdateRecord>::new(),
+    }
 }
 
 /// 从环境变量构建 LLM 摘要生成器（v2.23）
@@ -510,6 +563,143 @@ impl MemoryCenter {
             .map_err(|e| PyValueError::new_err(format!("序列化记忆失败: {}", e)))?;
 
         Python::attach(|py| json_string_to_py(py, &memory_json).map(|b| b.into()))
+    }
+
+    /// 检索当前 session 的所有 standalone 记忆文件（P7 Phase 2）
+    ///
+    /// 返回：独立记忆文件列表 list[dict]
+    fn retrieve_standalone(&self) -> PyResult<Vec<Py<PyAny>>> {
+        let storage = create_storage(&self.storage_root);
+        let retriever = Retriever::new(storage, &self.session_id, self.project_id.clone());
+
+        let memories = self
+            .runtime
+            .block_on(async { retriever.retrieve_standalone_memories().await })
+            .map_err(|e| PyValueError::new_err(format!("检索 standalone 记忆失败: {}", e)))?;
+
+        let memories_json = serde_json::to_string(&memories)
+            .map_err(|e| PyValueError::new_err(format!("序列化 standalone 记忆失败: {}", e)))?;
+
+        Python::attach(|py| {
+            let arr = json_string_to_py(py, &memories_json)?;
+            let list: Bound<'_, pyo3::types::PyList> = arr.extract()?;
+            list.iter().map(|item| Ok(item.into())).collect()
+        })
+    }
+
+    /// 检索当前 project 的所有 linked 记忆文件（P7 Phase 2）
+    ///
+    /// 返回：关联记忆文件列表 list[dict]
+    fn retrieve_linked(&self) -> PyResult<Vec<Py<PyAny>>> {
+        let storage = create_storage(&self.storage_root);
+        let retriever = Retriever::new(storage, &self.session_id, self.project_id.clone());
+
+        let memories = self
+            .runtime
+            .block_on(async { retriever.retrieve_linked_memories().await })
+            .map_err(|e| PyValueError::new_err(format!("检索 linked 记忆失败: {}", e)))?;
+
+        let memories_json = serde_json::to_string(&memories)
+            .map_err(|e| PyValueError::new_err(format!("序列化 linked 记忆失败: {}", e)))?;
+
+        Python::attach(|py| {
+            let arr = json_string_to_py(py, &memories_json)?;
+            let list: Bound<'_, pyo3::types::PyList> = arr.extract()?;
+            list.iter().map(|item| Ok(item.into())).collect()
+        })
+    }
+
+    /// 写入 session 级独立记忆（P7 Phase 3 新增）
+    ///
+    /// 参数：
+    /// - `content`：记忆内容文本（必填）
+    /// - `title`：标题（可选，用于摘要展示）
+    /// - `tags`：标签列表（可选，如 ["ToolCall", "CodeBlock"]）
+    ///
+    /// 返回：dict 含 memory_id / path / link_type / session_id
+    fn write_standalone_memory(
+        &self,
+        content: String,
+        title: Option<String>,
+        tags: Option<Vec<String>>,
+    ) -> PyResult<Py<PyAny>> {
+        let storage = create_storage(&self.storage_root);
+        let tags_vec: Vec<Tag> = tags
+            .as_ref()
+            .map(|names| names.iter().map(|s| Tag::from_name(s)).collect())
+            .unwrap_or_else(|| vec![Tag::Text]);
+
+        let file = build_memory_file_for_py(
+            &self.session_id,
+            None,
+            &content,
+            title.as_deref(),
+            tags_vec,
+        );
+
+        let path = self
+            .runtime
+            .block_on(async { storage.write_standalone_memory(&self.session_id, &file).await })
+            .map_err(|e| PyValueError::new_err(format!("写入 standalone 记忆失败: {}", e)))?;
+
+        let result_json = serde_json::json!({
+            "memory_id": file.id.to_string(),
+            "path": path,
+            "link_type": "standalone",
+            "session_id": self.session_id,
+        })
+        .to_string();
+
+        Python::attach(|py| json_string_to_py(py, &result_json).map(|b| b.into()))
+    }
+
+    /// 写入 project 级关联记忆（P7 Phase 3 新增）
+    ///
+    /// 参数：
+    /// - `content`：记忆内容文本（必填）
+    /// - `title`：标题（可选，用于摘要展示）
+    /// - `tags`：标签列表（可选）
+    ///
+    /// 返回：dict 含 memory_id / path / link_type / project_id
+    /// 异常：若未配置 project_id 则抛 ValueError
+    fn write_linked_memory(
+        &self,
+        content: String,
+        title: Option<String>,
+        tags: Option<Vec<String>>,
+    ) -> PyResult<Py<PyAny>> {
+        let project_id = self.project_id.as_ref().ok_or_else(|| {
+            PyValueError::new_err("write_linked_memory 需要 project_id：MemoryCenter 实例未配置 project_id")
+        })?;
+
+        let storage = create_storage(&self.storage_root);
+        let tags_vec: Vec<Tag> = tags
+            .as_ref()
+            .map(|names| names.iter().map(|s| Tag::from_name(s)).collect())
+            .unwrap_or_else(|| vec![Tag::Text]);
+
+        let file = build_memory_file_for_py(
+            &self.session_id,
+            Some(project_id),
+            &content,
+            title.as_deref(),
+            tags_vec,
+        );
+
+        let path = self
+            .runtime
+            .block_on(async { storage.write_linked_memory(project_id, &file).await })
+            .map_err(|e| PyValueError::new_err(format!("写入 linked 记忆失败: {}", e)))?;
+
+        let result_json = serde_json::json!({
+            "memory_id": file.id.to_string(),
+            "path": path,
+            "link_type": "linked",
+            "project_id": project_id,
+        })
+        .to_string();
+
+        Python::attach(|py| json_string_to_py(py, &result_json).map(|b| b.into()))
     }
 
     /// 获取所有周期的摘要视图列表
@@ -953,7 +1143,9 @@ mod tests {
     /// 验证 supported_scenarios 返回 7 个内置场景
     #[test]
     fn test_supported_scenarios_count() {
-        assert_eq!(memory_center_scenarios::Scenario::all_builtin().len(), 7);
+        // Scenario 数量随版本演进（v2.29=7，v2.52+=10），断言下限而非精确值
+        let count = memory_center_scenarios::Scenario::all_builtin().len();
+        assert!(count >= 7, "应至少有 7 个内置 Scenario，实际: {}", count);
     }
 
     /// v2.29：验证 supported_models 通过 ModelRegistry 返回 15 个型号
@@ -1305,5 +1497,70 @@ mod tests {
         // 验证 LLM 摘要被注入
         assert_eq!(hook.summary.title, "Python 绑定 LLM 摘要");
         assert_eq!(hook.summary.abstract_text.as_deref(), Some("Mock 摘要"));
+    }
+
+    /// P7 Phase 3：验证 build_memory_file_for_py 辅助函数构造的 MemoryFile 字段正确
+    ///
+    /// 此测试直接调用 Rust 辅助函数（不经过 PyO3），验证：
+    /// - content 正确填入 user_message.text
+    /// - title 正确填入 llm_message.text
+    /// - tags 透传
+    /// - token_count 按 chars/3 估算
+    /// - period = Daily，importance = 0
+    #[tokio::test]
+    async fn test_p7_phase3_build_memory_file_for_py() {
+        let file = build_memory_file_for_py(
+            "sess-py-p7",
+            Some("proj-py-p7"),
+            "P7 Phase 3 Python 写入测试内容",
+            Some("P7 标题"),
+            vec![Tag::Plan, Tag::CodeBlock],
+        );
+
+        // 基础字段
+        assert_eq!(file.session_id, "sess-py-p7");
+        assert_eq!(file.project_id.as_deref(), Some("proj-py-p7"));
+        assert_eq!(file.schema_version, 1);
+        assert_eq!(file.period, ArchivePeriod::Daily);
+        assert_eq!(file.importance, 0);
+        assert_eq!(file.access_count, 0);
+        assert_eq!(file.truncated, false);
+        assert_eq!(file.turns.len(), 1);
+
+        // turns 内容
+        let turn = &file.turns[0];
+        assert_eq!(
+            turn.user_message.text.as_deref(),
+            Some("P7 Phase 3 Python 写入测试内容")
+        );
+        assert_eq!(turn.llm_message.text.as_deref(), Some("P7 标题"));
+        assert_eq!(turn.tags.len(), 2);
+        assert_eq!(turn.tags[0], Tag::Plan);
+        assert_eq!(turn.tags[1], Tag::CodeBlock);
+        // token_count 按字符数 / 3 估算
+        let expected_tokens = "P7 Phase 3 Python 写入测试内容".chars().count() / 3;
+        assert_eq!(turn.token_count, expected_tokens);
+        assert_eq!(file.total_tokens, expected_tokens);
+
+        // tags 透传到 file 级别
+        assert_eq!(file.tags.len(), 2);
+        assert_eq!(file.tags[0], Tag::Plan);
+    }
+
+    /// P7 Phase 3：验证 build_memory_file_for_py 无 title 时 llm_message.text 为 None
+    #[tokio::test]
+    async fn test_p7_phase3_build_memory_file_for_py_no_title() {
+        let file = build_memory_file_for_py(
+            "sess-py-p7-no-title",
+            None,
+            "无标题独立记忆",
+            None,
+            vec![Tag::Text],
+        );
+
+        let turn = &file.turns[0];
+        assert_eq!(turn.user_message.text.as_deref(), Some("无标题独立记忆"));
+        assert!(turn.llm_message.text.is_none(), "无 title 时 llm_message.text 应为 None");
+        assert!(file.project_id.is_none(), "无 project_id 时应为 None");
     }
 }

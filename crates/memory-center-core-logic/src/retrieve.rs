@@ -775,6 +775,98 @@ impl Retriever {
             .read_index(&self.session_id, self.project_id.as_deref(), period)
             .await
     }
+
+    // ========================================================================
+    // standalone / linked 记忆检索（P7 Phase 2 新增）
+    // ========================================================================
+
+    /// 检索当前 session 的所有 standalone 记忆文件（P7 Phase 2）
+    ///
+    /// standalone 记忆是 session 隔离的独立记忆，不参与周期归档，
+    /// 也不进入 IndexHook 索引。本方法直接从文件列表读取完整内容。
+    ///
+    /// ## 返回
+    ///
+    /// 返回当前 session 下所有 standalone 记忆文件（`Vec<MemoryFile>`）。
+    /// 单个文件读取失败时跳过并记录 warning，不影响其他文件。
+    /// 目录不存在时返回空 Vec（首次使用前）。
+    ///
+    /// ## 使用场景
+    ///
+    /// - LLM 需要回溯当前 session 的独立记忆（MemoryLink::StandaloneMemory）
+    /// - 配合 `retrieve_linked_memories` 获取 project 级关联记忆
+    pub async fn retrieve_standalone_memories(&self) -> crate::Result<Vec<MemoryFile>> {
+        let memory_ids = self.storage.list_standalone_memories(&self.session_id).await?;
+
+        let mut memories = Vec::with_capacity(memory_ids.len());
+        for memory_id in memory_ids {
+            match self.storage.read_memory(&memory_id).await {
+                Ok(memory) => memories.push(memory),
+                Err(e) => {
+                    tracing::warn!(
+                        session_id = %self.session_id,
+                        memory_id = %memory_id,
+                        error = %e,
+                        "读取 standalone 记忆失败，跳过"
+                    );
+                }
+            }
+        }
+
+        Ok(memories)
+    }
+
+    /// 检索当前 project 的所有 linked 记忆文件（P7 Phase 2）
+    ///
+    /// linked 记忆是 project 跨 session 共享的关联记忆，不参与周期归档，
+    /// 也不进入 IndexHook 索引。本方法直接从文件列表读取完整内容。
+    ///
+    /// ## 前置条件
+    ///
+    /// Retriever 必须持有 `project_id`（构造时传入）。若 `project_id` 为 None，
+    /// 返回空 Vec（无 project 上下文，无法检索 linked 记忆）。
+    ///
+    /// ## 返回
+    ///
+    /// 返回当前 project 下所有 linked 记忆文件（`Vec<MemoryFile>`）。
+    /// 单个文件读取失败时跳过并记录 warning，不影响其他文件。
+    /// 目录不存在时返回空 Vec（首次使用前）。
+    ///
+    /// ## 使用场景
+    ///
+    /// - LLM 需要回溯当前 project 的关联记忆（MemoryLink::LinkedToProject）
+    /// - 跨 session 共享的项目级记忆检索
+    pub async fn retrieve_linked_memories(&self) -> crate::Result<Vec<MemoryFile>> {
+        let project_id = match &self.project_id {
+            Some(pid) => pid,
+            None => {
+                tracing::debug!(
+                    session_id = %self.session_id,
+                    "无 project_id，跳过 linked 记忆检索"
+                );
+                return Ok(Vec::new());
+            }
+        };
+
+        let memory_ids = self.storage.list_linked_memories(project_id).await?;
+
+        let mut memories = Vec::with_capacity(memory_ids.len());
+        for memory_id in memory_ids {
+            match self.storage.read_memory(&memory_id).await {
+                Ok(memory) => memories.push(memory),
+                Err(e) => {
+                    tracing::warn!(
+                        project_id = %project_id,
+                        memory_id = %memory_id,
+                        error = %e,
+                        "读取 linked 记忆失败，跳过"
+                    );
+                }
+            }
+        }
+
+        Ok(memories)
+    }
 }
 
 // ========================================================================

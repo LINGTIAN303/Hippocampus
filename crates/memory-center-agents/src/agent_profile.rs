@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 /// Agent 代理工具配置
 ///
-/// ## 4 主流预设
+/// ## 5 专属预设（4 主流 + OpenCode）
 ///
 /// | family | supports_tool_calls | has_native_compression | session_prefix |
 /// |---|---|---|---|
@@ -18,8 +18,9 @@ use serde::{Deserialize, Serialize};
 /// | Cursor | true | true（chat 5:1） | cursor |
 /// | Trae | true | true（conversation 5:1） | trae |
 /// | Codex | true | true（rolling 3:1 无摘要） | codex |
+/// | OpenCode | true | true（compaction 事件 + 摘要） | opencode |
 ///
-/// 其他 7 + Custom 使用 [`AgentProfile::generic`]（全能力开启 + 调用方自定义）
+/// 其他 6 + Custom 使用 [`AgentProfile::generic`]（全能力开启 + 调用方自定义）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentProfile {
     /// Agent 家族（稳定枚举）
@@ -110,7 +111,26 @@ impl AgentProfile {
         }
     }
 
-    /// 通用预设（其他 7 + Custom 使用）
+    /// OpenCode 预设（v2.40 新增，P2 补全）
+    ///
+    /// - family=OpenCode, supports_tool_calls=true
+    /// - has_native_compression=true（compaction 事件机制，sidecar 监听自动归档）
+    /// - session_prefix="opencode"
+    ///
+    /// OpenCode 是开源 Agent，有原生 compaction 机制（`processCompaction` + 摘要），
+    /// MemoryCenter sidecar 监听 `session_message` 表的 compaction 消息自动归档。
+    pub fn opencode() -> Self {
+        Self {
+            family: AgentFamily::OpenCode,
+            variant: None,
+            supports_tool_calls: true,
+            has_native_compression: true,
+            archive_to_memory_center: true,
+            session_prefix: AgentFamily::OpenCode.default_session_prefix().to_string(),
+        }
+    }
+
+    /// 通用预设（其他 6 + Custom 使用）
     ///
     /// - 全能力开启（保守策略）
     /// - session_prefix 从 family 推导
@@ -126,13 +146,14 @@ impl AgentProfile {
         }
     }
 
-    /// 从 family 推导预设（4 主流返回专用预设，其他返回 generic）
+    /// 从 family 推导预设（5 专属预设返回专用，其他返回 generic）
     pub fn from_family(family: AgentFamily) -> Self {
         match &family {
             AgentFamily::ClaudeCode => Self::claude_code(),
             AgentFamily::Cursor => Self::cursor(),
             AgentFamily::Trae => Self::trae(),
             AgentFamily::Codex => Self::codex(),
+            AgentFamily::OpenCode => Self::opencode(),
             other => Self::generic(other.clone()),
         }
     }
@@ -236,6 +257,18 @@ mod tests {
     }
 
     #[test]
+    fn test_opencode_preset() {
+        let p = AgentProfile::opencode();
+        assert_eq!(p.family, AgentFamily::OpenCode);
+        assert!(p.supports_tool_calls);
+        assert!(p.has_native_compression); // OpenCode 有 compaction 机制
+        assert!(p.archive_to_memory_center);
+        assert_eq!(p.session_prefix, "opencode");
+        assert!(p.variant.is_none());
+        assert!(p.validate().is_ok());
+    }
+
+    #[test]
     fn test_generic_preset() {
         let p = AgentProfile::generic(AgentFamily::Zcode);
         assert_eq!(p.family, AgentFamily::Zcode);
@@ -270,6 +303,15 @@ mod tests {
 
         let p = AgentProfile::from_family(AgentFamily::Custom("X".into()));
         assert!(matches!(p.family, AgentFamily::Custom(_)));
+    }
+
+    #[test]
+    fn test_from_family_opencode() {
+        // OpenCode 应走专属预设（has_native_compression=true），而非 generic（false）
+        let p = AgentProfile::from_family(AgentFamily::OpenCode);
+        assert_eq!(p.family, AgentFamily::OpenCode);
+        assert!(p.has_native_compression); // 专属预设，非 generic
+        assert_eq!(p.session_prefix, "opencode");
     }
 
     #[test]

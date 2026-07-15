@@ -53,7 +53,7 @@ use std::sync::Arc;
 use memory_center_mcp::MemoryCenterMcp;
 use memory_center_mcp::bootstrap::{
     build_combined_profile, build_conflict_detector, build_scenario_detector,
-    build_session_search, build_summary_generator,
+    build_session_search, build_summary_generator, build_token_estimator_from_env,
 };
 use rmcp::transport::streamable_http_server::{
     StreamableHttpServerConfig, StreamableHttpService,
@@ -168,10 +168,21 @@ fn make_service_factory(
             "MCP session 创建：构造 MemoryCenterMcp 实例"
         );
 
+        // v2.52：用 ArchiveEngine 链式构造后整体注入（替代旧 with_scenario_detector）
+        // 注意：with_archive_engine 会整体替换 archive_engine 字段，必须在所有组件注入完成后调用
+        // v2.52 阶段 4：注入 token_estimator（替换 chars/3 简化估算）
+        let mut engine = memory_center_archive_core::ArchiveEngine::new(storage_root.clone())
+            .with_token_estimator(build_token_estimator_from_env());
+        if let Some(gen) = summary_generator {
+            engine = engine.with_summary_generator(gen);
+        }
+        engine = engine.with_scenario_detector(scenario_detector);
+        if let Some(router) = session_search {
+            engine = engine.with_session_search(router);
+        }
+
         let mcp = MemoryCenterMcp::with_conflict_detector(storage_root, Some(conflict_detector))
-            .with_session_search(session_search)
-            .with_summary_generator(summary_generator)
-            .with_scenario_detector(Some(scenario_detector))
+            .with_archive_engine(engine)
             .with_combined_profile(combined_profile)
             .with_runtime_status(runtime_status);
 

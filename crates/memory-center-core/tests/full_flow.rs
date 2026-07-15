@@ -441,3 +441,96 @@ async fn test_full_flow_agent_workflow_simulation() {
         .unwrap();
     assert_eq!(files.len(), 2);
 }
+
+// ============================================================================
+// P7 Phase 2：Retriever standalone / linked 记忆检索测试
+// ============================================================================
+
+#[tokio::test]
+async fn test_retriever_standalone_memories() {
+    use memory_center_core::model::{ArchivePeriod, MemoryFile};
+
+    let tmp = TempDir::new().unwrap();
+    let storage: Arc<dyn Storage> = Arc::new(LocalStorage::new(tmp.path()));
+
+    // 写入 2 个 standalone 记忆到 session-retrieve
+    let turn1 = make_turn("用户问：独立记忆 1", 100);
+    let file1 = MemoryFile::new("session-retrieve", None, vec![turn1], ArchivePeriod::Daily);
+    storage.write_standalone_memory("session-retrieve", &file1).await.unwrap();
+
+    let turn2 = make_turn("用户问：独立记忆 2", 100);
+    let file2 = MemoryFile::new("session-retrieve", None, vec![turn2], ArchivePeriod::Daily);
+    storage.write_standalone_memory("session-retrieve", &file2).await.unwrap();
+
+    // 用 Retriever 检索 standalone_memories
+    let retriever = Retriever::new(storage.clone(), "session-retrieve", None);
+    let memories = retriever.retrieve_standalone_memories().await.unwrap();
+
+    assert_eq!(memories.len(), 2, "应返回 2 个 standalone 记忆");
+    // 验证内容正确
+    assert!(memories.iter().any(|m| {
+        m.turns[0].user_message.text.as_ref().unwrap().contains("独立记忆 1")
+    }));
+    assert!(memories.iter().any(|m| {
+        m.turns[0].user_message.text.as_ref().unwrap().contains("独立记忆 2")
+    }));
+}
+
+#[tokio::test]
+async fn test_retriever_linked_memories() {
+    use memory_center_core::model::{ArchivePeriod, MemoryFile};
+
+    let tmp = TempDir::new().unwrap();
+    let storage: Arc<dyn Storage> = Arc::new(LocalStorage::new(tmp.path()));
+
+    // 写入 2 个 linked 记忆到 project-linked（来自不同 session）
+    let turn1 = make_turn("用户问：关联记忆 1", 100);
+    let file1 = MemoryFile::new(
+        "session-1",
+        Some("project-linked".into()),
+        vec![turn1],
+        ArchivePeriod::Daily,
+    );
+    storage.write_linked_memory("project-linked", &file1).await.unwrap();
+
+    let turn2 = make_turn("用户问：关联记忆 2", 100);
+    let file2 = MemoryFile::new(
+        "session-2",
+        Some("project-linked".into()),
+        vec![turn2],
+        ArchivePeriod::Daily,
+    );
+    storage.write_linked_memory("project-linked", &file2).await.unwrap();
+
+    // 用 Retriever（带 project_id，来自第三个 session）检索 linked_memories
+    let retriever = Retriever::new(
+        storage.clone(),
+        "session-3",
+        Some("project-linked".into()),
+    );
+    let memories = retriever.retrieve_linked_memories().await.unwrap();
+
+    assert_eq!(memories.len(), 2, "应返回 2 个 linked 记忆（跨 session 共享）");
+}
+
+#[tokio::test]
+async fn test_retriever_linked_without_project_id() {
+    let tmp = TempDir::new().unwrap();
+    let storage: Arc<dyn Storage> = Arc::new(LocalStorage::new(tmp.path()));
+
+    // Retriever 无 project_id 时，retrieve_linked_memories 返回空 Vec
+    let retriever = Retriever::new(storage.clone(), "session-no-project", None);
+    let memories = retriever.retrieve_linked_memories().await.unwrap();
+    assert!(memories.is_empty(), "无 project_id 时应返回空 Vec");
+}
+
+#[tokio::test]
+async fn test_retriever_standalone_empty() {
+    let tmp = TempDir::new().unwrap();
+    let storage: Arc<dyn Storage> = Arc::new(LocalStorage::new(tmp.path()));
+
+    // 空 session 的 retrieve_standalone_memories 返回空 Vec
+    let retriever = Retriever::new(storage.clone(), "session-empty", None);
+    let memories = retriever.retrieve_standalone_memories().await.unwrap();
+    assert!(memories.is_empty(), "空 session 应返回空 Vec");
+}

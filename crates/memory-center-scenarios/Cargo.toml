@@ -2,11 +2,9 @@
 name = "memory-center-scenarios"
 version.workspace = true
 edition.workspace = true
-description = "MemoryCenter 工作场景特配库 - 7 场景预设 + 摘要 focus + 评分权重 + 检索策略"
+description = "MemoryCenter 工作场景特配库 - 10 场景预设 + 摘要 focus + 评分权重 + 检索策略"
 
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
-thiserror = { workspace = true }
-tracing = { workspace = true }
 memory-center-core = { path = "../memory-center-core", version = "0.1.0" }

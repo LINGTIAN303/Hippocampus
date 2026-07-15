@@ -42,12 +42,32 @@ impl TestServer {
         let tmpdir = TempDir::new().expect("创建临时目录失败");
         let storage_root: PathBuf = tmpdir.path().to_path_buf();
 
+        // v2.50：archive_engine 需注入 session_search，否则 archive 后不会将 hook 同步到 router
+        // 导致 search 端点返回 0 结果（test_session_search_multiple_hooks_same_session 等）
+        let mut archive_engine =
+            memory_center_archive_core::ArchiveEngine::new(storage_root.clone());
+        if let Some(router) = &session_search {
+            archive_engine = archive_engine.with_session_search(router.clone());
+        }
+
+        // v2.53 P8：session_search 可用时构造 CooperativeService（Phase 4 集成测试需要）
+        // - 复用已注入 session_search 的 archive_engine，保证归档后 hook 同步到 router
+        // - session_search=None 时 cooperative_service=None（Independent 模式，向后兼容）
+        let cooperative_service = session_search.as_ref().map(|router| {
+            std::sync::Arc::new(memory_center_archive_core::CooperativeService::new(
+                archive_engine.clone(),
+                router.clone(),
+            ))
+        });
+
         let state = AppState {
+            archive_engine: std::sync::Arc::new(archive_engine),
             storage_root,
             session_search,
             conflict_detector,
             summary_generator: None,
             scenario_detector: None,
+            cooperative_service,
         };
         let app = create_router(state);
 
@@ -1609,10 +1629,11 @@ async fn test_http_pre_compress_empty_context_returns_400() {
     assert_eq!(resp.status(), 400);
     let err: Value = resp.json().await.expect("解析错误响应失败");
     assert_eq!(err["error"]["code"].as_str().unwrap(), "BAD_REQUEST");
+    // v2.43 起错误消息改为 "turns 和 full_context 至少传一个"
     assert!(err["error"]["message"]
         .as_str()
         .unwrap()
-        .contains("full_context 不能为空"));
+        .contains("至少传一个"));
 }
 
 // ============================================================================
@@ -1702,5 +1723,475 @@ async fn test_http_pre_compress_hook_id_consistency() {
         memory["turns"].as_array().unwrap().len(),
         1,
         "应检索到 1 轮对话"
+    );
+}
+
+// ============================================================================
+// P7 Phase 3：write_standalone / write_linked 端点测试
+// ============================================================================
+
+/// 验证 POST /memories/standalone 写入 + GET retrieve?link_type=standalone 检索闭环
+#[tokio::test]
+async fn test_http_write_standalone_memory_and_retrieve() {
+    let server = TestServer::start().await;
+    let client = reqwest::Client::new();
+
+    // 1. 写入第一条 standalone 记忆
+    let body = json!({
+        "content": "这是一条独立记忆内容，用于验证 HTTP write_standalone 端点",
+        "title": "独立记忆标题",
+        "tags": ["Text", "Plan"]
+    });
+    let resp = client
+        .post(server.url("/api/v1/sessions/sess-std/memories/standalone"))
+        .json(&body)
+        .send()
+        .await
+        .expect("请求失败");
+    assert_eq!(resp.status(), 200);
+    let written: Value = resp.json().await.expect("解析响应失败");
+    assert_eq!(written["link_type"].as_str().unwrap(), "standalone");
+    assert_eq!(written["session_id"].as_str().unwrap(), "sess-std");
+    assert!(written["memory_id"].as_str().is_some(), "应返回 memory_id");
+    assert!(
+        written["path"].as_str().unwrap().contains("standalone/"),
+        "path 应含 standalone/，实际: {}",
+        written["path"]
+    );
+
+    // 2. 写入第二条（无 title/tags）
+    let body2 = json!({ "content": "第二条独立记忆" });
+    let resp = client
+        .post(server.url("/api/v1/sessions/sess-std/memories/standalone"))
+        .json(&body2)
+        .send()
+        .await
+        .expect("请求失败");
+    assert_eq!(resp.status(), 200);
+
+    // 3. retrieve?link_type=standalone 应返回 2 条
+    let url = "/api/v1/sessions/sess-std/memories/any?link_type=standalone";
+    let resp = client
+        .get(server.url(url))
+        .send()
+        .await
+        .expect("请求失败");
+    assert_eq!(resp.status(), 200);
+    let memories: Vec<Value> = resp.json().await.expect("解析响应失败");
+    assert_eq!(memories.len(), 2, "应检索到 2 条 standalone 记忆");
+
+    // 4. 验证内容（顺序不固定，遍历查找）
+    let texts: Vec<String> = memories
+        .iter()
+        .map(|m| {
+            m["turns"][0]["user_message"]["text"]
+                .as_str()
+                .unwrap_or("")
+                .to_string()
+        })
+        .collect();
+    assert!(
+        texts.iter().any(|t| t.contains("独立记忆内容")),
+        "应包含第一条记忆，实际: {:?}",
+        texts
+    );
+    assert!(
+        texts.iter().any(|t| t.contains("第二条独立记忆")),
+        "应包含第二条记忆，实际: {:?}",
+        texts
+    );
+}
+
+/// 验证 POST /projects/{pid}/memories/linked 写入 + retrieve?link_type=linked 检索闭环
+#[tokio::test]
+async fn test_http_write_linked_memory_and_retrieve() {
+    let server = TestServer::start().await;
+    let client = reqwest::Client::new();
+
+    // 1. 写入第一条 linked 记忆（带 session_id 追溯）
+    let body = json!({
+        "content": "项目级共识：采用 Rust + Axum 架构",
+        "title": "架构共识",
+        "tags": ["Plan"],
+        "session_id": "session-a"
+    });
+    let resp = client
+        .post(server.url("/api/v1/projects/proj-lnk/memories/linked"))
+        .json(&body)
+        .send()
+        .await
+        .expect("请求失败");
+    assert_eq!(resp.status(), 200);
+    let written: Value = resp.json().await.expect("解析响应失败");
+    assert_eq!(written["link_type"].as_str().unwrap(), "linked");
+    assert_eq!(written["project_id"].as_str().unwrap(), "proj-lnk");
+    assert!(
+        written["path"].as_str().unwrap().contains("linked/"),
+        "path 应含 linked/，实际: {}",
+        written["path"]
+    );
+
+    // 2. 用不同 session_id 写入第二条（验证跨 session 共享）
+    let body2 = json!({
+        "content": "另一会话写入的项目规则",
+        "session_id": "session-b"
+    });
+    let resp = client
+        .post(server.url("/api/v1/projects/proj-lnk/memories/linked"))
+        .json(&body2)
+        .send()
+        .await
+        .expect("请求失败");
+    assert_eq!(resp.status(), 200);
+
+    // 3. retrieve?link_type=linked&project_id=proj-lnk 应返回 2 条
+    let url = "/api/v1/sessions/any-session/memories/any?link_type=linked&project_id=proj-lnk";
+    let resp = client
+        .get(server.url(url))
+        .send()
+        .await
+        .expect("请求失败");
+    assert_eq!(resp.status(), 200);
+    let memories: Vec<Value> = resp.json().await.expect("解析响应失败");
+    assert_eq!(memories.len(), 2, "应检索到 2 条 linked 记忆");
+
+    // 4. 验证内容包含架构共识
+    let texts: Vec<String> = memories
+        .iter()
+        .map(|m| {
+            m["turns"][0]["user_message"]["text"]
+                .as_str()
+                .unwrap_or("")
+                .to_string()
+        })
+        .collect();
+    assert!(
+        texts.iter().any(|t| t.contains("Rust + Axum")),
+        "应包含架构共识内容，实际: {:?}",
+        texts
+    );
+}
+
+// ============================================================================
+// v2.53 P8 Phase 4：Cooperative 协作端点集成测试
+// ============================================================================
+//
+// 覆盖场景：
+// 1. 未启用 cooperative_service（Independent 模式）→ 400 BAD_REQUEST
+// 2. 启用后 pre_compress 正常流程 → 200 + RetentionSuggestion 结构
+// 3. post_compress 空 archived_turns → 500 INTERNAL_ERROR（ArchiveFailed）
+// 4. 完整协作流程：pre_compress → post_compress（带真实 turns）→ 200
+//
+// 注意：cooperative_service 在 TestServer::start_with_session_search 中
+// 随 session_search 自动构造（Phase 4 修改），无需单独注入。
+
+/// 验证 Independent 模式（cooperative_service=None）下调用 pre_compress 返回 400
+///
+/// 场景：TestServer::start() 未注入 session_search，cooperative_service 为 None。
+/// 期望：返回 400 BAD_REQUEST + "Cooperative 模式未启用" 错误消息。
+#[tokio::test]
+async fn test_cooperative_pre_compress_without_service_returns_400() {
+    let server = TestServer::start().await;
+    let client = reqwest::Client::new();
+
+    let body = json!({
+        "session_id": "sess-coop-disabled",
+        "current_tokens": 1000,
+        "token_threshold": 100000,
+        "compression_scheme": "test",
+        "context_snapshot": {},
+        "turns_to_compress": []
+    });
+
+    let resp = client
+        .post(server.url("/api/v1/cooperative/pre_compress"))
+        .json(&body)
+        .send()
+        .await
+        .expect("请求失败");
+
+    assert_eq!(resp.status(), 400);
+    let err: Value = resp.json().await.expect("解析错误响应失败");
+    assert_eq!(err["error"]["code"].as_str().unwrap(), "BAD_REQUEST");
+    assert!(
+        err["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Cooperative 模式未启用"),
+        "错误消息应提示 Cooperative 未启用，实际: {}",
+        err["error"]["message"]
+    );
+}
+
+/// 验证 Independent 模式下调用 post_compress 返回 400
+#[tokio::test]
+async fn test_cooperative_post_compress_without_service_returns_400() {
+    let server = TestServer::start().await;
+    let client = reqwest::Client::new();
+
+    let body = json!({
+        "session_id": "sess-coop-disabled",
+        "suggestion_id": "sugg-test",
+        "suggestion_adopted": {},
+        "archived_turns": []
+    });
+
+    let resp = client
+        .post(server.url("/api/v1/cooperative/post_compress"))
+        .json(&body)
+        .send()
+        .await
+        .expect("请求失败");
+
+    assert_eq!(resp.status(), 400);
+    let err: Value = resp.json().await.expect("解析错误响应失败");
+    assert_eq!(err["error"]["code"].as_str().unwrap(), "BAD_REQUEST");
+    assert!(
+        err["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Cooperative 模式未启用"),
+        "错误消息应提示 Cooperative 未启用"
+    );
+}
+
+/// 验证 Cooperative 模式启用时 pre_compress 返回 200 + RetentionSuggestion 结构
+///
+/// 场景：注入 SessionSearchRouter（降级模式：仅关键词检索），cooperative_service 自动构造。
+/// 期望：返回 200 + 完整的 RetentionSuggestion（含 suggestion_id 格式 sugg-YYYYMMDD-xxxxxxxx）。
+#[tokio::test]
+async fn test_cooperative_pre_compress_with_service_returns_200() {
+    use memory_center_server::SessionSearchRouter;
+    use std::sync::Arc;
+
+    // 启动带 SessionSearchRouter 的服务（降级模式：仅关键词，无需 Embedder API）
+    let router = Arc::new(SessionSearchRouter::new(None, 0));
+    let server = TestServer::start_with_session_search(Some(router), None).await;
+    let client = reqwest::Client::new();
+
+    let body = json!({
+        "session_id": "sess-coop-pre",
+        "current_tokens": 50000,
+        "token_threshold": 200000,
+        "compression_scheme": "test_scheme",
+        "context_snapshot": {
+            "current_task": "Cooperative 端点集成测试",
+            "recent_turns_summary": "验证 pre_compress 返回 RetentionSuggestion",
+            "key_files": ["cooperative.rs", "handlers.rs"],
+            "tool_calls_summary": []
+        },
+        "turns_to_compress": [
+            {
+                "turn_id": "turn-1",
+                "text_preview": "用户请求测试 Cooperative 协作",
+                "token_count": 100
+            }
+        ]
+    });
+
+    let resp = client
+        .post(server.url("/api/v1/cooperative/pre_compress"))
+        .json(&body)
+        .send()
+        .await
+        .expect("请求失败");
+
+    assert_eq!(resp.status(), 200);
+    let suggestion: Value = resp.json().await.expect("解析响应失败");
+
+    // 验证 RetentionSuggestion 结构
+    assert_eq!(
+        suggestion["session_id"].as_str().unwrap(),
+        "sess-coop-pre",
+        "session_id 应匹配请求"
+    );
+
+    let suggestion_id = suggestion["suggestion_id"].as_str().unwrap();
+    assert!(
+        suggestion_id.starts_with("sugg-"),
+        "suggestion_id 应以 'sugg-' 开头，实际: {}",
+        suggestion_id
+    );
+    // 格式：sugg-YYYYMMDD-xxxxxxxx（8 位 UUID 前缀）
+    assert!(
+        suggestion_id.len() > "sugg-".len() + 8, // 至少 sugg- + 日期 + 部分 UUID
+        "suggestion_id 应含日期和 UUID 前缀，实际: {}",
+        suggestion_id
+    );
+
+    // 三段式建议字段应存在（数组形式，可能为空）
+    assert!(
+        suggestion["retain_turns"].is_array(),
+        "retain_turns 应为数组"
+    );
+    assert!(
+        suggestion["prune_hints"].is_array(),
+        "prune_hints 应为数组"
+    );
+    assert!(
+        suggestion["inject_memories"].is_array(),
+        "inject_memories 应为数组"
+    );
+}
+
+/// 验证 post_compress 空 archived_turns 返回 500（ArchiveFailed → Internal）
+///
+/// 场景：启用 CooperativeService，但 post_compress_ack 传入空 archived_turns。
+/// 期望：返回 500 INTERNAL_ERROR + "归档失败" 错误消息。
+/// 设计文档第 8.3 节：post_compress_ack 在 archived_turns 为空时返回 ArchiveFailed。
+#[tokio::test]
+async fn test_cooperative_post_compress_empty_turns_returns_500() {
+    use memory_center_server::SessionSearchRouter;
+    use std::sync::Arc;
+
+    let router = Arc::new(SessionSearchRouter::new(None, 0));
+    let server = TestServer::start_with_session_search(Some(router), None).await;
+    let client = reqwest::Client::new();
+
+    let body = json!({
+        "session_id": "sess-coop-empty",
+        "suggestion_id": "sugg-test-empty",
+        "suggestion_adopted": {
+            "retained": [],
+            "pruned": [],
+            "injected": []
+        },
+        "archived_turns": []
+    });
+
+    let resp = client
+        .post(server.url("/api/v1/cooperative/post_compress"))
+        .json(&body)
+        .send()
+        .await
+        .expect("请求失败");
+
+    assert_eq!(resp.status(), 500);
+    let err: Value = resp.json().await.expect("解析错误响应失败");
+    assert_eq!(err["error"]["code"].as_str().unwrap(), "INTERNAL_ERROR");
+    assert!(
+        err["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("归档失败"),
+        "错误消息应含 '归档失败'，实际: {}",
+        err["error"]["message"]
+    );
+}
+
+/// 验证 Cooperative 完整协作流程：pre_compress → post_compress（带真实 turns）
+///
+/// 场景：
+/// 1. 调用 pre_compress_hint 获取 suggestion_id
+/// 2. 用该 suggestion_id 调用 post_compress_ack，传入 1 个真实 MessageTurn
+/// 期望：post_compress 返回 200 + SummaryView（含 hook_id + abstract_text）
+#[tokio::test]
+async fn test_cooperative_full_workflow_pre_then_post() {
+    use memory_center_server::SessionSearchRouter;
+    use std::sync::Arc;
+
+    let router = Arc::new(SessionSearchRouter::new(None, 0));
+    let server = TestServer::start_with_session_search(Some(router), None).await;
+    let client = reqwest::Client::new();
+
+    // 1. pre_compress_hint 获取 suggestion_id
+    let pre_body = json!({
+        "session_id": "sess-coop-full",
+        "current_tokens": 80000,
+        "token_threshold": 200000,
+        "compression_scheme": "test_full",
+        "context_snapshot": {
+            "current_task": "完整协作流程测试",
+            "recent_turns_summary": "pre_compress 后 post_compress 归档"
+        },
+        "turns_to_compress": []
+    });
+
+    let resp = client
+        .post(server.url("/api/v1/cooperative/pre_compress"))
+        .json(&pre_body)
+        .send()
+        .await
+        .expect("pre_compress 请求失败");
+    assert_eq!(resp.status(), 200, "pre_compress 应返回 200");
+
+    let suggestion: Value = resp.json().await.expect("解析 pre_compress 响应失败");
+    let suggestion_id = suggestion["suggestion_id"]
+        .as_str()
+        .expect("suggestion_id 应为字符串")
+        .to_string();
+    assert!(
+        !suggestion_id.is_empty(),
+        "suggestion_id 不应为空"
+    );
+
+    // 2. post_compress_ack 带真实 MessageTurn 归档
+    // 注意：MessageTurn.id 是 UUID 类型，必须用合法 UUID 字符串（非任意 turn-id）
+    let post_body = json!({
+        "session_id": "sess-coop-full",
+        "suggestion_id": suggestion_id,
+        "suggestion_adopted": {
+            "retained": [],
+            "pruned": ["turn-1"],
+            "injected": []
+        },
+        "archived_turns": [
+            {
+                "id": "00000000-0000-0000-0000-000000000001",
+                "user_message": {
+                    "text": "Cooperative 协作流程测试用户消息",
+                    "attachments": [],
+                    "tool_calls": [],
+                    "thinking": null
+                },
+                "llm_message": {
+                    "text": "Cooperative 协作流程测试 LLM 回复",
+                    "attachments": [],
+                    "tool_calls": [],
+                    "thinking": null
+                },
+                "tags": [{"kind": "Text"}],
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+                "token_count": 50
+            }
+        ]
+    });
+
+    let resp = client
+        .post(server.url("/api/v1/cooperative/post_compress"))
+        .json(&post_body)
+        .send()
+        .await
+        .expect("post_compress 请求失败");
+
+    let status = resp.status();
+    let body_text = resp.text().await.unwrap_or_default();
+    assert_eq!(
+        status,
+        200,
+        "post_compress 应返回 200（带真实 turns 归档），实际: {}，响应: {}",
+        status,
+        body_text
+    );
+
+    let summary: Value = serde_json::from_str(&body_text).expect("解析 post_compress 响应失败");
+    // SummaryView 应含 hook_id（归档成功的标识）
+    assert!(
+        summary["hook_id"].as_str().is_some(),
+        "SummaryView 应含 hook_id，实际: {}",
+        summary
+    );
+    // SummaryView 应含 summary_title（启发式摘要，未配置 LLM 时为首条消息前 80 字符）
+    assert!(
+        summary["summary_title"].as_str().is_some(),
+        "SummaryView 应含 summary_title，实际: {}",
+        summary
+    );
+    // period 应为 daily
+    assert_eq!(
+        summary["period"].as_str().unwrap(),
+        "daily",
+        "归档后 period 应为 daily，实际: {}",
+        summary["period"]
     );
 }

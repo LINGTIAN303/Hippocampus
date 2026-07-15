@@ -228,6 +228,8 @@ trae-{项目名}-{日期}
 | 查看 project_memory 副本 | `get_project_memory` | 读取 memory-center 维护的 project_memory.md 完整内容 |
 | 查询预设可选值 | `preset_list_agents` / `preset_list_scenarios` / `preset_list_models` | 列出内置 Agent / Scenario / ModelVariant |
 | 预检预设效果 | `preset_build` | 即时构建 CombinedProfile，返回最终生效值 |
+| **用户陈述单条事实/规则需持久化到 session** | `write_standalone_memory` | 主动写入 standalone 记忆（session 级，不依赖 archive） |
+| **用户陈述跨 session 共享的项目共识/规则** | `write_linked_memory` | 主动写入 linked 记忆（project 级，需 project_id） |
 
 ---
 
@@ -321,3 +323,94 @@ memory-center 在以下情况会降级，但仍保持核心功能可用：
 - [DeepSeek 网页端接入指南](docs/onboarding/deepseek-web.md)
 - [架构文档](docs/ARCHITECTURE.md)
 - [部署文档](docs/DEPLOY.md)
+
+---
+
+## 8. 主动写入 standalone/linked 记忆（P7 Phase 3）
+
+> **目的**：让 Agent 能在不依赖完整 archive 周期的情况下，主动将单条高价值事实、
+> 决策或规则持久化为独立记忆，供后续会话或跨会话检索。
+> 与 `archive`（批量归档上下文）互补，`write_standalone_memory` /
+> `write_linked_memory` 处理"一条记忆"的轻量持久化场景。
+
+### 8.1 触发条件（满足任一即考虑调用）
+
+#### 8.1.1 `write_standalone_memory`（session 级独立记忆）
+
+- **用户明确要求"记住这条"**：如「记住：本项目用 pnpm 不用 npm」
+- **关键决策已敲定**：如「我们决定用 Axum 而非 Actix」
+- **架构约束/约束规则**：如「前端只通过 REST API 通信，禁止直连 DB」
+- **重要事实单点记录**：如「服务器 IP 是 162.211.183.236」
+- **用户陈述与 archive 上下文不连续**：单条信息不需要走完整 archive 流程
+
+#### 8.1.2 `write_linked_memory`（project 级关联记忆）
+
+- **跨 session 共享的项目共识**：如「所有 crate 必须通过 `cargo check --workspace`」
+- **多 session 协作的项目规则**：如「Git 提交遵循 Conventional Commit」
+- **需要其他 Agent 会话也能检索的规则**：如「部署用 systemd，禁用 PM2」
+
+> **选择标准**：若记忆只需当前 session 用 → `write_standalone_memory`；
+> 若需跨 session / 跨 Agent 共享 → `write_linked_memory`（需 project_id）。
+
+### 8.2 调用方式
+
+```
+mcp_memory-center.write_standalone_memory(
+    session_id,                  // 必填
+    content,                     // 必填，记忆内容文本
+    title?,                      // 可选，标题（用于摘要展示）
+    tags?                        // 可选，如 ["Plan", "CodeBlock"]
+)
+
+mcp_memory-center.write_linked_memory(
+    project_id,                  // 必填
+    content,                     // 必填
+    title?,                      // 可选
+    tags?,                       // 可选
+    session_id?                  // 可选，追溯写入来源
+)
+```
+
+返回 JSON 含 `memory_id` / `path` / `link_type` / `session_id|project_id`。
+
+### 8.3 与 archive 的区别
+
+| 维度 | `archive` | `write_standalone/linked_memory` |
+|------|-----------|----------------------------------|
+| 数据来源 | 完整上下文（turns 数组） | 单条 content + 可选 title |
+| 索引钩子 | 生成 IndexHook 进 summaries | 不进 summaries（独立目录扫描） |
+| 周期 | Daily/Weekly/Monthly 归类 | 固定 `Daily` |
+| 检索方式 | `retrieve(hook_id)` / `prompt` | `retrieve(link_type="standalone"/"linked")` |
+| 用途 | 上下文压缩前/定期归档 | 单点事实持久化 |
+
+### 8.4 检索方式
+
+写入后可通过 `retrieve` 工具的 `link_type` 参数检索：
+
+```
+mcp_memory-center.retrieve(
+    session_id,                  // standalone 模式必填
+    hook_id=None,                // 忽略
+    project_id?,                 // linked 模式必填
+    tags?,                        // 可选标签过滤
+    link_type="standalone"       // 或 "linked"
+)
+```
+
+返回 `MemoryFile` 数组（不含 IndexHook，直接扫描目录）。
+
+### 8.5 写入时机建议
+
+- **立即写入**：用户陈述明确、不需要后续 archive 时（如"记住这条规则"）
+- **延迟写入**：若上下文即将 archive，可让 archive 统一处理，避免重复
+- **避免重复**：写入前可先 `semantic_search` 检查是否已有类似记忆
+
+### 8.6 标签建议
+
+| 场景 | 推荐标签 |
+|------|----------|
+| 架构决策 | `["Plan"]` |
+| 代码规则 | `["CodeBlock", "Plan"]` |
+| 工具调用约定 | `["ToolCall"]` |
+| 思考过程 | `["Thinking"]` |
+| 普通文本 | `["Text"]`（默认） |

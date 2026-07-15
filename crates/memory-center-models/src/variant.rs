@@ -295,12 +295,13 @@ impl ModelVariant {
     /// - 架构特点：原生多模态、超长上下文、推理能力 2x（vs 3.0 Pro）
     /// - ARC-AGI-2 测试 77.1%
     /// - 定价：<200K token 输入 $2/M，输出价格分级
+    /// - tokenizer：v2.53 P9 起改用 `spm_or_char()`（启用 feature 时为 SentencePiece）
     pub fn gemini_3_1_pro() -> Self {
         Self {
             family: ModelFamily::Gemini,
             name: "gemini-3.1-pro".into(),
             context_window: 1_000_000,
-            tokenizer: TokenizerKind::CharacterBased, // sentencepiece 未集成，先用字符级
+            tokenizer: TokenizerKind::spm_or_char(), // v2.53 P9：SentencePiece 或 CharTokenizer
             supports_thinking: true, // 3.1 Pro 强化推理
             supports_vision: true,
             supports_audio: true,
@@ -354,13 +355,13 @@ impl ModelVariant {
     ///
     /// - 上下文：原生 256K token（YaRN 可扩展至 1M）
     /// - 架构特点：编程优化、358 种编程语言、Agentic Coding
-    /// - tokenizer：BPE 分词（未集成原生 tokenizer，先用字符级）
+    /// - tokenizer：v2.53 P9 起改用 `spm_or_char()`（启用 feature 时为 SentencePiece）
     pub fn qwen_3_coder() -> Self {
         Self {
             family: ModelFamily::Qwen,
             name: "qwen-3-coder".into(),
             context_window: 256_000,
-            tokenizer: TokenizerKind::CharacterBased, // Qwen tokenizer 未集成，先用字符级
+            tokenizer: TokenizerKind::spm_or_char(), // v2.53 P9：SentencePiece 或 CharTokenizer
             supports_thinking: false,
             supports_vision: false,
             supports_audio: false,
@@ -375,6 +376,7 @@ impl ModelVariant {
     /// - 上下文：保守取 1M token（理论支持 10M，API 实际部署多为 1M）
     /// - 架构特点：MoE 109B 总参数、多模态、轻量化
     /// - 定位：Llama 4 家族入门级 MoE 型号
+    /// - tokenizer：v2.53 P9 起改用 `spm_or_char()`（启用 feature 时为 SentencePiece）
     ///
     /// **注意**：Meta 官方理论上下文为 10M token，但实际 API 部署多为 1M。
     /// 本构造器保守取 1M，如需 10M 上下文请通过 `ModelVariant::custom()` 覆盖。
@@ -383,7 +385,7 @@ impl ModelVariant {
             family: ModelFamily::Llama,
             name: "llama-4-scout".into(),
             context_window: 1_000_000, // 保守取 1M（理论 10M，API 实际部署多为 1M）
-            tokenizer: TokenizerKind::CharacterBased,
+            tokenizer: TokenizerKind::spm_or_char(), // v2.53 P9：SentencePiece 或 CharTokenizer
             supports_thinking: false,
             supports_vision: true,
             supports_audio: false,
@@ -398,12 +400,13 @@ impl ModelVariant {
     /// - 上下文：1M token
     /// - 架构特点：MoE 400B 总参数、多模态、旗舰级
     /// - 定位：Llama 4 家族旗舰型号
+    /// - tokenizer：v2.53 P9 起改用 `spm_or_char()`（启用 feature 时为 SentencePiece）
     pub fn llama_4_maverick() -> Self {
         Self {
             family: ModelFamily::Llama,
             name: "llama-4-maverick".into(),
             context_window: 1_000_000,
-            tokenizer: TokenizerKind::CharacterBased,
+            tokenizer: TokenizerKind::spm_or_char(), // v2.53 P9：SentencePiece 或 CharTokenizer
             supports_thinking: false,
             supports_vision: true,
             supports_audio: false,

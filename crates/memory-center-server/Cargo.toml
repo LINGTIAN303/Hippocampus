@@ -22,8 +22,6 @@ memory-center-presets = { path = "../memory-center-presets", version = "0.1.0" }
 memory-center-agents = { path = "../memory-center-agents", version = "0.1.0" }
 memory-center-scenarios = { path = "../memory-center-scenarios", version = "0.1.0" }
 memory-center-models = { path = "../memory-center-models", version = "0.1.0" }
-memory-center-windows = { path = "../memory-center-windows", version = "0.1.0" }
-memory-center-skills = { path = "../memory-center-skills", version = "0.1.0" }
 # v2.50: 归档核心引擎（共享 archive 逻辑）
 memory-center-archive-core = { path = "../memory-center-archive-core" }
 # v2.36: MCP Streamable HTTP 传输（合并到 HTTP Server）

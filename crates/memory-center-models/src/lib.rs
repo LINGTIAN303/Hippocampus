@@ -42,6 +42,8 @@
 //! - **重依赖隔离**：tiktoken-rs 仅在此 crate，不污染 presets/core
 //! - **无依赖兜底**：未启用 tiktoken 时降级为 CharTokenizer（中文 1 字 ≈ 1.5 token）
 //! - **可扩展**：Custom 变体支持用户自定义新型号，无需等发版
+//! - **可选 sentencepiece**（v2.53 P9）：启用 `tokenizer-sentencepiece` feature 后，
+//!   Gemini/Qwen/Llama 家族用真实 SentencePiece 模型替代字符级近似，提升中文 token 估算精度
 
 pub mod char_impl;
 pub mod family;
@@ -50,10 +52,19 @@ pub mod tiktoken_impl;
 pub mod tokenizer;
 pub mod variant;
 
+// SentencePiece 模块（v2.53 P9 新增，feature gating）
+// 仅在启用 tokenizer-sentencepiece feature 时编译
+#[cfg(feature = "tokenizer-sentencepiece")]
+pub mod sentencepiece_impl;
+
 // 公开导出核心类型
 pub use char_impl::CharTokenizer;
 pub use family::ModelFamily;
 pub use registry::ModelRegistry;
 pub use tiktoken_impl::TiktokenTokenizer;
-pub use tokenizer::{Tokenizer, TokenizerKind};
+pub use tokenizer::{build_token_estimator, Tokenizer, TokenizerKind};
 pub use variant::{ArchiveStrategy, ModelVariant, ToolCallFormat};
+
+// 条件导出 SentencePieceTokenizer（v2.53 P9）
+#[cfg(feature = "tokenizer-sentencepiece")]
+pub use sentencepiece_impl::SentencePieceTokenizer;

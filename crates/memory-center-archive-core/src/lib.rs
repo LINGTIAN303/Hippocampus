@@ -38,8 +38,24 @@ use std::sync::Arc;
 
 use memory_center_core::archive::Archiver;
 use memory_center_core::model::{
-    apply_turn_defaults, ArchiveConfig, IndexHook, MessageTurn, TaskStateSnapshot,
+    apply_turn_defaults, ArchiveConfig, IndexHook, MessageContent, TaskStateSnapshot,
 };
+
+// P8 Cooperative：re-export MessageTurn 供 cooperative 模块使用
+pub use memory_center_core::model::MessageTurn;
+
+// P8 Cooperative 协作模式（v2.53 P8）
+pub mod cooperative;
+pub use cooperative::{
+    CooperativeError, CooperativeHandler, CooperativeService, CooperativeSession,
+    CooperativeState, ContextSnapshot, InjectItem, InjectStrategy, PostCompressAckRequest,
+    PreCompressHintRequest, PruneHint, Priority, RetainItem, RetentionSuggestion,
+    SuggestionAdoption, TurnPreview,
+};
+
+// P8 保留建议构建器（v2.53 P8 Phase 2）
+pub mod retention;
+pub use retention::{build_search_query, RetentionBuilder};
 use memory_center_core::retrieve::SummaryView;
 use memory_center_core::storage::{LocalStorage, Storage};
 use memory_center_search::SessionSearchRouter;
@@ -112,6 +128,63 @@ pub enum ArchiveError {
 }
 
 // ============================================================================
+// Token 估算器（闭包注入，避免依赖 models crate）
+// ============================================================================
+
+/// Token 估算器：将文本映射为 token 数的闭包
+///
+/// 通过 [`ArchiveEngine::with_token_estimator`] 注入，用于替换 `chars/3` 简化估算。
+/// 未注入时降级为 `chars/3`（向后兼容）。
+///
+/// 调用方通常从 `ModelVariant::count_tokens` 构建闭包：
+///
+/// ```ignore
+/// use memory_center_models::ModelVariant;
+/// use std::sync::Arc;
+///
+/// let model = ModelVariant::gpt_5_2();
+/// let estimator: TokenEstimator = Arc::new(move |text: &str| model.count_tokens(text));
+/// let engine = ArchiveEngine::new(storage_root).with_token_estimator(estimator);
+/// ```
+pub type TokenEstimator = Arc<dyn Fn(&str) -> usize + Send + Sync>;
+
+/// 用 estimator 估算 MessageContent 的 token 数
+///
+/// 遍历 text / thinking / tool_calls(arguments+result+error) / file_changes(patch)，
+/// 对每个文本片段调用 estimator 累加。
+fn estimate_content_tokens(content: &MessageContent, estimator: &TokenEstimator) -> usize {
+    let mut tokens: usize = 0;
+
+    if let Some(text) = &content.text {
+        tokens += estimator(text);
+    }
+    if let Some(thinking) = &content.thinking {
+        tokens += estimator(thinking);
+    }
+    for tc in &content.tool_calls {
+        tokens += estimator(&tc.arguments);
+        tokens += estimator(&tc.result);
+        if let Some(err) = &tc.error {
+            tokens += estimator(err);
+        }
+    }
+    for fc in &content.file_changes {
+        if let Some(patch) = &fc.patch {
+            tokens += estimator(patch);
+        }
+    }
+
+    tokens
+}
+
+/// 用 estimator 估算 MessageTurn 的 token 数（user_message + llm_message）
+fn estimate_turn_tokens(turn: &MessageTurn, estimator: &TokenEstimator) -> usize {
+    let user = estimate_content_tokens(&turn.user_message, estimator);
+    let llm = estimate_content_tokens(&turn.llm_message, estimator);
+    (user + llm).max(1) // 最小 1，避免全 0
+}
+
+// ============================================================================
 // ArchiveEngine：归档核心引擎
 // ============================================================================
 
@@ -128,18 +201,16 @@ pub enum ArchiveError {
 /// ## 使用示例
 ///
 /// ```no_run
-/// use memory_center_archive_core::ArchiveEngine;
-/// use std::path::PathBuf;
-///
+/// # use memory_center_archive_core::ArchiveEngine;
+/// # use std::path::PathBuf;
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// let engine = ArchiveEngine::new(PathBuf::from("./data"))
-///     .with_summary_generator(/* ... */)
-///     .with_session_search(/* ... */);
+/// let engine = ArchiveEngine::new(PathBuf::from("./data"));
+/// // .with_summary_generator(gen) / .with_session_search(router) 按需注入
 ///
 /// // 压缩前归档
 /// let result = engine.pre_compress(
 ///     "session-001",
-///     vec![/* turns */],
+///     vec![],
 ///     Some(50000),
 ///     Some("myproject"),
 ///     None,
@@ -161,6 +232,14 @@ pub struct ArchiveEngine {
         Option<Arc<memory_center_presets::HybridScenarioDetector>>,
     /// 可选的搜索索引路由器
     session_search: Option<Arc<SessionSearchRouter>>,
+    /// 可选的 Token 估算器（v2.52 阶段 4 新增，未注入时降级为 chars/3）
+    token_estimator: Option<TokenEstimator>,
+    /// 可选的 Cooperative 处理器（v2.53 P8 新增，设计文档第 8.4 节）
+    ///
+    /// 未注入时（Independent 模式），pre_compress 走现有逻辑。
+    /// 注入后（Cooperative 模式），可用于在 pre_compress 前调用 handler 获取保留建议。
+    /// 当前 Phase 2 仅存储字段，pre_compress 行为未改变（向后兼容）。
+    cooperative_handler: Option<Arc<dyn cooperative::CooperativeHandler>>,
 }
 
 impl ArchiveEngine {
@@ -171,7 +250,31 @@ impl ArchiveEngine {
             summary_generator: None,
             scenario_detector: None,
             session_search: None,
+            token_estimator: None,
+            cooperative_handler: None,
         }
+    }
+
+    /// 注入 Cooperative 处理器（v2.53 P8 新增，设计文档第 8.4 节）
+    ///
+    /// 注入后 ArchiveEngine 标记为 Cooperative 模式。
+    /// CooperativeService 持有的 ArchiveEngine 不注入 handler（保持 Independent 行为用于归档）。
+    pub fn with_cooperative_handler(
+        mut self,
+        handler: Arc<dyn cooperative::CooperativeHandler>,
+    ) -> Self {
+        self.cooperative_handler = Some(handler);
+        self
+    }
+
+    /// 是否已注入 Cooperative 处理器
+    pub fn has_cooperative_handler(&self) -> bool {
+        self.cooperative_handler.is_some()
+    }
+
+    /// 获取 Cooperative 处理器引用
+    pub fn cooperative_handler(&self) -> Option<&Arc<dyn cooperative::CooperativeHandler>> {
+        self.cooperative_handler.as_ref()
     }
 
     /// 注入 LLM 摘要生成器
@@ -195,6 +298,26 @@ impl ArchiveEngine {
     /// 注入搜索索引路由器
     pub fn with_session_search(mut self, router: Arc<SessionSearchRouter>) -> Self {
         self.session_search = Some(router);
+        self
+    }
+
+    /// 注入 Token 估算器（v2.52 阶段 4 新增）
+    ///
+    /// 注入后，`pre_compress` / `archive` 中的 token 估算将从 `chars/3` 升级为
+    /// estimator 精确计数（仅对 Agent 未传 token_count 的轮次生效，Agent 显式传入的不覆盖）。
+    ///
+    /// 调用方通常从 `ModelVariant::count_tokens` 构建闭包注入：
+    ///
+    /// ```ignore
+    /// use memory_center_models::ModelVariant;
+    /// use std::sync::Arc;
+    ///
+    /// let model = ModelVariant::gpt_5_2();
+    /// let estimator: TokenEstimator = Arc::new(move |text: &str| model.count_tokens(text));
+    /// let engine = ArchiveEngine::new(storage_root).with_token_estimator(estimator);
+    /// ```
+    pub fn with_token_estimator(mut self, estimator: TokenEstimator) -> Self {
+        self.token_estimator = Some(estimator);
         self
     }
 
@@ -294,9 +417,14 @@ impl ArchiveEngine {
                 ))
             })?;
 
-        // 4. 估算 token
-        let estimated_total_tokens =
-            estimated_tokens.unwrap_or_else(|| raw_context_content.len() / 3);
+        // 4. 估算 token（v2.52 阶段 4：有 estimator 时用精确计数，否则 chars/3 兜底）
+        let estimated_total_tokens = estimated_tokens.unwrap_or_else(|| {
+            if let Some(estimator) = &self.token_estimator {
+                estimator(&raw_context_content)
+            } else {
+                raw_context_content.len() / 3
+            }
+        });
 
         // 5. 路径 A：turns 直接用（结构化，保留 tool_calls/thinking）
         let parsed_turns = turns;
@@ -489,7 +617,15 @@ impl ArchiveEngine {
 
         // 8. 对每个 turn 应用默认值补全（推断 tags + 估算 token_count）
         for mut turn in turns {
+            let was_zero = turn.token_count == 0;
             apply_turn_defaults(&mut turn);
+            // v2.52 阶段 4：若有 estimator，用精确 tokenizer 覆盖 chars/3 估算
+            // （仅对 Agent 未传 token_count 的轮次，Agent 显式传入的不覆盖）
+            if was_zero {
+                if let Some(estimator) = &self.token_estimator {
+                    turn.token_count = estimate_turn_tokens(&turn, estimator);
+                }
+            }
             archiver.push_turn(turn);
         }
 
@@ -630,9 +766,15 @@ impl ArchiveEngine {
         // 6. 提取 turns 文本用于索引
         let turns_text = memory_center_search::extract_turns_text(&turns);
 
-        // 7. apply_turn_defaults + push
+        // 7. apply_turn_defaults + push（v2.52 阶段 4：estimator 覆盖 chars/3）
         for mut turn in turns {
+            let was_zero = turn.token_count == 0;
             apply_turn_defaults(&mut turn);
+            if was_zero {
+                if let Some(estimator) = &self.token_estimator {
+                    turn.token_count = estimate_turn_tokens(&turn, estimator);
+                }
+            }
             archiver.push_turn(turn);
         }
 
@@ -816,6 +958,9 @@ pub fn build_engine_from_env(storage_root: PathBuf) -> ArchiveEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Utc;
+    use memory_center_core::model::{FileChange, Tag, ToolInvocation};
+    use uuid::Uuid;
 
     #[test]
     fn test_engine_new() {
@@ -846,5 +991,150 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let engine = ArchiveEngine::new(tmp.path().to_path_buf());
         assert!(engine.health_check().unwrap());
+    }
+
+    // ========================================================================
+    // v2.52 阶段 4：TokenEstimator 测试
+    // ========================================================================
+
+    /// 构造测试用 MessageTurn（参考 cache.rs make_turn）
+    fn make_turn(text: &str, token_count: usize) -> MessageTurn {
+        MessageTurn {
+            id: Uuid::new_v4(),
+            user_message: MessageContent {
+                text: Some(text.into()),
+                attachments: Vec::new(),
+                tool_calls: Vec::new(),
+                thinking: None,
+                file_changes: Vec::new(),
+            },
+            llm_message: MessageContent {
+                text: Some("LLM 回复".into()),
+                attachments: Vec::new(),
+                tool_calls: Vec::new(),
+                thinking: None,
+                file_changes: Vec::new(),
+            },
+            tags: vec![Tag::Text],
+            timestamp: Utc::now(),
+            token_count,
+            stop_reason: None,
+            cost: None,
+        }
+    }
+
+    #[test]
+    fn test_engine_without_token_estimator() {
+        // 无 estimator 时 token_estimator 为 None
+        let engine = ArchiveEngine::new(PathBuf::from("/tmp/test"));
+        assert!(engine.token_estimator.is_none());
+    }
+
+    #[test]
+    fn test_engine_with_token_estimator() {
+        // 注入 estimator 后 token_estimator 为 Some
+        let estimator: TokenEstimator = Arc::new(|_text: &str| 42);
+        let engine = ArchiveEngine::new(PathBuf::from("/tmp/test"))
+            .with_token_estimator(estimator);
+        assert!(engine.token_estimator.is_some());
+    }
+
+    #[test]
+    fn test_estimate_content_tokens_text_only() {
+        // estimator: 每个字符 1 token
+        let estimator: TokenEstimator = Arc::new(|text: &str| text.chars().count());
+        let content = MessageContent {
+            text: Some("Hello".to_string()), // 5 chars
+            attachments: Vec::new(),
+            tool_calls: Vec::new(),
+            thinking: None,
+            file_changes: Vec::new(),
+        };
+        assert_eq!(estimate_content_tokens(&content, &estimator), 5);
+    }
+
+    #[test]
+    fn test_estimate_content_tokens_with_tool_calls_and_thinking() {
+        let estimator: TokenEstimator = Arc::new(|text: &str| text.chars().count());
+        let content = MessageContent {
+            text: Some("Hi".to_string()), // 2
+            attachments: Vec::new(),
+            tool_calls: vec![ToolInvocation {
+                name: "Read".to_string(),
+                arguments: "{\"path\":\"a\"}".to_string(), // 12 chars（{"path":"a"}）
+                result: "content".to_string(),              // 7 chars
+                duration_ms: None,
+                status: None,
+                error: None,
+                call_id: None,
+            }],
+            thinking: Some("thinking...".to_string()), // 11 chars
+            file_changes: Vec::new(),
+        };
+        // 2 + 12 + 7 + 11 = 32（不算 name 字段，与 estimate_tokens 略有差异）
+        assert_eq!(estimate_content_tokens(&content, &estimator), 32);
+    }
+
+    #[test]
+    fn test_estimate_content_tokens_with_file_changes() {
+        let estimator: TokenEstimator = Arc::new(|text: &str| text.chars().count());
+        let content = MessageContent {
+            text: Some("ab".to_string()), // 2
+            attachments: Vec::new(),
+            tool_calls: Vec::new(),
+            thinking: None,
+            file_changes: vec![FileChange {
+                file_path: "/tmp/test.rs".to_string(),
+                status: Some("modified".to_string()),
+                additions: Some(10),
+                deletions: Some(2),
+                patch: Some("@@ diff @@".to_string()), // 10 chars
+                hash: None,
+            }],
+        };
+        // 2 + 10 = 12
+        assert_eq!(estimate_content_tokens(&content, &estimator), 12);
+    }
+
+    #[test]
+    fn test_estimate_turn_tokens() {
+        // estimator: 每个字符 1 token
+        let estimator: TokenEstimator = Arc::new(|text: &str| text.chars().count());
+        let turn = make_turn("User", 0);
+        // user="User"(4 chars) + llm="LLM 回复"(6 chars: L,L,M,space,回,复)
+        // 4 + 6 = 10
+        assert_eq!(estimate_turn_tokens(&turn, &estimator), 10);
+    }
+
+    #[test]
+    fn test_estimate_turn_tokens_empty_text() {
+        // 空 text 时返回最小 1
+        let estimator: TokenEstimator = Arc::new(|_text: &str| 0);
+        let mut turn = make_turn("", 0);
+        turn.user_message.text = None;
+        turn.llm_message.text = None;
+        // 0 + 0 → .max(1) = 1
+        assert_eq!(estimate_turn_tokens(&turn, &estimator), 1);
+    }
+
+    #[test]
+    fn test_estimator_replaces_chars_div_3() {
+        // 验证 estimator 与 chars/3 的差异（中英文混合场景）
+        // "Hello 世界" = 8 chars, chars/3 ≈ 2, 但精确 tokenizer 可能更准
+        let text = "Hello 世界";
+        let chars_div_3 = text.len() / 3; // 字节数 / 3 = 12/3 = 4（字节级）
+        let char_count = text.chars().count(); // 8 chars（字符级）
+        assert_ne!(chars_div_3, char_count, "chars/3 与 chars().count() 应有差异");
+
+        // 模拟 estimator 用 chars().count()
+        let estimator: TokenEstimator = Arc::new(|t: &str| t.chars().count());
+        let content = MessageContent {
+            text: Some(text.to_string()),
+            attachments: Vec::new(),
+            tool_calls: Vec::new(),
+            thinking: None,
+            file_changes: Vec::new(),
+        };
+        assert_eq!(estimate_content_tokens(&content, &estimator), char_count);
     }
 }

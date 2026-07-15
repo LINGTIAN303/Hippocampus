@@ -1480,7 +1480,12 @@ mod tests {
             &self,
             _path: &str,
         ) -> memory_center_core::Result<memory_center_core::model::MemoryFile> {
-            unimplemented!("MockStorage 不支持读取记忆文件")
+            // P7 Phase 2 副作用修复：rebuild_index_from_storage 会调用 read_memories_batch
+            // （默认实现循环 read_memory），返回 Err 让上层降级为空 turns_text（行 696-699）
+            // 而不是 panic 中断测试。
+            Err(memory_center_core::Error::Storage(
+                "MockStorage 不支持读取记忆文件".into(),
+            ))
         }
 
         async fn delete_memory(&self, _memory_id: &str) -> memory_center_core::Result<()> {

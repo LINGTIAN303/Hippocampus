@@ -65,15 +65,23 @@ impl ModelFamily {
     }
 
     /// 返回家族的默认 tokenizer 类型（用户未指定时使用）
+    ///
+    /// # v2.53 P9 更新
+    ///
+    /// Gemini / Qwen / Llama 家族改用 [`TokenizerKind::spm_or_char`]：
+    /// - 启用 `tokenizer-sentencepiece` feature → SentencePiece（需配置 `MEMORY_CENTER_SPM_MODEL_PATH`）
+    /// - 未启用 feature → CharacterBased（字符级兜底，向后兼容）
+    ///
+    /// 其他家族保持原有 tiktoken 策略不变。
     pub fn default_tokenizer(&self) -> crate::tokenizer::TokenizerKind {
         use crate::tokenizer::TokenizerKind;
         match self {
             Self::Claude => TokenizerKind::ClaudeApprox,    // Claude 官方未开源 tokenizer
             Self::Gpt => TokenizerKind::O200kBase,          // GPT-4o/5 系列
-            Self::Gemini => TokenizerKind::CharacterBased,  // sentencepiece 需额外依赖，先用字符级兜底
+            Self::Gemini => TokenizerKind::spm_or_char(),   // v2.53 P9：SentencePiece（启用 feature 时）
             Self::DeepSeek => TokenizerKind::DeepSeekApprox,
-            Self::Qwen => TokenizerKind::CharacterBased,    // Qwen tokenizer 需额外依赖
-            Self::Llama => TokenizerKind::CharacterBased,   // sentencepiece 需额外依赖
+            Self::Qwen => TokenizerKind::spm_or_char(),     // v2.53 P9：SentencePiece（启用 feature 时）
+            Self::Llama => TokenizerKind::spm_or_char(),    // v2.53 P9：SentencePiece（启用 feature 时）
             Self::Grok => TokenizerKind::O200kBase,         // Grok 近似 GPT 分词
             Self::Local => TokenizerKind::CharacterBased,
             Self::Custom => TokenizerKind::CharacterBased,

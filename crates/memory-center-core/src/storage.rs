@@ -254,6 +254,20 @@ impl LocalStorage {
             .join(format!("{}_index.json", period.as_dir_name()))
     }
 
+    /// 生成 standalone 记忆文件的目录路径（相对）
+    ///
+    /// `sessions/{session_id}/standalone/`
+    fn standalone_dir(&self, session_id: &str) -> PathBuf {
+        self.session_scope_dir(session_id).join("standalone")
+    }
+
+    /// 生成 linked 记忆文件的目录路径（相对）
+    ///
+    /// `projects/{project_id}/linked/`
+    fn linked_dir(&self, project_id: &str) -> PathBuf {
+        self.project_scope_dir(project_id).join("linked")
+    }
+
     /// 拼接根目录得到绝对路径
     fn abs_path(&self, relative: &Path) -> PathBuf {
         self.root.join(relative)
@@ -920,6 +934,172 @@ impl Storage for LocalStorage {
                 e
             ))),
         }
+    }
+
+    // ========================================================================
+    // standalone / linked 记忆（P7 Phase 2 新增）
+    //
+    // 独立于周期层级（daily/weekly/monthly）的记忆文件：
+    // - standalone：session 隔离的独立记忆（sessions/{sid}/standalone/）
+    // - linked：project 跨 session 共享的关联记忆（projects/{pid}/linked/）
+    //
+    // 与周期记忆的区别：
+    // - 不进入 IndexHook 索引（量少，无需索引开销）
+    // - 文件名用 UUID 保证唯一性（{file.id}.{ext}）
+    // - 不加 session/project 写锁（与索引独立，atomic_write 已保证原子性）
+    // ========================================================================
+
+    /// 写入 standalone 记忆文件（P7 Phase 2）
+    ///
+    /// 路径：`sessions/{session_id}/standalone/{file.id}.{ext}`
+    ///
+    /// standalone 记忆是 session 隔离的独立记忆，不参与周期归档（daily/weekly/monthly），
+    /// 也不进入 IndexHook 索引。适用于 MemoryLink::StandaloneMemory 变体。
+    ///
+    /// **不加 session 写锁**：与 `write_raw_context` 同理，standalone 文件独立写入，
+    /// 无读-改-写操作，`atomic_write` 已保证原子性。
+    async fn write_standalone_memory(
+        &self,
+        session_id: &str,
+        file: &MemoryFile,
+    ) -> crate::Result<String> {
+        let relative = self
+            .standalone_dir(session_id)
+            .join(format!("{}.{}", file.id, self.format.extension()));
+        let abs = self.abs_path(&relative);
+        self.ensure_parent_dir(&abs).await?;
+
+        // 双格式序列化（与 write_memory 一致）
+        let content = self.format.serialize_memory(file)?;
+        self.atomic_write(&abs, &content).await?;
+
+        tracing::debug!(
+            session_id = %session_id,
+            memory_id = %file.id,
+            "standalone 记忆已写入"
+        );
+
+        Ok(Self::to_posix_string(&relative))
+    }
+
+    /// 列出 standalone 记忆文件（P7 Phase 2）
+    ///
+    /// 扫描 `sessions/{session_id}/standalone/` 目录，返回所有 .json/.msgpack 文件路径。
+    /// 目录不存在时返回空 Vec（首次使用前）。
+    async fn list_standalone_memories(
+        &self,
+        session_id: &str,
+    ) -> crate::Result<Vec<String>> {
+        let relative = self.standalone_dir(session_id);
+        let abs = self.abs_path(&relative);
+
+        let mut entries = match tokio::fs::read_dir(&abs).await {
+            Ok(e) => e,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => {
+                return Err(crate::Error::Storage(format!(
+                    "读取 standalone 目录失败 {:?}: {}",
+                    path_display(&relative),
+                    e
+                )))
+            }
+        };
+
+        let mut paths = Vec::new();
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .map_err(|e| crate::Error::Storage(format!("遍历目录失败: {}", e)))?
+        {
+            let p = entry.path();
+            // 支持双后缀（json / msgpack）
+            if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
+                if ext == "json" || ext == "msgpack" {
+                    let rel = p
+                        .strip_prefix(&self.root)
+                        .map_err(|e| crate::Error::Storage(format!("路径截取失败: {}", e)))?;
+                    paths.push(Self::to_posix_string(rel));
+                }
+            }
+        }
+
+        paths.sort();
+        Ok(paths)
+    }
+
+    /// 写入 linked 记忆文件（P7 Phase 2）
+    ///
+    /// 路径：`projects/{project_id}/linked/{file.id}.{ext}`
+    ///
+    /// linked 记忆是 project 跨 session 共享的关联记忆，不参与周期归档，
+    /// 也不进入 IndexHook 索引。适用于 MemoryLink::LinkedToProject 变体。
+    ///
+    /// **不加 project 写锁**：与 standalone 同理，atomic_write 已保证原子性。
+    async fn write_linked_memory(
+        &self,
+        project_id: &str,
+        file: &MemoryFile,
+    ) -> crate::Result<String> {
+        let relative = self
+            .linked_dir(project_id)
+            .join(format!("{}.{}", file.id, self.format.extension()));
+        let abs = self.abs_path(&relative);
+        self.ensure_parent_dir(&abs).await?;
+
+        let content = self.format.serialize_memory(file)?;
+        self.atomic_write(&abs, &content).await?;
+
+        tracing::debug!(
+            project_id = %project_id,
+            memory_id = %file.id,
+            "linked 记忆已写入"
+        );
+
+        Ok(Self::to_posix_string(&relative))
+    }
+
+    /// 列出 linked 记忆文件（P7 Phase 2）
+    ///
+    /// 扫描 `projects/{project_id}/linked/` 目录，返回所有 .json/.msgpack 文件路径。
+    /// 目录不存在时返回空 Vec（首次使用前）。
+    async fn list_linked_memories(
+        &self,
+        project_id: &str,
+    ) -> crate::Result<Vec<String>> {
+        let relative = self.linked_dir(project_id);
+        let abs = self.abs_path(&relative);
+
+        let mut entries = match tokio::fs::read_dir(&abs).await {
+            Ok(e) => e,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => {
+                return Err(crate::Error::Storage(format!(
+                    "读取 linked 目录失败 {:?}: {}",
+                    path_display(&relative),
+                    e
+                )))
+            }
+        };
+
+        let mut paths = Vec::new();
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .map_err(|e| crate::Error::Storage(format!("遍历目录失败: {}", e)))?
+        {
+            let p = entry.path();
+            if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
+                if ext == "json" || ext == "msgpack" {
+                    let rel = p
+                        .strip_prefix(&self.root)
+                        .map_err(|e| crate::Error::Storage(format!("路径截取失败: {}", e)))?;
+                    paths.push(Self::to_posix_string(rel));
+                }
+            }
+        }
+
+        paths.sort();
+        Ok(paths)
     }
 
     /// 列出所有 session_id（v2.31 新增）
@@ -2209,6 +2389,164 @@ mod tests {
                 read_back, content_v1,
                 "覆盖后读取不应为 v1 内容"
             );
+        }
+
+        // ====================================================================
+        // P7 Phase 2：standalone / linked 记忆测试
+        // ====================================================================
+
+        /// 写入 standalone 记忆并验证路径 + list + read
+        #[tokio::test]
+        async fn test_write_and_list_standalone_memory() {
+            let tmp = TempDir::new().unwrap();
+            let storage = LocalStorage::new(tmp.path());
+
+            let file = make_test_memory(ArchivePeriod::Daily, "sess-standalone");
+            let path = storage
+                .write_standalone_memory("sess-standalone", &file)
+                .await
+                .expect("write_standalone_memory 应成功");
+
+            // 验证路径格式：sessions/{sid}/standalone/{uuid}.json
+            assert!(path.contains("sessions/sess-standalone/standalone/"));
+            assert!(path.ends_with(".json"));
+            assert!(!path.contains('\\'));
+
+            // list 应返回 1 个文件
+            let list = storage
+                .list_standalone_memories("sess-standalone")
+                .await
+                .expect("list_standalone_memories 应成功");
+            assert_eq!(list.len(), 1);
+            assert_eq!(list[0], path);
+
+            // read_memory 应能读取
+            let read_back = storage
+                .read_memory(&path)
+                .await
+                .expect("read_memory 应成功");
+            assert_eq!(read_back.session_id, "sess-standalone");
+        }
+
+        /// 空 session 的 list_standalone_memories 返回空 Vec
+        #[tokio::test]
+        async fn test_list_standalone_memories_empty() {
+            let tmp = TempDir::new().unwrap();
+            let storage = LocalStorage::new(tmp.path());
+
+            let list = storage
+                .list_standalone_memories("sess-empty")
+                .await
+                .expect("空 session 应返回空 Vec");
+            assert!(list.is_empty());
+        }
+
+        /// standalone 记忆的 session 隔离
+        #[tokio::test]
+        async fn test_standalone_session_isolation() {
+            let tmp = TempDir::new().unwrap();
+            let storage = LocalStorage::new(tmp.path());
+
+            // session A 写入 2 个 standalone 记忆
+            let file_a1 = make_test_memory(ArchivePeriod::Daily, "sess-a");
+            let file_a2 = make_test_memory(ArchivePeriod::Daily, "sess-a");
+            storage
+                .write_standalone_memory("sess-a", &file_a1)
+                .await
+                .unwrap();
+            storage
+                .write_standalone_memory("sess-a", &file_a2)
+                .await
+                .unwrap();
+
+            // session B 写入 1 个 standalone 记忆
+            let file_b = make_test_memory(ArchivePeriod::Daily, "sess-b");
+            storage
+                .write_standalone_memory("sess-b", &file_b)
+                .await
+                .unwrap();
+
+            // 验证隔离
+            let list_a = storage.list_standalone_memories("sess-a").await.unwrap();
+            assert_eq!(list_a.len(), 2, "session A 应有 2 个 standalone 记忆");
+
+            let list_b = storage.list_standalone_memories("sess-b").await.unwrap();
+            assert_eq!(list_b.len(), 1, "session B 应有 1 个 standalone 记忆");
+        }
+
+        /// 写入 linked 记忆并验证路径 + list + read
+        #[tokio::test]
+        async fn test_write_and_list_linked_memory() {
+            let tmp = TempDir::new().unwrap();
+            let storage = LocalStorage::new(tmp.path());
+
+            let file = make_test_memory_with_project(ArchivePeriod::Daily);
+            let path = storage
+                .write_linked_memory("proj-001", &file)
+                .await
+                .expect("write_linked_memory 应成功");
+
+            // 验证路径格式：projects/{pid}/linked/{uuid}.json
+            assert!(path.contains("projects/proj-001/linked/"));
+            assert!(path.ends_with(".json"));
+            assert!(!path.contains('\\'));
+
+            // list 应返回 1 个文件
+            let list = storage
+                .list_linked_memories("proj-001")
+                .await
+                .expect("list_linked_memories 应成功");
+            assert_eq!(list.len(), 1);
+            assert_eq!(list[0], path);
+
+            // read_memory 应能读取
+            let read_back = storage
+                .read_memory(&path)
+                .await
+                .expect("read_memory 应成功");
+            assert_eq!(read_back.project_id, Some("proj-001".to_string()));
+        }
+
+        /// 空 project 的 list_linked_memories 返回空 Vec
+        #[tokio::test]
+        async fn test_list_linked_memories_empty() {
+            let tmp = TempDir::new().unwrap();
+            let storage = LocalStorage::new(tmp.path());
+
+            let list = storage
+                .list_linked_memories("proj-empty")
+                .await
+                .expect("空 project 应返回空 Vec");
+            assert!(list.is_empty());
+        }
+
+        /// 多个 linked 记忆跨 session 共享
+        #[tokio::test]
+        async fn test_linked_multiple_memories() {
+            let tmp = TempDir::new().unwrap();
+            let storage = LocalStorage::new(tmp.path());
+
+            // 同一 project 写入 3 个 linked 记忆
+            for _ in 0..3 {
+                let file = make_test_memory_with_project(ArchivePeriod::Daily);
+                storage
+                    .write_linked_memory("proj-multi", &file)
+                    .await
+                    .unwrap();
+            }
+
+            let list = storage
+                .list_linked_memories("proj-multi")
+                .await
+                .expect("list_linked_memories 应成功");
+            assert_eq!(list.len(), 3, "应有 3 个 linked 记忆");
+
+            // 验证排序（list 返回已排序的路径）
+            assert_eq!(list, {
+                let mut sorted = list.clone();
+                sorted.sort();
+                sorted
+            });
         }
     }
 }

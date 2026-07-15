@@ -289,3 +289,54 @@ pub fn build_combined_profile() -> Option<CombinedProfile> {
         }
     }
 }
+
+/// 从环境变量构造 Token 估算器（v2.52 阶段 4 新增）
+///
+/// 用于注入 `ArchiveEngine::with_token_estimator`，替换 archive-core 的 `chars/3` 简化估算。
+///
+/// ## 环境变量
+///
+/// | 变量 | 说明 | 默认值 |
+/// |------|------|--------|
+/// | `MEMORY_CENTER_TOKENIZER_MODEL` | 模型名（见 `ModelRegistry::find` 支持的型号） | `deepseek-v4-flash` |
+///
+/// ## 默认选择 deepseek-v4-flash 的原因
+///
+/// - DeepSeekApprox tokenizer（cl100k_base + 系数 1.1）对中英文混合场景较准
+/// - DeepSeek 模型在中文场景 token 估算更贴近实际
+/// - 用户可通过环境变量切换为其他模型（如 `gpt-5.2` 用 O200kBase）
+///
+/// ## 降级行为
+///
+/// - 指定模型名不存在 → 回退到 `deepseek-v4-flash`
+/// - tiktoken 初始化失败 → `TokenizerKind::build` 内部降级为 CharTokenizer
+///
+/// ## 返回
+///
+/// `Arc<dyn Fn(&str) -> usize + Send + Sync>`：可直接传入 `with_token_estimator`
+pub fn build_token_estimator_from_env() -> Arc<dyn Fn(&str) -> usize + Send + Sync> {
+    use memory_center_models::{build_token_estimator, ModelRegistry, ModelVariant};
+
+    let model_name = std::env::var("MEMORY_CENTER_TOKENIZER_MODEL")
+        .unwrap_or_else(|_| "deepseek-v4-flash".to_string());
+
+    let model = ModelRegistry::find(&model_name).unwrap_or_else(|| {
+        if model_name != "deepseek-v4-flash" {
+            tracing::warn!(
+                specified = %model_name,
+                fallback = "deepseek-v4-flash",
+                "指定的 tokenizer 模型不存在，回退到默认模型"
+            );
+        }
+        ModelVariant::deepseek_v4_flash()
+    });
+
+    tracing::info!(
+        model = %model.name,
+        tokenizer = %model.tokenizer.type_name(),
+        "Token 估算器：已构造（替换 chars/3 简化估算）"
+    );
+
+    let tokenizer = model.build_tokenizer();
+    build_token_estimator(tokenizer)
+}

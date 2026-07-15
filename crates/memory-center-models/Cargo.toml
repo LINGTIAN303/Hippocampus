@@ -10,16 +10,32 @@ description = "MemoryCenter LLM 模型特配库 - 模型家族/型号/Tokenizer/
 keywords = ["llm", "tokenizer", "tiktoken", "model", "agent"]
 categories = ["data-structures", "api-bindings"]
 
+[features]
+# 默认不启用 sentencepiece（避免强制 cmake + C++ 编译器）
+default = []
+# 启用 SentencePiece 分词器（用于 Gemini/Qwen/Llama 等非 OpenAI/Claude 家族的精确 token 计数）
+# 启用后：
+# - 1) 新增 TokenizerKind::SentencePiece 变体
+# - 2) Gemini/Qwen/Llama 家族 default_tokenizer() 切换为 spm_or_char()
+# - 3) 需通过环境变量 MEMORY_CENTER_SPM_MODEL_PATH 指定 .model 文件路径
+# 详见 docs/sentencepiece-guide.md
+tokenizer-sentencepiece = ["dep:sentencepiece"]
+
 [dependencies]
 # 工作区依赖
 serde = { workspace = true }
 serde_json = { workspace = true }
-thiserror = { workspace = true }
 tracing = { workspace = true }
 
 # Tiktoken 分词器（重依赖，隔离在此 crate）
 # 支持 o200k_base（GPT-4o/5）、cl100k_base（GPT-4/3.5）、r50k_base/p50k_base（旧模型）
 tiktoken-rs = "0.6"
+
+# SentencePiece 分词器（v2.53 P9 新增，可选依赖，feature gating）
+# 启用 tokenizer-sentencepiece feature 时才编译
+# - static feature：C++ 源码静态编译，单二进制部署
+# - 模型文件 .model 由用户通过环境变量 MEMORY_CENTER_SPM_MODEL_PATH 指定
+sentencepiece = { workspace = true, optional = true }
 
 # MemoryCenter 核心数据结构
 memory-center-core = { path = "../memory-center-core", version = "0.1.0" }

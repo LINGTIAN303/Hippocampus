@@ -105,6 +105,10 @@ clap = { version = "4.5", features = ["derive", "env"] }
 # TUI 终端界面（v2.37 dashboard）
 ratatui = "0.29"
 crossterm = "0.28"
+# SentencePiece 分词器（v2.53 P9 可选依赖，默认禁用，需启用 feature tokenizer-sentencepiece）
+# - static feature：C++ 源码静态编译，单二进制部署，约 +2-5MB
+# - 默认禁用避免强制所有用户装 cmake + C++ 编译器
+sentencepiece = { version = "0.13", default-features = false, features = ["static"] }
 
 [profile.release]
 opt-level = 3

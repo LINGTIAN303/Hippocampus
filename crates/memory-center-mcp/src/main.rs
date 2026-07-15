@@ -65,7 +65,7 @@ use memory_center_mcp::MemoryCenterMcp;
 // v2.36：build_* 函数从 bootstrap 模块引入
 use memory_center_mcp::bootstrap::{
     build_combined_profile, build_conflict_detector, build_scenario_detector,
-    build_session_search, build_summary_generator,
+    build_session_search, build_summary_generator, build_token_estimator_from_env,
 };
 use rmcp::ServiceExt;
 use rmcp::transport::stdio;
@@ -154,8 +154,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // v2.52：构造 ArchiveEngine 并注入 scenario_detector
     //（summary_generator / session_search 通过 with_summary_generator / with_session_search
     //  链式方法同步注入到 archive_engine，无需在此处重复注入）
+    // v2.52 阶段 4：注入 token_estimator（替换 chars/3 简化估算）
     let archive_engine = memory_center_archive_core::ArchiveEngine::new(storage_root.clone())
+        .with_token_estimator(build_token_estimator_from_env())
         .with_scenario_detector(build_scenario_detector());
+
+    // v2.53 P8：构造 CooperativeService（仅在 session_search 可用时启用 Cooperative 模式）
+    // - CooperativeService 持有 archive_engine + session_search，由 MCP 工具直接调用
+    // - archive_engine 派生 Clone，clone 给 CooperativeService 后原对象仍可注入到 MemoryCenterMcp
+    // - session_search 未配置时 cooperative_service = None（Independent 模式，向后兼容）
+    let cooperative_service = session_search.as_ref().map(|router| {
+        std::sync::Arc::new(memory_center_archive_core::CooperativeService::new(
+            archive_engine.clone(),
+            router.clone(),
+        ))
+    });
+    if cooperative_service.is_some() {
+        tracing::info!("Cooperative 协作模式已启用（session_search 可用）");
+    } else {
+        tracing::info!("Cooperative 协作模式未启用（session_search 未配置，走 Independent 模式）");
+    }
 
     // 启动 stdio MCP server
     let service = MemoryCenterMcp::with_conflict_detector(
@@ -167,6 +185,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     .with_summary_generator(summary_generator)
     .with_combined_profile(combined_profile)
     .with_runtime_status(runtime_status)
+    .with_cooperative_service(cooperative_service)
     .serve(stdio())
     .await?;
 

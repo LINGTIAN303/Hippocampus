@@ -75,12 +75,12 @@ impl WindowProfile {
 
     /// 校验合法性
     ///
-    /// - 协作模式必须在 MVP 支持范围内
+    /// - 协作模式必须为支持的模式（v2.53 P8 起 Independent + Cooperative 均支持）
     /// - 触发阈值不能为 0（NoCompression 除外）
     pub fn validate(&self) -> Result<(), String> {
         if !self.cooperation_mode.is_supported() {
             return Err(format!(
-                "协作模式 {} 未在 MVP 中实现",
+                "协作模式 {} 未实现",
                 self.cooperation_mode.display_name()
             ));
         }
@@ -197,10 +197,11 @@ mod tests {
     }
 
     #[test]
-    fn test_cooperative_mode_not_supported() {
+    fn test_cooperative_mode_supported() {
+        // v2.53 P8：Cooperative 已实现，validate() 应通过
         let p = WindowProfile::claude_code()
             .with_cooperation_mode(CooperationMode::Cooperative);
-        assert!(p.validate().is_err());
+        assert!(p.validate().is_ok());
     }
 
     #[test]
