@@ -54,12 +54,12 @@ impl SidecarArchiveEngine {
 
     /// 压缩前归档（接受 SidecarTurn，内部转 MessageTurn）
     ///
-    /// 参数与旧 `ArchiveClient::pre_compress` 对齐，调用方无需改动调用逻辑。
+    /// v2.54 P16：移除 `estimated_tokens` 参数，改由 archive-core 的 estimator 精确计算。
+    /// 调用方如需保留估算值用于日志，可自行计算后输出（不传入归档引擎）。
     pub async fn pre_compress(
         &self,
         session_id: &str,
         turns: Vec<SidecarTurn>,
-        estimated_tokens: usize,
         project_id: &str,
     ) -> Result<PreCompressResult, ArchiveError> {
         // SidecarTurn → MessageTurn 转换（JSON roundtrip，利用 serde 兼容性）
@@ -74,7 +74,12 @@ impl SidecarArchiveEngine {
             .pre_compress(
                 session_id,
                 message_turns,
-                Some(estimated_tokens),
+                None, // v2.54 P16：传 None 让 archive-core 用 estimator 重新计算
+                // 此前传 Some(estimated_tokens)（字节级 s.len()/3 估算，中文场景低估 78%），
+                // 会短路 estimator 导致归档 token 计数不准。
+                // 现在 build_engine_from_env 已注入 estimator（DeepSeekApprox 等），
+                // 传 None 触发 estimator 精确计数。
+                // SidecarTurn.token_count 仍保留 Some(real_value)，per-turn 逻辑继续用真实值。
                 Some(project_id),
                 None, // preset：sidecar 不使用预设
                 None, // task_state_snapshot：sidecar 不传任务状态

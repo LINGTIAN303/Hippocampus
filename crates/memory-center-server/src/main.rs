@@ -187,6 +187,7 @@ async fn main() {
     tracing::info!("  POST   /api/v1/sessions/{{sid}}/compaction");
     tracing::info!("  POST   /api/v1/sessions/{{sid}}/search");
     tracing::info!("  GET    /api/v1/sessions/{{sid}}/memories/{{hook_id}}/conflicts");
+    tracing::info!("  GET    /api/v1/config/runtime  (v2.54 P23 运行时配置查询)");
     tracing::info!("  POST/GET/DELETE  /mcp  (v2.36 MCP Streamable HTTP，需启用 MEMORY_CENTER_MCP_ENABLED)");
 
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();

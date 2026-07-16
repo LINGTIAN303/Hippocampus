@@ -9,6 +9,16 @@ use serde::{Deserialize, Serialize};
 ///
 /// 每个家族对应一类架构相似的模型系列，具体型号由 `ModelVariant` 描述。
 /// 家族稳定，型号高频迭代——新型号只需新增 `ModelVariant` 构造器，无需改家族 enum。
+///
+/// # v2.54 P26 新增 4 个家族
+///
+/// 为支持 Trae 内置 12 个型号，新增 Doubao / MiniMax / Kimi / Glm 四个家族。
+/// 这些家族在 Trae 中统一限制为 200K 上下文。
+///
+/// # v2.54 P28 新增 4 个家族（OpenCode Zen 计划）
+///
+/// 为支持 OpenCode 内置 5 个 Zen 计划型号，新增 Hunyuan / Mimo / Nimotron / North 四个家族。
+/// Zen 计划是 OpenCode 的免费层，各模型有独立的上下文限制（190K/200K/256K/1M）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ModelFamily {
@@ -40,6 +50,47 @@ pub enum ModelFamily {
     /// 架构特点：实时数据接入、128K 上下文
     Grok,
 
+    /// 字节跳动豆包系列（Doubao-Seed-2.1-Pro/Turbo/Code，v2.54 P26 新增）
+    /// 架构特点：中文优化、Trae 内置限制 200K 上下文
+    /// tokenizer：未开源，暂用 CharacterBased 兜底（待 P24 实测替换）
+    Doubao,
+
+    /// MiniMax 系列（MiniMax-M3，v2.54 P26 新增）
+    /// 架构特点：MoE 架构、长上下文、Trae 内置限制 200K
+    /// tokenizer：未开源，暂用 CharacterBased 兜底
+    MiniMax,
+
+    /// 月之暗面 Kimi 系列（K2.6/K2.7-Code，v2.54 P26 新增）
+    /// 架构特点：长上下文优化、代码能力、Trae 内置限制 200K
+    /// tokenizer：未开源，暂用 CharacterBased 兜底
+    Kimi,
+
+    /// 智谱 GLM 系列（GLM-5/5.1/5.2，v2.54 P26 新增）
+    /// 架构特点：中英双语优化、思考链、Trae 内置限制 200K
+    /// tokenizer：与 Claude 分词接近，暂用 ClaudeApprox 近似（待 P24 实测替换）
+    Glm,
+
+    /// 腾讯混元 Hunyuan 系列（Hy3，v2.54 P28 新增）
+    /// 架构特点：295B MoE、推理优化、多模态、OpenCode Zen 计划免费层（190K 限制）
+    /// tokenizer：未开源，暂用 CharacterBased 兜底
+    Hunyuan,
+
+    /// 小米 MiMo 系列（MiMo-V2.5，v2.54 P28 新增）
+    /// 架构特点：全模态 Agent 模型、思考链、OpenCode Zen 计划免费层（200K 限制）
+    /// tokenizer：未开源，暂用 CharacterBased 兜底
+    Mimo,
+
+    /// NVIDIA Nimotron 系列（Nimotron-3-Ultra，v2.54 P28 新增）
+    /// 架构特点：MoE Hybrid Mamba-Transformer、Agentic Reasoning、超长上下文（1M）
+    /// OpenCode Zen 计划免费层
+    /// tokenizer：未开源，暂用 CharacterBased 兜底
+    Nimotron,
+
+    /// Cohere North 系列（North-Mini-Code，v2.54 P28 新增）
+    /// 架构特点：30B MoE（3B 活跃）、Apache 2.0 开源编码模型、OpenCode Zen 计划免费层（256K 限制）
+    /// tokenizer：未开源，暂用 CharacterBased 兜底
+    North,
+
     /// 本地模型（Ollama/vLLM/llama.cpp 部署的开源模型）
     /// 架构特点：离线运行、隐私优先、tokenizer 取决于具体模型
     Local,
@@ -59,6 +110,14 @@ impl ModelFamily {
             Self::Qwen => "阿里 Qwen",
             Self::Llama => "Meta Llama",
             Self::Grok => "xAI Grok",
+            Self::Doubao => "字节跳动豆包",
+            Self::MiniMax => "MiniMax",
+            Self::Kimi => "月之暗面 Kimi",
+            Self::Glm => "智谱 GLM",
+            Self::Hunyuan => "腾讯混元 Hunyuan",
+            Self::Mimo => "小米 MiMo",
+            Self::Nimotron => "NVIDIA Nimotron",
+            Self::North => "Cohere North",
             Self::Local => "本地模型",
             Self::Custom => "自定义模型",
         }
@@ -73,6 +132,11 @@ impl ModelFamily {
     /// - 未启用 feature → CharacterBased（字符级兜底，向后兼容）
     ///
     /// 其他家族保持原有 tiktoken 策略不变。
+    ///
+    /// # v2.54 P26 新增
+    ///
+    /// Doubao / MiniMax / Kimi 家族：tokenizer 未开源，暂用 CharacterBased 兜底（待 P24 实测替换）。
+    /// Glm 家族：与 Claude 分词接近，暂用 ClaudeApprox 近似（待 P24 实测替换）。
     pub fn default_tokenizer(&self) -> crate::tokenizer::TokenizerKind {
         use crate::tokenizer::TokenizerKind;
         match self {
@@ -83,13 +147,23 @@ impl ModelFamily {
             Self::Qwen => TokenizerKind::spm_or_char(),     // v2.53 P9：SentencePiece（启用 feature 时）
             Self::Llama => TokenizerKind::spm_or_char(),    // v2.53 P9：SentencePiece（启用 feature 时）
             Self::Grok => TokenizerKind::O200kBase,         // Grok 近似 GPT 分词
+            // v2.54 P26：新家族 tokenizer 暂用兜底，待 P24 实测后替换
+            Self::Doubao => TokenizerKind::CharacterBased,  // 豆包 tokenizer 未开源
+            Self::MiniMax => TokenizerKind::CharacterBased, // MiniMax tokenizer 未开源
+            Self::Kimi => TokenizerKind::CharacterBased,    // Kimi tokenizer 未开源
+            Self::Glm => TokenizerKind::ClaudeApprox,      // GLM 与 Claude 分词接近
+            // v2.54 P28：OpenCode Zen 计划新家族 tokenizer 暂用兜底
+            Self::Hunyuan => TokenizerKind::CharacterBased,   // 混元 tokenizer 未开源
+            Self::Mimo => TokenizerKind::CharacterBased,      // MiMo tokenizer 未开源
+            Self::Nimotron => TokenizerKind::CharacterBased,  // Nimotron tokenizer 未开源
+            Self::North => TokenizerKind::CharacterBased,     // North tokenizer 未开源
             Self::Local => TokenizerKind::CharacterBased,
             Self::Custom => TokenizerKind::CharacterBased,
         }
     }
 
     /// 返回所有家族变体（用于遍历）
-    pub fn all() -> [Self; 9] {
+    pub fn all() -> [Self; 17] {
         [
             Self::Claude,
             Self::Gpt,
@@ -98,6 +172,14 @@ impl ModelFamily {
             Self::Qwen,
             Self::Llama,
             Self::Grok,
+            Self::Doubao,
+            Self::MiniMax,
+            Self::Kimi,
+            Self::Glm,
+            Self::Hunyuan,
+            Self::Mimo,
+            Self::Nimotron,
+            Self::North,
             Self::Local,
             Self::Custom,
         ]

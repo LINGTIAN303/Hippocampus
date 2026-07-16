@@ -15,7 +15,10 @@ use memory_center_windows::WindowProfile;
 use serde::{Deserialize, Serialize};
 
 /// 默认归档阈值（token 数）
-pub const DEFAULT_ARCHIVE_THRESHOLD: usize = 400_000;
+///
+/// v2.54 P15：引用 core-logic 的统一兜底常量，消除双轨制（曾存在 120K vs 400K 不一致）。
+pub const DEFAULT_ARCHIVE_THRESHOLD: usize =
+    memory_center_core::model::FALLBACK_ARCHIVE_THRESHOLD;
 
 /// 默认摘要模板（兜底，当 scenario 和 user 都未指定时）
 pub const DEFAULT_SUMMARY_TEMPLATE: &str = r#"你是一个记忆摘要生成器。请为以下对话生成结构化摘要。

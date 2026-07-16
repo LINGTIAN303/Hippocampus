@@ -91,6 +91,15 @@ examples/python/__pycache__/
 # 基准测试产物（criterion 自动生成）
 target/criterion/
 
+# Token 校准工具产物（v2.54 P24，含 API 调用结果，不提交）
+fixtures/calibration/reports/
+examples/calibrate_tokens/report.*
+
+# Wiki 同步工具临时文件与测试日志（v2.55 P29 清理）
+.wiki-tmp/
+_wiki_*.md
+test_sp*.log
+
 # Python（v2.2 PyO3 绑定）
 .venv/
 __pycache__/

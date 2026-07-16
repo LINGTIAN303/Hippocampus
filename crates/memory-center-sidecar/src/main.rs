@@ -393,9 +393,11 @@ async fn archive_compaction_event(
     };
     turns.push(summary_turn);
 
-    // v2.44：优先用真实 token_count，缺失时回退到长度估算
+    // v2.44：优先用真实 token_count，缺失时回退到启发式估算
     // 真实值来源：opencode step-finish part 的 input + output + reasoning
+    // v2.54 P17：兜底从 s.len() / 3（字节级，中文低估 78%）改为 estimate_tokens_heuristic（CJK 比例动态）
     let (estimated_tokens, real_count, fallback_count) = {
+        use memory_center_core::model::estimate_tokens_heuristic;
         let mut real_total: usize = 0;
         let mut fallback_total: usize = 0;
         let mut has_real = false;
@@ -404,17 +406,17 @@ async fn archive_compaction_event(
                 real_total += tc;
                 has_real = true;
             } else {
-                // 对缺失真实值的 turn，用长度估算
-                let user_len = t.user_message.text.as_ref().map(|s| s.len()).unwrap_or(0);
-                let llm_len = t.llm_message.text.as_ref().map(|s| s.len()).unwrap_or(0);
-                let thinking_len = t.llm_message.thinking.as_ref().map(|s| s.len()).unwrap_or(0);
-                let tool_len: usize = t
+                // 对缺失真实值的 turn，用启发式估算（CJK 比例动态公式）
+                let user_tokens = t.user_message.text.as_ref().map(|s| estimate_tokens_heuristic(s)).unwrap_or(0);
+                let llm_tokens = t.llm_message.text.as_ref().map(|s| estimate_tokens_heuristic(s)).unwrap_or(0);
+                let thinking_tokens = t.llm_message.thinking.as_ref().map(|s| estimate_tokens_heuristic(s)).unwrap_or(0);
+                let tool_tokens: usize = t
                     .llm_message
                     .tool_calls
                     .iter()
-                    .map(|c| c.arguments.len() + c.result.len())
+                    .map(|c| estimate_tokens_heuristic(&c.arguments) + estimate_tokens_heuristic(&c.result))
                     .sum();
-                let estimated = (user_len + llm_len + thinking_len + tool_len) / 3;
+                let estimated = user_tokens + llm_tokens + thinking_tokens + tool_tokens;
                 real_total += estimated;
                 fallback_total += estimated;
             }
@@ -434,8 +436,9 @@ async fn archive_compaction_event(
     );
 
     // v2.50：调用 ArchiveEngine 直写存储（不再经 HTTP 中转）
+    // v2.54 P16：不再传 estimated_tokens（字节级估算低估中文），改由 estimator 精确计算
     match engine
-        .pre_compress(&compaction.session_id, turns, estimated_tokens, &config.project_id)
+        .pre_compress(&compaction.session_id, turns, &config.project_id)
         .await
     {
         Ok(resp) => {

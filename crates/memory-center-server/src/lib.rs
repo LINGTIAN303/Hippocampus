@@ -226,6 +226,8 @@ pub fn create_router(state: AppState) -> axum::Router {
         .route("/api/v1/presets/scenarios", get(presets::list_scenarios))
         .route("/api/v1/presets/models", get(presets::list_models))
         .route("/api/v1/presets/build", post(presets::build_preset))
+        // v2.54 P23：运行时配置查询端点（无状态，返回全局默认值）
+        .route("/api/v1/config/runtime", get(presets::runtime_config))
         // v2.24：API Key 鉴权中间件（对所有路由生效）
         // 顺序：路由定义 → 鉴权中间件 → TraceLayer（在 main.rs 中添加）
         // 注意：axum::middleware 与 crate::middleware 同名，用别名 axum_mw 消歧

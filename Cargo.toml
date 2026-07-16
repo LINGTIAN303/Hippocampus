@@ -26,6 +26,8 @@ members = [
     "crates/memory-center-adapter",
     "crates/memory-center-dashboard",
     "crates/memory-center-archive-core",
+    # v2.54 P24：独立 token 校准工具（不发布，仅本地校准使用）
+    "examples/calibrate_tokens",
 ]
 
 [workspace.package]

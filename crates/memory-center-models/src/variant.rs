@@ -45,6 +45,23 @@ pub enum ToolCallFormat {
 /// 归档策略
 ///
 /// 根据模型上下文窗口大小，采用不同的归档阈值与策略。
+///
+/// # 阈值来源（v2.54 P22 文档化）
+///
+/// 阈值有两个来源，使用时需注意区分：
+///
+/// | 来源 | 适用 | 比率 | 说明 |
+/// |---|---|---|---|
+/// | **专家调校值** | 内置构造器（15 个型号） | 0.20-0.50 | 根据模型实际能力调优，充分利用窗口 |
+/// | **custom 推导值** | [`ModelVariant::custom`] | 0.25（统一） | 对未知模型保守，无边界跳变 |
+///
+/// **设计原则**：
+/// - 内置构造器：专家根据模型能力调优（如 Claude Opus 4.6 的 1M 窗口取 400K = 0.40，
+///   因为 Claude 在长上下文下仍保持高质量；DeepSeek V4 的 1M 窗口取 200K = 0.20，
+///   因为 MoE 模型在超长上下文下质量衰减更快）
+/// - custom 推导：统一 0.25 比率，对未知模型安全，且 200K 边界无跳变
+///
+/// 详见 [`ModelVariant::custom`] 的文档注释。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "threshold")]
 pub enum ArchiveStrategy {
@@ -71,9 +88,12 @@ impl ArchiveStrategy {
         }
     }
 
-    /// 返回硬上限（1.5 倍阈值）
+    /// 返回硬上限（`threshold × HARD_LIMIT_RATIO`，v2.54 P19 统一系数来源）
+    ///
+    /// 与 `ArchiveConfig::from_threshold` 使用相同的系数，
+    /// 保证 `ArchiveStrategy` 与 `ArchiveConfig` 的硬上限计算一致。
     pub fn hard_limit(&self) -> usize {
-        (self.threshold() as f32 * 1.5) as usize
+        (self.threshold() as f32 * memory_center_core::model::HARD_LIMIT_RATIO) as usize
     }
 }
 
@@ -126,6 +146,30 @@ pub struct ModelVariant {
 
     /// 摘要生成的最大 token 数
     pub summary_max_tokens: usize,
+
+    /// 废弃标记（v2.54 P25 新增）
+    ///
+    /// - `None`：活跃型号，推荐使用
+    /// - `Some(原因)`：已废弃，建议迁移到替代型号
+    ///
+    /// 示例：`Some("已停服，请迁移至 deepseek-v4-pro")`
+    ///
+    /// 影响：
+    /// - `preset_list_models` 输出时标记 deprecated
+    /// - 日志记录时会附带 deprecated 标记
+    /// - 不影响 `find()` 查找（仍可正常使用，便于向后兼容）
+    ///
+    /// # 序列化说明
+    ///
+    /// - `Serialize`：正常输出（None → null，Some(s) → 字符串）
+    /// - `Deserialize`：跳过（`skip_deserializing`），反序列化时默认为 None
+    ///
+    /// 原因：`&'static str` 无法从反序列化输入（非 'static 生命周期）构造，
+    /// 该字段由服务端构造器权威设置，客户端无需传入。
+    /// 若需通过 JSON 配置文件加载自定义 deprecated 标记，应改用 `Option<String>`
+    /// 并调整构造器逻辑（当前无此需求）。
+    #[serde(skip_deserializing)]
+    pub deprecated: Option<&'static str>,
 }
 
 impl ModelVariant {
@@ -158,8 +202,11 @@ impl ModelVariant {
             supports_vision: true,
             supports_audio: false,
             tool_call_format: ToolCallFormat::Anthropic,
+            // 专家调校：1M 窗口取 400K（0.40），Claude 在长上下文下仍保持高质量
+            // （custom 推导同窗口取 250K = 0.25，更保守）
             archive_strategy: ArchiveStrategy::LargeWindow { threshold: 400_000 },
             summary_max_tokens: 1024,
+            deprecated: None,
         }
     }
 
@@ -179,8 +226,11 @@ impl ModelVariant {
             supports_vision: true,
             supports_audio: false,
             tool_call_format: ToolCallFormat::Anthropic,
+            // 专家调校：200K 窗口取 80K（0.40），Claude 在长上下文下仍保持高质量
+            // （custom 推导同窗口取 50K = 0.25，更保守）
             archive_strategy: ArchiveStrategy::Standard { threshold: 80_000 },
             summary_max_tokens: 1024,
+            deprecated: None,
         }
     }
 
@@ -202,6 +252,7 @@ impl ModelVariant {
             tool_call_format: ToolCallFormat::Anthropic,
             archive_strategy: ArchiveStrategy::Standard { threshold: 80_000 },
             summary_max_tokens: 1024,
+            deprecated: None,
         }
     }
 
@@ -224,6 +275,7 @@ impl ModelVariant {
             tool_call_format: ToolCallFormat::Anthropic,
             archive_strategy: ArchiveStrategy::Standard { threshold: 80_000 },
             summary_max_tokens: 1024,
+            deprecated: None,
         }
     }
 
@@ -247,6 +299,7 @@ impl ModelVariant {
             tool_call_format: ToolCallFormat::Anthropic,
             archive_strategy: ArchiveStrategy::Standard { threshold: 80_000 },
             summary_max_tokens: 1024,
+            deprecated: None,
         }
     }
 
@@ -267,6 +320,7 @@ impl ModelVariant {
             tool_call_format: ToolCallFormat::OpenAI,
             archive_strategy: ArchiveStrategy::Standard { threshold: 60_000 },
             summary_max_tokens: 1024,
+            deprecated: None,
         }
     }
 
@@ -286,6 +340,7 @@ impl ModelVariant {
             tool_call_format: ToolCallFormat::OpenAI,
             archive_strategy: ArchiveStrategy::Standard { threshold: 60_000 },
             summary_max_tokens: 1024,
+            deprecated: None,
         }
     }
 
@@ -308,6 +363,7 @@ impl ModelVariant {
             tool_call_format: ToolCallFormat::Gemini,
             archive_strategy: ArchiveStrategy::LargeWindow { threshold: 400_000 },
             summary_max_tokens: 1024,
+            deprecated: None,
         }
     }
 
@@ -326,8 +382,11 @@ impl ModelVariant {
             supports_vision: false,
             supports_audio: false,
             tool_call_format: ToolCallFormat::OpenAI,
+            // 专家调校：1M 窗口取 200K（0.20），MoE 模型在超长上下文下质量衰减更快
+            // （custom 推导同窗口取 250K = 0.25，略激进但安全）
             archive_strategy: ArchiveStrategy::LargeWindow { threshold: 200_000 },
             summary_max_tokens: 1024,
+            deprecated: None,
         }
     }
 
@@ -348,6 +407,7 @@ impl ModelVariant {
             tool_call_format: ToolCallFormat::OpenAI,
             archive_strategy: ArchiveStrategy::LargeWindow { threshold: 200_000 },
             summary_max_tokens: 1024,
+            deprecated: None,
         }
     }
 
@@ -368,6 +428,7 @@ impl ModelVariant {
             tool_call_format: ToolCallFormat::OpenAI,
             archive_strategy: ArchiveStrategy::Standard { threshold: 100_000 },
             summary_max_tokens: 1024,
+            deprecated: None,
         }
     }
 
@@ -392,6 +453,7 @@ impl ModelVariant {
             tool_call_format: ToolCallFormat::OpenAI,
             archive_strategy: ArchiveStrategy::LargeWindow { threshold: 200_000 },
             summary_max_tokens: 1024,
+            deprecated: None,
         }
     }
 
@@ -413,6 +475,7 @@ impl ModelVariant {
             tool_call_format: ToolCallFormat::OpenAI,
             archive_strategy: ArchiveStrategy::LargeWindow { threshold: 200_000 },
             summary_max_tokens: 1024,
+            deprecated: None,
         }
     }
 
@@ -432,6 +495,433 @@ impl ModelVariant {
             tool_call_format: ToolCallFormat::OpenAI,
             archive_strategy: ArchiveStrategy::Standard { threshold: 60_000 },
             summary_max_tokens: 1024,
+            deprecated: None,
+        }
+    }
+
+    // ========================================================================
+    // v2.54 P26：Trae 内置 12 个型号（统一限制 200K 上下文）
+    //
+    // Trae 作为 Agent 客户端有内置模型清单，统一限制为 200K 上下文。
+    // 即使原生支持更大（如 DeepSeek V4 原生 1M），在 Trae 中也被限制为 200K。
+    //
+    // archive_strategy 统一用 LargeWindow { threshold: 50_000 }（200K/4，0.25），
+    // 与 P22 custom 推导规则一致（200K → LargeWindow, window/4）。
+    //
+    // tokenizer 选择：
+    // - Doubao/MiniMax/Kimi：未开源，暂用 CharacterBased 兜底（待 P24 实测替换）
+    // - GLM：与 Claude 分词接近，用 ClaudeApprox 近似
+    // - DeepSeek/Qwen：复用家族默认 tokenizer
+    // ========================================================================
+
+    /// 字节跳动豆包 Doubao-Seed-2.1-Pro（Trae 内置，v2.54 P26 新增；P27 能力标记更新）
+    ///
+    /// - 上下文：200K token（Trae 内置限制，原生 256K——2026-06-23 火山引擎 FORCE 大会发布，全系 256K）
+    /// - 架构特点：旗舰深度推理版、多模态图文视频深度理解、工具调用、联网检索
+    /// - supports_thinking: true（"旗舰深度推理版"）
+    /// - supports_vision: true（"多模态图文视频深度理解"）
+    /// - tokenizer：未开源，暂用 CharacterBased 兜底
+    pub fn trae_doubao_seed_2_1_pro() -> Self {
+        Self {
+            family: ModelFamily::Doubao,
+            name: "doubao-seed-2.1-pro".into(),
+            context_window: 200_000,
+            tokenizer: TokenizerKind::CharacterBased,
+            supports_thinking: true,
+            supports_vision: true,
+            supports_audio: false,
+            tool_call_format: ToolCallFormat::OpenAI,
+            archive_strategy: ArchiveStrategy::LargeWindow { threshold: 50_000 },
+            summary_max_tokens: 1024,
+            deprecated: None,
+        }
+    }
+
+    /// 字节跳动豆包 Doubao-Seed-2.1-Turbo（Trae 内置，v2.54 P26 新增；P27 能力标记更新）
+    ///
+    /// - 上下文：200K token（Trae 内置限制，原生 256K）
+    /// - 架构特点：深度思考模型、成本优化、高速响应
+    /// - supports_thinking: true（"深度思考模型"，与 Pro 同系列延续思考能力）
+    /// - supports_vision: true（多模态能力延续 Pro）
+    /// - tokenizer：未开源，暂用 CharacterBased 兜底
+    pub fn trae_doubao_seed_2_1_turbo() -> Self {
+        Self {
+            family: ModelFamily::Doubao,
+            name: "doubao-seed-2.1-turbo".into(),
+            context_window: 200_000,
+            tokenizer: TokenizerKind::CharacterBased,
+            supports_thinking: true,
+            supports_vision: true,
+            supports_audio: false,
+            tool_call_format: ToolCallFormat::OpenAI,
+            archive_strategy: ArchiveStrategy::LargeWindow { threshold: 50_000 },
+            summary_max_tokens: 1024,
+            deprecated: None,
+        }
+    }
+
+    /// 字节跳动豆包 Doubao-Seed-Code（Trae 内置，代码专用，v2.54 P26 新增；P27 注释更新）
+    ///
+    /// - 上下文：200K token（Trae 内置限制，原生 256K）
+    /// - 架构特点：代码生成优化、工业代码生成、编程语言支持
+    /// - supports_thinking: false（保守，代码模型专注代码生成，未明确宣传思考链）
+    /// - supports_vision: false（保守，代码模型通常不含多模态）
+    /// - tokenizer：未开源，暂用 CharacterBased 兜底
+    pub fn trae_doubao_seed_code() -> Self {
+        Self {
+            family: ModelFamily::Doubao,
+            name: "doubao-seed-code".into(),
+            context_window: 200_000,
+            tokenizer: TokenizerKind::CharacterBased,
+            supports_thinking: false,
+            supports_vision: false,
+            supports_audio: false,
+            tool_call_format: ToolCallFormat::OpenAI,
+            archive_strategy: ArchiveStrategy::LargeWindow { threshold: 50_000 },
+            summary_max_tokens: 1024,
+            deprecated: None,
+        }
+    }
+
+    /// MiniMax-M3（Trae 内置，v2.54 P26 新增；P27 能力标记更新）
+    ///
+    /// - 上下文：200K token（Trae 内置限制，原生 1M——2026-06-01 发布，最高 1M tokens 长上下文）
+    /// - 架构特点：MoE 架构 + MSA（稀疏注意力）、原生多模态、推理能力、代码能力、agentic work、开放权重
+    /// - supports_thinking: true（"推理能力"，MSA 架构支持长上下文推理）
+    /// - supports_vision: true（"原生多模态"）
+    /// - tokenizer：未开源，暂用 CharacterBased 兜底
+    pub fn trae_minimax_m3() -> Self {
+        Self {
+            family: ModelFamily::MiniMax,
+            name: "minimax-m3".into(),
+            context_window: 200_000,
+            tokenizer: TokenizerKind::CharacterBased,
+            supports_thinking: true,
+            supports_vision: true,
+            supports_audio: false,
+            tool_call_format: ToolCallFormat::OpenAI,
+            archive_strategy: ArchiveStrategy::LargeWindow { threshold: 50_000 },
+            summary_max_tokens: 1024,
+            deprecated: None,
+        }
+    }
+
+    /// 智谱 GLM-5.2（Trae 内置，v2.54 P26 新增；P27 能力标记更新）
+    ///
+    /// - 上下文：200K token（Trae 内置限制，原生 200K+——2026-06-15 全量开放，旗舰 MoE）
+    /// - 架构特点：混合专家架构、中英双语优化、思考链、多模态
+    /// - supports_thinking: true（GLM-4.7-Flash 起即混合思考模型，5.x 延续）
+    /// - supports_vision: true（GLM-4.5V 已支持 4K 图像 + 10 分钟视频，5.2 旗舰版延续多模态）
+    /// - tokenizer：与 Claude 分词接近，用 ClaudeApprox 近似（待 P24 实测替换为 SentencePiece，GLM 在 HF THUDM/ 已开源）
+    pub fn trae_glm_5_2() -> Self {
+        Self {
+            family: ModelFamily::Glm,
+            name: "glm-5.2".into(),
+            context_window: 200_000,
+            tokenizer: TokenizerKind::ClaudeApprox,
+            supports_thinking: true,
+            supports_vision: true,
+            supports_audio: false,
+            tool_call_format: ToolCallFormat::OpenAI,
+            archive_strategy: ArchiveStrategy::LargeWindow { threshold: 50_000 },
+            summary_max_tokens: 1024,
+            deprecated: None,
+        }
+    }
+
+    /// 智谱 GLM-5.1（Trae 内置，v2.54 P26 新增；P27 能力标记更新）
+    ///
+    /// - 上下文：200K token（Trae 内置限制，原生 200K+——2026-04-08 开源）
+    /// - 架构特点：混合专家架构、中英双语优化、思考链、多模态
+    /// - supports_thinking: true（开源版延续思考链）
+    /// - supports_vision: true（5.x 旗舰版延续多模态能力）
+    /// - tokenizer：与 Claude 分词接近，用 ClaudeApprox 近似（待 P24 实测替换为 SentencePiece）
+    pub fn trae_glm_5_1() -> Self {
+        Self {
+            family: ModelFamily::Glm,
+            name: "glm-5.1".into(),
+            context_window: 200_000,
+            tokenizer: TokenizerKind::ClaudeApprox,
+            supports_thinking: true,
+            supports_vision: true,
+            supports_audio: false,
+            tool_call_format: ToolCallFormat::OpenAI,
+            archive_strategy: ArchiveStrategy::LargeWindow { threshold: 50_000 },
+            summary_max_tokens: 1024,
+            deprecated: None,
+        }
+    }
+
+    /// 智谱 GLM-5（Trae 内置，v2.54 P26 新增；P27 注释更新）
+    ///
+    /// - 上下文：200K token（Trae 内置限制，原生 200K——2026-02-11 发布，旗舰 MoE）
+    /// - 架构特点：混合专家架构、中英双语优化、思考链
+    /// - supports_thinking: true（5 系列起始即支持思考链）
+    /// - supports_vision: false（保守，初代 GLM-5 多模态能力未明确宣传）
+    /// - tokenizer：与 Claude 分词接近，用 ClaudeApprox 近似（待 P24 实测替换为 SentencePiece）
+    pub fn trae_glm_5() -> Self {
+        Self {
+            family: ModelFamily::Glm,
+            name: "glm-5".into(),
+            context_window: 200_000,
+            tokenizer: TokenizerKind::ClaudeApprox,
+            supports_thinking: true,
+            supports_vision: false,
+            supports_audio: false,
+            tool_call_format: ToolCallFormat::OpenAI,
+            archive_strategy: ArchiveStrategy::LargeWindow { threshold: 50_000 },
+            summary_max_tokens: 1024,
+            deprecated: None,
+        }
+    }
+
+    /// DeepSeek-V4-Pro（Trae 内置版，v2.54 P26 新增；P27 注释更新）
+    ///
+    /// - 上下文：200K token（Trae 内置限制，原生 1M——DeepSeek V4 系列 1M token 上下文，FP4+FP8 混合精度）
+    /// - 注意：与 [`ModelVariant::deepseek_v4_pro`]（原生 1M）不同，此为 Trae 限制版
+    /// - supports_thinking: true（V3.1 起混合模型，可切换推理层，V4 延续）
+    /// - tokenizer：复用 DeepSeekApprox（V4 沿用 V3 的 GPT-2 BPE 分词）
+    pub fn trae_deepseek_v4_pro() -> Self {
+        Self {
+            family: ModelFamily::DeepSeek,
+            name: "trae-deepseek-v4-pro".into(),
+            context_window: 200_000,
+            tokenizer: TokenizerKind::DeepSeekApprox,
+            supports_thinking: true,
+            supports_vision: false,
+            supports_audio: false,
+            tool_call_format: ToolCallFormat::OpenAI,
+            archive_strategy: ArchiveStrategy::LargeWindow { threshold: 50_000 },
+            summary_max_tokens: 1024,
+            deprecated: None,
+        }
+    }
+
+    /// DeepSeek-V4-Flash（Trae 内置版，v2.54 P26 新增；P27 能力标记更新）
+    ///
+    /// - 上下文：200K token（Trae 内置限制，原生 1M——284B 总参数 / 13B 激活参数 MoE）
+    /// - 注意：与 [`ModelVariant::deepseek_v4_flash`]（原生 1M）不同，此为 Trae 限制版
+    /// - supports_thinking: true（V3.1 起混合模型路线，V4-Flash 延续思考链开关）
+    /// - tokenizer：复用 DeepSeekApprox
+    pub fn trae_deepseek_v4_flash() -> Self {
+        Self {
+            family: ModelFamily::DeepSeek,
+            name: "trae-deepseek-v4-flash".into(),
+            context_window: 200_000,
+            tokenizer: TokenizerKind::DeepSeekApprox,
+            supports_thinking: true,
+            supports_vision: false,
+            supports_audio: false,
+            tool_call_format: ToolCallFormat::OpenAI,
+            archive_strategy: ArchiveStrategy::LargeWindow { threshold: 50_000 },
+            summary_max_tokens: 1024,
+            deprecated: None,
+        }
+    }
+
+    /// 月之暗面 Kimi-K2.7-Code（Trae 内置，代码专用，v2.54 P26 新增；P27 注释更新）
+    ///
+    /// - 上下文：200K token（Trae 内置限制，原生 256K——2026-06-12 发布，1.1T 参数）
+    /// - 架构特点：编程模型、长程任务优化、长上下文编程指令遵循能力提升
+    /// - supports_thinking: false（保守，Code 版专注编程，未明确宣传思考链）
+    /// - supports_vision: false（保守，Code 版通常不含多模态）
+    /// - tokenizer：未开源，暂用 CharacterBased 兜底
+    pub fn trae_kimi_k2_7_code() -> Self {
+        Self {
+            family: ModelFamily::Kimi,
+            name: "kimi-k2.7-code".into(),
+            context_window: 200_000,
+            tokenizer: TokenizerKind::CharacterBased,
+            supports_thinking: false,
+            supports_vision: false,
+            supports_audio: false,
+            tool_call_format: ToolCallFormat::OpenAI,
+            archive_strategy: ArchiveStrategy::LargeWindow { threshold: 50_000 },
+            summary_max_tokens: 1024,
+            deprecated: None,
+        }
+    }
+
+    /// 月之暗面 Kimi-K2.6（Trae 内置，v2.54 P26 新增；P27 注释更新）
+    ///
+    /// - 上下文：200K token（Trae 内置限制，原生 200K+——2026-05-25 K2 系列下线后推荐版本）
+    /// - 架构特点：长上下文优化、通用能力、agentic 能力
+    /// - supports_thinking: false（保守，K2.6 通用版未明确宣传思考链，K2.5-Thinking 为独立分支）
+    /// - supports_vision: false（保守，未明确多模态能力）
+    /// - tokenizer：未开源，暂用 CharacterBased 兜底
+    pub fn trae_kimi_k2_6() -> Self {
+        Self {
+            family: ModelFamily::Kimi,
+            name: "kimi-k2.6".into(),
+            context_window: 200_000,
+            tokenizer: TokenizerKind::CharacterBased,
+            supports_thinking: false,
+            supports_vision: false,
+            supports_audio: false,
+            tool_call_format: ToolCallFormat::OpenAI,
+            archive_strategy: ArchiveStrategy::LargeWindow { threshold: 50_000 },
+            summary_max_tokens: 1024,
+            deprecated: None,
+        }
+    }
+
+    /// 阿里 Qwen3.7-Plus（Trae 内置版，v2.54 P26 新增；P27 能力标记更新）
+    ///
+    /// - 上下文：200K token（Trae 内置限制，原生 1M——2026-05-20 阿里云峰会发布，Qwen3.7 统一标配 1M 上下文）
+    /// - 注意：与 [`ModelVariant::qwen_3_coder`]（原生 256K）不同，此为 Trae 限制版；原生 Qwen3.7-Plus 实际 1M
+    /// - 架构特点：全域思考模式（All-domain thinking）、原生多模态、35 小时连续自治执行能力
+    /// - supports_thinking: true（"全域思考模式"，Qwen3 系列原生支持思考链）
+    /// - supports_vision: true（"原生多模态"，Qwen3.6-Plus 起即原生多模态）
+    /// - tokenizer：复用家族默认 spm_or_char()（Qwen tokenizer 在 HF Qwen/ 已开源，tiktoken 系）
+    pub fn trae_qwen_3_7_plus() -> Self {
+        Self {
+            family: ModelFamily::Qwen,
+            name: "trae-qwen-3.7-plus".into(),
+            context_window: 200_000,
+            tokenizer: TokenizerKind::spm_or_char(),
+            supports_thinking: true,
+            supports_vision: true,
+            supports_audio: false,
+            tool_call_format: ToolCallFormat::OpenAI,
+            archive_strategy: ArchiveStrategy::LargeWindow { threshold: 50_000 },
+            summary_max_tokens: 1024,
+            deprecated: None,
+        }
+    }
+
+    // ========================================================================
+    // v2.54 P28：OpenCode 内置 5 个型号（Zen 计划免费层，各有上下文限制）
+    //
+    // OpenCode 作为 Agent 客户端有内置模型清单，Zen 计划是免费层。
+    // 各型号有独立的上下文限制（190K/200K/256K/1M），与 Trae 统一 200K 限制不同。
+    // 付费 Go 计划应不做限制（用户原话），后续可补充 Go 计划型号。
+    //
+    // archive_strategy 按 P22 custom 推导规则（window/4）：
+    // - 200K → LargeWindow 50K
+    // - 190K → Standard 47.5K（<200K 走 Standard）
+    // - 1M → LargeWindow 250K
+    // - 256K → LargeWindow 64K
+    //
+    // tokenizer 选择：
+    // - DeepSeek：复用 DeepSeekApprox（V4 沿用 GPT-2 BPE）
+    // - Hunyuan/Mimo/Nimotron/North：未开源，暂用 CharacterBased 兜底
+    // ========================================================================
+
+    /// DeepSeek-V4-Flash（OpenCode Zen 版，v2.54 P28 新增）
+    ///
+    /// - 上下文：200K token（OpenCode Zen 计划免费层限制，原生 1M——284B 总参数 / 13B 激活 MoE）
+    /// - 注意：与 [`ModelVariant::deepseek_v4_flash`]（原生 1M）和 [`ModelVariant::trae_deepseek_v4_flash`]（Trae 200K）不同
+    /// - supports_thinking: true（V3.1 起混合模型路线，V4-Flash 延续思考链开关，与 Trae 版一致）
+    /// - supports_vision: false（DeepSeek V4 系列未明确多模态，保守）
+    /// - tokenizer：复用 DeepSeekApprox
+    pub fn opencode_deepseek_v4_flash() -> Self {
+        Self {
+            family: ModelFamily::DeepSeek,
+            name: "opencode-deepseek-v4-flash".into(),
+            context_window: 200_000,
+            tokenizer: TokenizerKind::DeepSeekApprox,
+            supports_thinking: true,
+            supports_vision: false,
+            supports_audio: false,
+            tool_call_format: ToolCallFormat::OpenAI,
+            archive_strategy: ArchiveStrategy::LargeWindow { threshold: 50_000 },
+            summary_max_tokens: 1024,
+            deprecated: None,
+        }
+    }
+
+    /// 腾讯混元 Hunyuan-Hy3（OpenCode Zen 版，v2.54 P28 新增）
+    ///
+    /// - 上下文：190K token（OpenCode Zen 计划免费层限制，原生 256K——295B MoE）
+    /// - 架构特点：MoE 推理优化、多模态、思考链
+    /// - supports_thinking: true（295B MoE 推理优化版，支持思考链）
+    /// - supports_vision: true（混元多模态能力）
+    /// - tokenizer：未开源，暂用 CharacterBased 兜底（待后续替换；Hunyuan-Lite 在 HF 已开源）
+    /// - archive_strategy：190K 走 Standard（<200K 阈值），window/4 = 47.5K
+    pub fn opencode_hy3() -> Self {
+        Self {
+            family: ModelFamily::Hunyuan,
+            name: "opencode-hy3".into(),
+            context_window: 190_000,
+            tokenizer: TokenizerKind::CharacterBased,
+            supports_thinking: true,
+            supports_vision: true,
+            supports_audio: false,
+            tool_call_format: ToolCallFormat::OpenAI,
+            archive_strategy: ArchiveStrategy::Standard { threshold: 47_500 },
+            summary_max_tokens: 1024,
+            deprecated: None,
+        }
+    }
+
+    /// 小米 MiMo-V2.5（OpenCode Zen 版，v2.54 P28 新增）
+    ///
+    /// - 上下文：200K token（OpenCode Zen 计划免费层限制，原生 200K+——全模态 Agent 模型）
+    /// - 架构特点：全模态 Agent、思考链、长程任务优化
+    /// - supports_thinking: true（Agent 模型，支持思考链）
+    /// - supports_vision: true（全模态能力）
+    /// - tokenizer：未开源，暂用 CharacterBased 兜底
+    pub fn opencode_mimo_v2_5() -> Self {
+        Self {
+            family: ModelFamily::Mimo,
+            name: "opencode-mimo-v2.5".into(),
+            context_window: 200_000,
+            tokenizer: TokenizerKind::CharacterBased,
+            supports_thinking: true,
+            supports_vision: true,
+            supports_audio: false,
+            tool_call_format: ToolCallFormat::OpenAI,
+            archive_strategy: ArchiveStrategy::LargeWindow { threshold: 50_000 },
+            summary_max_tokens: 1024,
+            deprecated: None,
+        }
+    }
+
+    /// NVIDIA Nimotron-3-Ultra（OpenCode Zen 版，v2.54 P28 新增）
+    ///
+    /// - 上下文：1M token（OpenCode Zen 计划免费层即开放 1M，与多数平台限制不同）
+    /// - 架构特点：MoE Hybrid Mamba-Transformer、Agentic Reasoning、超长上下文
+    /// - supports_thinking: true（NVIDIA "Agentic Reasoning" 宣传）
+    /// - supports_vision: false（保守，未明确多模态宣传）
+    /// - tokenizer：未开源，暂用 CharacterBased 兜底
+    /// - archive_strategy：1M 走 LargeWindow，window/4 = 250K
+    pub fn opencode_nimotron_3_ultra() -> Self {
+        Self {
+            family: ModelFamily::Nimotron,
+            name: "opencode-nimotron-3-ultra".into(),
+            context_window: 1_000_000,
+            tokenizer: TokenizerKind::CharacterBased,
+            supports_thinking: true,
+            supports_vision: false,
+            supports_audio: false,
+            tool_call_format: ToolCallFormat::OpenAI,
+            archive_strategy: ArchiveStrategy::LargeWindow { threshold: 250_000 },
+            summary_max_tokens: 1024,
+            deprecated: None,
+        }
+    }
+
+    /// Cohere North-Mini-Code（OpenCode Zen 版，v2.54 P28 新增）
+    ///
+    /// - 上下文：256K token（OpenCode Zen 计划免费层限制，原生 256K——30B MoE / 3B 活跃参数）
+    /// - 架构特点：30B MoE 编码模型、Apache 2.0 开源、代码生成优化
+    /// - supports_thinking: false（保守，代码模型未明确宣传思考链）
+    /// - supports_vision: false（保守，代码模型未明确多模态）
+    /// - tokenizer：未开源，暂用 CharacterBased 兜底
+    /// - archive_strategy：256K 走 LargeWindow，window/4 = 64K
+    pub fn opencode_north_mini_code() -> Self {
+        Self {
+            family: ModelFamily::North,
+            name: "opencode-north-mini-code".into(),
+            context_window: 256_000,
+            tokenizer: TokenizerKind::CharacterBased,
+            supports_thinking: false,
+            supports_vision: false,
+            supports_audio: false,
+            tool_call_format: ToolCallFormat::OpenAI,
+            archive_strategy: ArchiveStrategy::LargeWindow { threshold: 64_000 },
+            summary_max_tokens: 1024,
+            deprecated: None,
         }
     }
 
@@ -451,6 +941,7 @@ impl ModelVariant {
             tool_call_format: ToolCallFormat::None,
             archive_strategy: ArchiveStrategy::SmallWindow { threshold: 4_000 },
             summary_max_tokens: 512,
+            deprecated: None,
         }
     }
 
@@ -462,10 +953,32 @@ impl ModelVariant {
     /// - `name`：型号名称
     /// - `family`：模型家族（决定默认 tokenizer）
     /// - `context_window`：上下文窗口大小
+    ///
+    /// # archive_strategy 推导规则（v2.54 P22 修正）
+    ///
+    /// 统一比率为 `window / 4`（0.25），消除 200K 边界跳变：
+    ///
+    /// | 窗口大小 | ArchiveStrategy | 阈值 | 比率 |
+    /// |---|---|---|---|
+    /// | ≥200K | LargeWindow | window / 4 | 0.25 |
+    /// | 32K-200K | Standard | window / 4 | 0.25 |
+    /// | <32K | SmallWindow | window / 4 | 0.25 |
+    ///
+    /// **与内置构造器的关系**：
+    /// - 内置构造器使用**专家调校值**（比率 0.20-0.50），充分利用各模型实际能力
+    /// - custom 推导取**统一保守值**（0.25），对未知模型安全
+    /// - 同窗口下 custom 阈值通常低于或等于内置保守端（如 1M 窗口：custom 250K vs DeepSeek/Llama 200K）
+    ///
+    /// **200K 边界平滑验证**：
+    /// - 199K → Standard 49.75K
+    /// - 200K → LargeWindow 50K
+    /// - 跳变：+0.25K（平滑，无回退）
     pub fn custom(name: impl Into<String>, family: ModelFamily, context_window: usize) -> Self {
         let tokenizer = family.default_tokenizer();
+        // v2.54 P22：统一比率为 window/4（0.25），消除 200K 边界跳变
+        // （原规则 ≥200K 用 /5=0.20 导致 199K→49.75K、200K→40K 的 -9.75K 跳变）
         let archive_strategy = if context_window >= 200_000 {
-            ArchiveStrategy::LargeWindow { threshold: context_window / 5 }
+            ArchiveStrategy::LargeWindow { threshold: context_window / 4 }
         } else if context_window >= 32_000 {
             ArchiveStrategy::Standard { threshold: context_window / 4 }
         } else {
@@ -483,6 +996,8 @@ impl ModelVariant {
             tool_call_format: ToolCallFormat::OpenAI,
             archive_strategy,
             summary_max_tokens: 1024,
+            // v2.54 P25：custom 用户自定义型号，deprecated 默认 None
+            deprecated: None,
         }
     }
 }
@@ -670,9 +1185,10 @@ mod tests {
 
     #[test]
     fn test_custom_model_large_window() {
+        // v2.54 P22：统一比率 window/4，500K → 125K（原 /5 = 100K）
         let v = ModelVariant::custom("my-model", ModelFamily::Custom, 500_000);
         match v.archive_strategy {
-            ArchiveStrategy::LargeWindow { threshold } => assert_eq!(threshold, 100_000),
+            ArchiveStrategy::LargeWindow { threshold } => assert_eq!(threshold, 125_000),
             _ => panic!("500K 窗口应为 LargeWindow"),
         }
     }
@@ -693,6 +1209,48 @@ mod tests {
             ArchiveStrategy::SmallWindow { threshold } => assert_eq!(threshold, 2_000),
             _ => panic!("8K 窗口应为 SmallWindow"),
         }
+    }
+
+    /// v2.54 P22：验证 200K 边界无跳变（原 bug：199K→49.75K、200K→40K）
+    #[test]
+    fn test_custom_model_200k_boundary_no_jump() {
+        // 199K → Standard 49_750
+        let v_199 = ModelVariant::custom("m199", ModelFamily::Custom, 199_000);
+        match v_199.archive_strategy {
+            ArchiveStrategy::Standard { threshold } => assert_eq!(threshold, 49_750),
+            _ => panic!("199K 窗口应为 Standard"),
+        }
+        // 200K → LargeWindow 50_000（原为 40_000，导致 -9_750 跳变）
+        let v_200 = ModelVariant::custom("m200", ModelFamily::Custom, 200_000);
+        match v_200.archive_strategy {
+            ArchiveStrategy::LargeWindow { threshold } => assert_eq!(threshold, 50_000),
+            _ => panic!("200K 窗口应为 LargeWindow"),
+        }
+        // 边界差：50_000 - 49_750 = 250（平滑，无回退）
+        let t_199 = v_199.archive_strategy.threshold();
+        let t_200 = v_200.archive_strategy.threshold();
+        assert!(
+            t_200 >= t_199,
+            "200K 阈值 {} 不应低于 199K 阈值 {}（P22 修复点）",
+            t_200,
+            t_199
+        );
+    }
+
+    /// v2.54 P22：验证 custom 推导与内置构造器保守端的关系
+    #[test]
+    fn test_custom_vs_builtin_conservative_alignment() {
+        // 1M 窗口 custom 阈值 = 250K
+        // 内置保守端：DeepSeek V4-Pro / Llama 4 = 200K
+        // custom 比内置保守端略激进（250K > 200K），但仍远低于 Claude/Gemini 专家值 400K
+        let custom_1m = ModelVariant::custom("custom-1m", ModelFamily::Custom, 1_000_000);
+        assert_eq!(custom_1m.archive_strategy.threshold(), 250_000);
+
+        // 200K 窗口 custom 阈值 = 50K
+        // 内置保守端：Claude 4.8/5 = 80K（专家调校，充分利用 Claude 能力）
+        // custom 比内置保守，符合"未知模型保守"设计
+        let custom_200k = ModelVariant::custom("custom-200k", ModelFamily::Custom, 200_000);
+        assert_eq!(custom_200k.archive_strategy.threshold(), 50_000);
     }
 
     #[test]
@@ -734,5 +1292,114 @@ mod tests {
         let _ = ModelVariant::llama_4_maverick();
         let _ = ModelVariant::grok_4_1();
         let _ = ModelVariant::local_default();
+    }
+
+    // ========================================================================
+    // v2.54 P28：OpenCode Zen 计划型号构造器测试
+    // ========================================================================
+
+    #[test]
+    fn test_p28_opencode_constructors() {
+        // 确保所有 OpenCode Zen 构造器能正常创建（共 5 个型号）
+        let _ = ModelVariant::opencode_deepseek_v4_flash();
+        let _ = ModelVariant::opencode_hy3();
+        let _ = ModelVariant::opencode_mimo_v2_5();
+        let _ = ModelVariant::opencode_nimotron_3_ultra();
+        let _ = ModelVariant::opencode_north_mini_code();
+    }
+
+    #[test]
+    fn test_p28_opencode_deepseek_v4_flash_constructor() {
+        let v = ModelVariant::opencode_deepseek_v4_flash();
+        assert_eq!(v.family, ModelFamily::DeepSeek);
+        assert_eq!(v.name, "opencode-deepseek-v4-flash");
+        assert_eq!(v.context_window, 200_000);
+        assert!(v.supports_thinking);
+        assert!(!v.supports_vision);
+        assert!(matches!(v.tokenizer, TokenizerKind::DeepSeekApprox));
+    }
+
+    #[test]
+    fn test_p28_opencode_hy3_constructor() {
+        let v = ModelVariant::opencode_hy3();
+        assert_eq!(v.family, ModelFamily::Hunyuan);
+        assert_eq!(v.name, "opencode-hy3");
+        assert_eq!(v.context_window, 190_000);
+        assert!(v.supports_thinking);
+        assert!(v.supports_vision);
+        assert!(matches!(v.tokenizer, TokenizerKind::CharacterBased));
+        // 190K → Standard 47.5K（<200K 走 Standard，按 P22 推导）
+        match v.archive_strategy {
+            ArchiveStrategy::Standard { threshold } => assert_eq!(threshold, 47_500),
+            _ => panic!("P28: 190K 应为 Standard"),
+        }
+    }
+
+    #[test]
+    fn test_p28_opencode_mimo_v2_5_constructor() {
+        let v = ModelVariant::opencode_mimo_v2_5();
+        assert_eq!(v.family, ModelFamily::Mimo);
+        assert_eq!(v.name, "opencode-mimo-v2.5");
+        assert_eq!(v.context_window, 200_000);
+        assert!(v.supports_thinking);
+        assert!(v.supports_vision);
+        assert!(matches!(v.tokenizer, TokenizerKind::CharacterBased));
+    }
+
+    #[test]
+    fn test_p28_opencode_nimotron_3_ultra_constructor() {
+        let v = ModelVariant::opencode_nimotron_3_ultra();
+        assert_eq!(v.family, ModelFamily::Nimotron);
+        assert_eq!(v.name, "opencode-nimotron-3-ultra");
+        assert_eq!(v.context_window, 1_000_000);
+        assert!(v.supports_thinking);
+        assert!(!v.supports_vision);
+        assert!(matches!(v.tokenizer, TokenizerKind::CharacterBased));
+        // 1M → LargeWindow 250K（按 P22 推导）
+        match v.archive_strategy {
+            ArchiveStrategy::LargeWindow { threshold } => assert_eq!(threshold, 250_000),
+            _ => panic!("P28: 1M 应为 LargeWindow"),
+        }
+    }
+
+    #[test]
+    fn test_p28_opencode_north_mini_code_constructor() {
+        let v = ModelVariant::opencode_north_mini_code();
+        assert_eq!(v.family, ModelFamily::North);
+        assert_eq!(v.name, "opencode-north-mini-code");
+        assert_eq!(v.context_window, 256_000);
+        assert!(!v.supports_thinking);
+        assert!(!v.supports_vision);
+        assert!(matches!(v.tokenizer, TokenizerKind::CharacterBased));
+        // 256K → LargeWindow 64K（按 P22 推导）
+        match v.archive_strategy {
+            ArchiveStrategy::LargeWindow { threshold } => assert_eq!(threshold, 64_000),
+            _ => panic!("P28: 256K 应为 LargeWindow"),
+        }
+    }
+
+    #[test]
+    fn test_p28_opencode_distinct_from_native_and_trae() {
+        // 验证 OpenCode 版 DeepSeek-V4-Flash 与原生版、Trae 版不同
+        let native = ModelVariant::deepseek_v4_flash();
+        let trae = ModelVariant::trae_deepseek_v4_flash();
+        let opencode = ModelVariant::opencode_deepseek_v4_flash();
+
+        // 原生版 1M
+        assert_eq!(native.context_window, 1_000_000);
+        assert_eq!(native.name, "deepseek-v4-flash");
+
+        // Trae 版 200K
+        assert_eq!(trae.context_window, 200_000);
+        assert_eq!(trae.name, "trae-deepseek-v4-flash");
+
+        // OpenCode 版 200K（与 Trae 同限制，但属于不同客户端）
+        assert_eq!(opencode.context_window, 200_000);
+        assert_eq!(opencode.name, "opencode-deepseek-v4-flash");
+
+        // 三者名称互不相同
+        assert_ne!(native.name, trae.name);
+        assert_ne!(native.name, opencode.name);
+        assert_ne!(trae.name, opencode.name);
     }
 }

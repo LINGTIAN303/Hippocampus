@@ -1148,11 +1148,17 @@ mod tests {
         assert!(count >= 7, "应至少有 7 个内置 Scenario，实际: {}", count);
     }
 
-    /// v2.29：验证 supported_models 通过 ModelRegistry 返回 15 个型号
+    /// 验证 supported_models 通过 ModelRegistry 返回的型号数量
+    ///
+    /// 历史变更：
+    /// - v2.29：15 个原生型号
+    /// - v2.54 P26：新增 12 个 Trae 内置型号（统一 200K 限制），共 27 个
+    /// - v2.54 P28：新增 5 个 OpenCode Zen 计划型号（各有上下文限制），共 32 个
     #[test]
     fn test_supported_models_count() {
         let count = memory_center_models::ModelRegistry::all_variants().count();
-        assert_eq!(count, 15, "应内置 15 个型号");
+        // v2.54 P28：15 原生 + 12 Trae + 5 OpenCode = 32 个
+        assert_eq!(count, 32, "应内置 32 个型号（15 原生 + 12 Trae + 5 OpenCode）");
     }
 
     /// v2.29：验证 supported_skills 列表长度（15 个内置技能）

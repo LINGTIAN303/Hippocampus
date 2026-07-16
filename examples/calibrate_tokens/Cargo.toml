@@ -1,0 +1,30 @@
+[package]
+name = "calibrate_tokens"
+version = "0.1.0"
+edition = "2021"
+publish = false  # 不发布到 crates.io，仅本地使用
+description = """
+v2.54 P24：Claude/DeepSeek token 系数校准工具。
+
+独立二进制，通过 OpenRouter 代理 API 实测真实 prompt_tokens，
+对比 tiktoken-rs cl100k_base 原始计数，反推实际系数。
+
+使用方式：
+  set OPENROUTER_API_KEY=sk-or-v1-xxxxx
+  cargo run -p calibrate_tokens -- --model claude-opus-4.8
+"""
+
+[dependencies]
+# HTTP 客户端（复用工作区版本）
+reqwest = { workspace = true }
+# 异步运行时
+tokio = { version = "1.0", features = ["rt-multi-thread", "macros", "time", "fs"] }
+# 序列化
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+# CLI 参数解析
+clap = { workspace = true }
+# tiktoken 分词器（与 memory-center-models 保持同版本）
+tiktoken-rs = "0.6"
+# 时间戳
+chrono = { workspace = true }

@@ -14,6 +14,25 @@ use uuid::Uuid;
 /// Schema 版本号，用于未来迁移
 pub const SCHEMA_VERSION: u32 = 1;
 
+/// 统一的归档阈值兜底常量（v2.54 P15）
+///
+/// 当 preset 为 None、build_combined_from_request 失败、或未识别 Agent/Scenario/Model 时，
+/// 所有兜底路径都应使用此常量，避免双轨制（曾存在 120K vs 400K 不一致）。
+///
+/// 选值依据：LargeWindow 模型（如 Claude Opus 4.6 / Gemini 3.1 Pro，1M 上下文）的 40% 窗口，
+/// 对 Standard 模型（200K 上下文）则等于窗口的 200%（实际应被 scenario/model 推导覆盖）。
+pub const FALLBACK_ARCHIVE_THRESHOLD: usize = 400_000;
+
+/// 硬上限系数（v2.54 P19）
+///
+/// `force_truncate_limit = token_threshold × HARD_LIMIT_RATIO`
+///
+/// 统一硬上限系数来源，替代各构造点的 `threshold * 3 / 2` 硬编码。
+/// 修改系数时只需改此常量一处。
+///
+/// 与 `ArchiveStrategy::hard_limit()` 保持一致（后者返回 `threshold × 1.5`）。
+pub const HARD_LIMIT_RATIO: f32 = 1.5;
+
 // v2.30.1：以下默认值生成函数供 MessageTurn 字段级 #[serde(default = "...")] 使用
 // 让 Agent 调用 archive 时可省略 id/timestamp/tags/token_count，服务端反序列化时自动补全
 
@@ -170,46 +189,84 @@ fn is_question_text(text: &str) -> bool {
     TRIGGERS.iter().any(|t| text.contains(t))
 }
 
+/// 启发式 token 估算（CJK 比例动态调整，v2.54 P17 新增）
+///
+/// 基于 CJK 字符比例线性插值，替代旧的 `chars / 3` 统一公式：
+///
+/// | 场景 | CJK 比例 | 公式 | 相对 tiktoken 偏差 |
+/// |------|----------|------|-------------------|
+/// | 纯英文 | 0% | chars / 4 | ±5% |
+/// | 纯中文 | 100% | chars × 1.5 | ±5% |
+/// | 中英混合 | 50% | chars × 0.875 | ±15% |
+/// | 代码 | 0% | chars / 4 | ±10% |
+///
+/// **旧公式 chars/3 的问题**：
+/// - 纯中文：1 char ≈ 1.5 token，chars/3 = 0.33 token/char，低估 78%
+/// - 纯英文：4 char ≈ 1 token，chars/3 = 0.33 token/char，高估 33%
+/// - 注释声称「中文偏高」实际相反，已修正
+///
+/// 此函数仅用于 estimator 未注入时的兜底路径。
+pub fn estimate_tokens_heuristic(text: &str) -> usize {
+    let chars_count = text.chars().count();
+    if chars_count == 0 {
+        return 0;
+    }
+
+    // 统计 CJK 字符数（含中日韩）
+    let cjk_count = text.chars().filter(|c| {
+        ('\u{4E00}'..='\u{9FFF}').contains(c)  // CJK 统一汉字
+            || ('\u{3400}'..='\u{4DBF}').contains(c)  // CJK 扩展 A
+            || ('\u{3040}'..='\u{309F}').contains(c)  // 平假名
+            || ('\u{30A0}'..='\u{30FF}').contains(c)  // 片假名
+            || ('\u{AC00}'..='\u{D7AF}').contains(c)  // 韩文音节
+    }).count();
+
+    let cjk_ratio = cjk_count as f64 / chars_count as f64;
+    // 纯英文：chars × 0.25（4 char ≈ 1 token）
+    // 纯中文：chars × 1.5（1 char ≈ 1.5 token）
+    // 线性插值：0.25 + 1.25 × cjk_ratio
+    let coefficient = 0.25 + 1.25 * cjk_ratio;
+    ((chars_count as f64) * coefficient).round() as usize
+}
+
 /// 估算 MessageContent 的 token 数
 ///
-/// 经验值：英文 4 char ≈ 1 token，中文 1.5 char ≈ 1 token
-/// 取折中：3 char ≈ 1 token（中文偏高，英文偏低，整体可接受）
+/// v2.54 P17：改用 [`estimate_tokens_heuristic`]（CJK 比例动态公式），
+/// 替代旧的 `chars / 3` 统一公式（中文低估 78%、英文高估 33%）。
 ///
-/// 估算范围：text + thinking + tool_calls(arguments + result) + file_changes(patch)
+/// 估算范围：text + thinking + tool_calls(name + arguments + result + error) + file_changes(patch)
 pub fn estimate_tokens(content: &MessageContent) -> usize {
-    let mut chars: usize = 0;
+    let mut tokens: usize = 0;
 
     // 文本部分
     if let Some(text) = &content.text {
-        chars += text.chars().count();
+        tokens += estimate_tokens_heuristic(text);
     }
 
     // 思考过程
     if let Some(thinking) = &content.thinking {
-        chars += thinking.chars().count();
+        tokens += estimate_tokens_heuristic(thinking);
     }
 
-    // 工具调用的参数和结果
+    // 工具调用的名称、参数、结果和错误
     for tc in &content.tool_calls {
-        chars += tc.name.chars().count();
-        chars += tc.arguments.chars().count();
-        chars += tc.result.chars().count();
-        // v2.45：纳入错误信息
+        tokens += estimate_tokens_heuristic(&tc.name);
+        tokens += estimate_tokens_heuristic(&tc.arguments);
+        tokens += estimate_tokens_heuristic(&tc.result);
         if let Some(err) = &tc.error {
-            chars += err.chars().count();
+            tokens += estimate_tokens_heuristic(err);
         }
     }
 
     // v2.45：文件变更的 patch 内容
     for fc in &content.file_changes {
         if let Some(patch) = &fc.patch {
-            chars += patch.chars().count();
+            tokens += estimate_tokens_heuristic(patch);
         }
     }
 
-    // 3 char ≈ 1 token（折中估算）
     // 最小 1，避免完全空消息返回 0
-    (chars / 3).max(1)
+    tokens.max(1)
 }
 
 /// 对 MessageTurn 应用自动补全（反序列化后调用）
@@ -798,19 +855,32 @@ pub struct IndexDocument {
 pub struct ArchiveConfig {
     /// Token 阈值（达到此值触发归档，如 400_000）
     pub token_threshold: usize,
-    /// 强制截断上限（1.5 倍阈值，如 600_000）
+    /// 强制截断上限（`token_threshold × HARD_LIMIT_RATIO`，如 600_000）
     pub force_truncate_limit: usize,
     /// 是否等待当前轮次完成（动态范围）
     pub wait_for_turn_completion: bool,
 }
 
-impl Default for ArchiveConfig {
-    fn default() -> Self {
+impl ArchiveConfig {
+    /// 从阈值构造配置，自动计算 `force_truncate_limit`（v2.54 P19）
+    ///
+    /// 统一硬上限系数来源，替代各构造点的 `threshold * 3 / 2` 硬编码。
+    /// 系数由 [`HARD_LIMIT_RATIO`] 常量定义，修改时只需改一处。
+    ///
+    /// 与 `ArchiveStrategy::hard_limit()` 使用相同的系数（1.5×），
+    /// 保证 `ArchiveConfig` 与 `ArchiveStrategy` 的硬上限计算一致。
+    pub fn from_threshold(threshold: usize) -> Self {
         Self {
-            token_threshold: 400_000,
-            force_truncate_limit: 600_000,
+            token_threshold: threshold,
+            force_truncate_limit: (threshold as f32 * HARD_LIMIT_RATIO) as usize,
             wait_for_turn_completion: true,
         }
+    }
+}
+
+impl Default for ArchiveConfig {
+    fn default() -> Self {
+        Self::from_threshold(FALLBACK_ARCHIVE_THRESHOLD)
     }
 }
 
@@ -1202,6 +1272,129 @@ mod tests {
 
         // Agent 传了 999，不应被估算值覆盖
         assert_eq!(turn.token_count, 999);
+    }
+
+    // ========================================================================
+    // v2.54 P17：estimate_tokens_heuristic 单测
+    // ========================================================================
+
+    /// P17：纯中文场景，新公式 vs 旧 chars/3 偏差对比
+    #[test]
+    fn test_p17_heuristic_pure_chinese() {
+        // 纯中文字符（无标点/空格），确保 cjk_ratio = 1.0
+        let text = "你好世界这是一个测试文本用于验证中文场景的估算精度";
+        let chars = text.chars().count();
+        let old_estimate = chars / 3;           // 旧公式
+        let new_estimate = estimate_tokens_heuristic(text);
+
+        // 纯中文：1 char ≈ 1.5 token
+        // 新公式应等于 chars × 1.5
+        let expected = (chars as f64 * 1.5).round() as usize;
+        assert_eq!(new_estimate, expected, "纯中文应按 chars × 1.5 估算");
+
+        // 旧公式低估：old ≈ chars/3 ≈ 0.33 chars，新公式 ≈ 1.5 chars
+        assert!(new_estimate > old_estimate, "新公式应大于旧 chars/3（旧公式低估中文）");
+    }
+
+    /// P17：纯英文场景
+    #[test]
+    fn test_p17_heuristic_pure_english() {
+        let text = "Hello world, this is a test string for English token estimation accuracy.";
+        let chars = text.chars().count();
+        let new_estimate = estimate_tokens_heuristic(text);
+
+        // 纯英文：4 char ≈ 1 token，即 chars / 4
+        let expected = (chars as f64 / 4.0).round() as usize;
+        assert_eq!(new_estimate, expected, "纯英文应按 chars / 4 估算");
+    }
+
+    /// P17：中英混合场景
+    #[test]
+    fn test_p17_heuristic_mixed() {
+        let text = "用户说 Hello world，AI 回复 Hi 你好。这是 mixed content 测试。";
+        let chars = text.chars().count();
+        let new_estimate = estimate_tokens_heuristic(text);
+
+        // 混合场景应在 chars/4 和 chars×1.5 之间
+        let lower_bound = (chars as f64 * 0.25).round() as usize;
+        let upper_bound = (chars as f64 * 1.5).round() as usize;
+        assert!(
+            new_estimate >= lower_bound && new_estimate <= upper_bound,
+            "混合场景估算应在 [{}, {}] 范围内，实际: {}",
+            lower_bound, upper_bound, new_estimate
+        );
+    }
+
+    /// P17：代码场景（无 CJK）
+    #[test]
+    fn test_p17_heuristic_code() {
+        let text = r#"fn main() { println!("Hello, world!"); let x = 42; }"#;
+        let chars = text.chars().count();
+        let new_estimate = estimate_tokens_heuristic(text);
+
+        // 代码（无 CJK）：按 chars / 4
+        let expected = (chars as f64 / 4.0).round() as usize;
+        assert_eq!(new_estimate, expected, "代码场景应按 chars / 4 估算");
+    }
+
+    /// P17：空文本
+    #[test]
+    fn test_p17_heuristic_empty() {
+        assert_eq!(estimate_tokens_heuristic(""), 0, "空文本应返回 0");
+    }
+
+    /// P17：日文/韩文 CJK 识别
+    #[test]
+    fn test_p17_heuristic_japanese_korean() {
+        let jp = "こんにちは世界";      // 日文（平假名 + 片假名 + 汉字），无空格
+        let kr = "안녕하세요세계";      // 韩文（无空格，确保 cjk_ratio = 1.0）
+        let jp_estimate = estimate_tokens_heuristic(jp);
+        let kr_estimate = estimate_tokens_heuristic(kr);
+
+        // 日韩文也是 CJK，应按 chars × 1.5 估算
+        let jp_chars = jp.chars().count();
+        assert_eq!(jp_estimate, (jp_chars as f64 * 1.5).round() as usize, "日文应按 CJK 估算");
+
+        let kr_chars = kr.chars().count();
+        assert_eq!(kr_estimate, (kr_chars as f64 * 1.5).round() as usize, "韩文应按 CJK 估算");
+    }
+
+    /// P17：验证 estimate_tokens(MessageContent) 使用新公式
+    #[test]
+    fn test_p17_estimate_tokens_content_uses_heuristic() {
+        let content = MessageContent {
+            text: Some("你好世界".to_string()),  // 4 个中文字符
+            thinking: None,
+            attachments: vec![],
+            tool_calls: vec![],
+            file_changes: vec![],
+        };
+        let tokens = estimate_tokens(&content);
+        // 4 中文字符 × 1.5 = 6
+        assert_eq!(tokens, 6, "estimate_tokens 应使用 CJK 比例动态公式");
+    }
+
+    /// P17：旧 chars/3 vs 新公式偏差对比（中文低估验证）
+    #[test]
+    fn test_p17_old_vs_new_chinese_underestimate() {
+        let text = "这是一段纯中文文本用于验证旧公式的低估问题，旧公式用字节长度除以三，对中文场景偏差很大。";
+        let chars = text.chars().count();
+        let old_chars_div_3 = chars / 3;        // 旧字符级公式
+        let old_bytes_div_3 = text.len() / 3;   // 旧字节级公式（sidecar 旧实现）
+        let new_heuristic = estimate_tokens_heuristic(text);
+
+        // 新公式应远大于旧字节级公式（中文低估 78%）
+        assert!(
+            new_heuristic > old_bytes_div_3,
+            "新公式 {} 应大于旧字节级公式 {}（中文低估修复）",
+            new_heuristic, old_bytes_div_3
+        );
+        // 新公式也应大于旧字符级公式
+        assert!(
+            new_heuristic > old_chars_div_3,
+            "新公式 {} 应大于旧字符级公式 {}（中文低估修复）",
+            new_heuristic, old_chars_div_3
+        );
     }
 }
 

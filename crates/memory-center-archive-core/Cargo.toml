@@ -22,6 +22,8 @@ memory-center-llm = { path = "../memory-center-llm" }
 # 预设 + 场景识别
 memory-center-presets = { path = "../memory-center-presets" }
 memory-center-agents = { path = "../memory-center-agents" }
+# 模型定义（v2.54 P16：build_token_estimator_from_env 下沉至此，需要 ModelRegistry/ModelVariant）
+memory-center-models = { path = "../memory-center-models" }
 # 搜索索引（归档后触发）
 memory-center-search = { path = "../memory-center-search" }
 # 序列化

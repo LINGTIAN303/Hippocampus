@@ -82,10 +82,10 @@ pub struct SidecarConfig {
     /// Token 阈值（v2.47 新增）
     ///
     /// 当 session 累积 tokens 达到此值 * 触发比例时，sidecar 主动归档 + 插入 compaction 消息对。
-    /// - `0`（默认）：从服务器归档响应的 `threshold` 字段缓存，最终降级到 120000
+    /// - `0`（默认）：从服务器归档响应的 `threshold` 字段缓存，最终降级到 FALLBACK_ARCHIVE_THRESHOLD（400_000）
     /// - 非 0：直接使用此值（覆盖服务器阈值）
     ///
-    /// 优先级：CLI 参数 > 服务器缓存 > 默认 120000
+    /// 优先级：CLI 参数 > 服务器缓存 > 默认 FALLBACK_ARCHIVE_THRESHOLD（v2.54 P15：从 120_000 对齐为 400_000）
     #[arg(long, env = "MC_SIDECAR_TOKEN_THRESHOLD", default_value = "0")]
     pub token_threshold: usize,
 

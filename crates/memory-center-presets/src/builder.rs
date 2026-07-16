@@ -3,7 +3,7 @@
 //! 链式收集 5 个可选 Profile + 用户覆盖参数，调用 [`build`](PresetBuilder::build)
 //! 时应用联动机制 + 优先级链，生成 [`CombinedProfile`]。
 
-use crate::combined::{CombinedProfile, DEFAULT_ARCHIVE_THRESHOLD, DEFAULT_SUMMARY_TEMPLATE, TriggerRule, UsageProtocol};
+use crate::combined::{CombinedProfile, DEFAULT_SUMMARY_TEMPLATE, TriggerRule, UsageProtocol};
 use crate::linkage::{derive_window_from_agent, should_derive_window};
 use memory_center_agents::AgentProfile;
 use memory_center_models::ModelVariant;
@@ -152,12 +152,17 @@ impl PresetBuilder {
             self.window.clone()
         };
 
-        // 3. 解析归档阈值（用户 > scenario > model > 默认）
-        let archive_threshold = self
-            .user_archive_threshold
-            .or_else(|| self.scenario.as_ref().map(|s| s.archive_threshold))
-            .or_else(|| self.model.as_ref().map(|m| m.archive_strategy.threshold()))
-            .unwrap_or(DEFAULT_ARCHIVE_THRESHOLD);
+        // 3. 解析归档阈值（用户 > scenario > model > 默认，v2.54 P21 抽取到 resolver.rs）
+        //
+        // 裁决逻辑（4 层优先级链 + P18 Scenario/Model 协商）独立到 `resolver::resolve_archive_threshold`，
+        // 便于单元测试和未来扩展（如加权/协商策略）。
+        //
+        // `_trace` 记录裁决过程（source/negotiated/model_ceiling），可用于日志输出。
+        let (archive_threshold, _trace) = crate::resolver::resolve_archive_threshold(
+            self.user_archive_threshold,
+            self.scenario.as_ref(),
+            self.model.as_ref(),
+        );
 
         // 4. 解析摘要模板（用户 > scenario > 默认）
         let summary_template = self
@@ -459,6 +464,7 @@ pub fn build_from_strings(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::combined::DEFAULT_ARCHIVE_THRESHOLD;
     use memory_center_agents::{AgentFamily, AgentProfile};
     use memory_center_scenarios::{Scenario, ScenarioProfile};
     use memory_center_skills::{BuiltinSkill, SkillProfile};
@@ -568,6 +574,53 @@ mod tests {
             .unwrap();
 
         // scenario 优先于 model
+        assert_eq!(combined.archive_threshold(), 500_000);
+    }
+
+    // ========================================================================
+    // v2.54 P18：Scenario/Model 阈值协商机制测试
+    // ========================================================================
+
+    #[test]
+    fn test_p18_negotiation_scenario_exceeds_model_window() {
+        // Coding(500K) + local_default(8K 窗口, 80% = 6.4K)
+        // scenario 阈值 > model 窗口 80%，应协商降级到 6400
+        let combined = PresetBuilder::new()
+            .with_scenario(ScenarioProfile::from_scenario(Scenario::Coding)) // 500K
+            .with_model(ModelVariant::local_default()) // 8K 窗口
+            .build()
+            .unwrap();
+
+        // 协商后：8K × 0.8 = 6400
+        assert_eq!(combined.archive_threshold(), 6_400);
+    }
+
+    #[test]
+    fn test_p18_negotiation_scenario_within_model_window() {
+        // Coding(500K) + claude_opus_4_6(1M 窗口, 80% = 800K)
+        // scenario 阈值 < model 窗口 80%，不触发协商，保持 500K
+        let combined = PresetBuilder::new()
+            .with_scenario(ScenarioProfile::from_scenario(Scenario::Coding)) // 500K
+            .with_model(ModelVariant::claude_opus_4_6()) // 1M 窗口
+            .build()
+            .unwrap();
+
+        // 不协商，保持 scenario 的 500K
+        assert_eq!(combined.archive_threshold(), 500_000);
+    }
+
+    #[test]
+    fn test_p18_negotiation_user_override_skips_negotiation() {
+        // 用户显式 500K + local_default(8K 窗口)
+        // 用户显式阈值不受协商影响，保持 500K
+        let combined = PresetBuilder::new()
+            .with_scenario(ScenarioProfile::from_scenario(Scenario::Coding)) // 500K
+            .with_model(ModelVariant::local_default()) // 8K 窗口
+            .with_user_archive_threshold(500_000) // 用户显式覆盖
+            .build()
+            .unwrap();
+
+        // 用户显式阈值不受协商影响
         assert_eq!(combined.archive_threshold(), 500_000);
     }
 

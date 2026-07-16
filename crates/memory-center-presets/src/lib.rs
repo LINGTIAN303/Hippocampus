@@ -29,23 +29,35 @@
 //!
 //! ## 优先级链
 //!
-//! 字段冲突时的解析顺序（高 → 低）：
+//! 不同字段的优先级链不同（v2.54 P20 修正：与 `builder.rs` 实际实现对齐）。
+//!
+//! ### 归档阈值（archive_threshold）优先级
+//!
+//! 实际实现 4 层（[builder.rs](src/builder.rs) 的 `or_else` 链）：
 //!
 //! ```text
-//! 用户显式参数 > 场景（Scenario）> 模型（Model）> 窗口（Window）> 技能（Skill）> Agent > 默认
+//! 用户显式参数 > ScenarioProfile.archive_threshold > ModelVariant.archive_strategy.threshold() > 默认 400K
 //! ```
 //!
-//! ### 摘要模板优先级
+//! v2.54 P18 引入 Scenario/Model 协商：当解析阈值 > `model.context_window × 0.8` 时
+//! 降级到 model 窗口的 80%（用户显式阈值不受影响）。
+//!
+//! ### 摘要模板（summary_template）优先级
 //!
 //! ```text
 //! 用户 custom > ScenarioProfile.custom_summary_template > SummaryFocus 预设 > 默认硬编码
 //! ```
 //!
-//! ### 归档阈值优先级
+//! ### 其他字段的参与方
 //!
-//! ```text
-//! 用户 > ScenarioProfile.archive_threshold > ModelVariant.archive_strategy.threshold() > 默认 400K
-//! ```
+//! > **历史说明**：早期文档承诺 7 层优先级
+//! > （用户 > Scenario > Model > Window > Skill > Agent > 默认），
+//! > 但 `archive_threshold` 实际只实现 4 层。Window/Skill/Agent 三层不参与阈值解析，
+//! > 仅参与其他字段：
+//!
+//! - **Window**：`archive_to_memory_center` 联合判断（Agent/Window 任一禁用则不归档）+ Agent→Window 联动推导
+//! - **Skill**：当前未参与任何阈值解析（预留扩展，未来可能影响 summary focus）
+//! - **Agent**：`session_prefix` / `archive_to_memory_center` / `usage_protocol` 生成
 //!
 //! ## 联动规则
 //!
@@ -80,12 +92,14 @@ pub mod builder;
 pub mod combined;
 pub mod detect;
 pub mod linkage;
+pub mod resolver;
 pub mod scenario_detect;
 
 pub use builder::{build_from_strings, scenario_from_str, scenario_to_str, PresetBuilder};
-pub use combined::{CombinedProfile, TriggerRule, UsageProtocol};
+pub use combined::{CombinedProfile, DEFAULT_ARCHIVE_THRESHOLD, TriggerRule, UsageProtocol};
 pub use detect::{detect_agent_client, default_scenario_for_agent, resolve_scenario_name, DetectedAgent, DetectionSource};
 pub use linkage::derive_window_from_agent;
+pub use resolver::{resolve_archive_threshold, ResolutionTrace, ThresholdSource};
 pub use scenario_detect::{
     DetectionResult, HybridScenarioDetector, HttpScenarioDetector, KeywordScenarioDetector,
     resolve_effective_scenario,

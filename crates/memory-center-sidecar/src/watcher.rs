@@ -200,7 +200,7 @@ pub struct TokenThresholdEvent {
     pub session_id: String,
     /// 当前累积 tokens（从 last_archived_seq 到 last_seq）
     pub accumulated_tokens: usize,
-    /// 使用的阈值（已解析：CLI > 服务器缓存 > 默认 120000）
+    /// 使用的阈值（已解析：CLI > 服务器缓存 > FALLBACK_ARCHIVE_THRESHOLD）
     pub threshold: usize,
     /// 触发比例（如 80 表示 80%）
     pub ratio_percent: u64,
@@ -220,7 +220,7 @@ impl CompactionWatcher {
     ///
     /// 1. CLI 参数 `--token-threshold` 非 0 → 直接使用
     /// 2. 服务器缓存的 `cached_threshold`（从归档响应获取）非 0 → 使用缓存
-    /// 3. 最终降级到默认 120000
+    /// 3. 最终降级到 FALLBACK_ARCHIVE_THRESHOLD（v2.54 P15：从 120_000 对齐为 400_000）
     ///
     /// ## 触发条件
     ///
@@ -240,13 +240,14 @@ impl CompactionWatcher {
         cli_threshold: usize,
         ratio_percent: u64,
     ) -> Result<Vec<TokenThresholdEvent>, AdapterError> {
-        // 解析阈值：CLI > 服务器缓存 > 默认 120000
+        // 解析阈值：CLI > 服务器缓存 > FALLBACK_ARCHIVE_THRESHOLD
+        // v2.54 P15：从 120_000 统一为 FALLBACK_ARCHIVE_THRESHOLD（400_000），与主服务对齐
         let threshold = if cli_threshold > 0 {
             cli_threshold
         } else if self.state.cached_threshold > 0 {
             self.state.cached_threshold
         } else {
-            120_000
+            memory_center_core::model::FALLBACK_ARCHIVE_THRESHOLD
         };
 
         // 触发线 = threshold * ratio / 100

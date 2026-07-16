@@ -516,6 +516,23 @@ struct ArchiveParams {
     #[schemars(description = "任务状态快照（可选）。传入后持久化到 session_state.json，下次 prompt 时返回。用于压缩后校准 Trae Summary 第8章节 Current Work。字段：current_task(当前任务名)/completed_steps(已完成步骤数组)/in_progress_step(进行中步骤,可选)/next_step(下一步建议)。snapshot_at 由服务端自动填充。")]
     #[serde(default)]
     task_state_snapshot: Option<TaskStateSnapshotParams>,
+    /// 会话上下文 token 估算值（v2.55 P29 方案 A，可选）
+    ///
+    /// Agent 主动传入当前会话上下文窗口的 token 消耗估算值。
+    /// 用于解决服务端无法感知客户端真实 token 消耗的设计缺陷（MCP 协议不传递上下文 token）。
+    ///
+    /// **优先级**：传入此值后，`estimated_total_tokens` / `threshold_ratio_percent` / `suggestion`
+    /// 均基于此值计算（而非 turns_json 的 token 累加值）。
+    ///
+    /// **估算建议**（Agent 自行估算）：
+    /// - 系统提示 + 记忆注入 + 用户消息 + LLM 回复 + 工具调用结果的累计 token
+    /// - 粗略公式：累计字符数 × 0.5（中英混合，CJK 1 字 ≈ 1.5 token，英文 1 词 ≈ 1.3 token）
+    /// - 或基于模型 tokenizer 精确计算（若 Agent 有能力）
+    ///
+    /// 未传入时保持原行为：用 turns_json 的 token 累加值（archived_tokens）。
+    #[schemars(description = "会话上下文 token 估算值（可选，v2.55 P29 方案 A）。Agent 主动传入当前会话上下文窗口的 token 消耗估算值，用于解决服务端无法感知客户端真实 token 消耗的设计缺陷。传入后 estimated_total_tokens / threshold_ratio_percent / suggestion 均基于此值计算。估算建议：系统提示+记忆注入+用户消息+LLM回复+工具调用结果的累计 token，粗略公式 累计字符数 × 0.5。未传入时用 turns_json 的 token 累加值。")]
+    #[serde(default)]
+    context_token_estimate: Option<usize>,
 }
 
 /// 任务状态快照参数（v2.31 动手点 2）
@@ -1150,26 +1167,35 @@ impl MemoryCenterMcp {
         let threshold = memory_center_archive_core::get_archive_threshold(preset_request.as_ref());
 
         // 5. 计算 ratio / suggestion（伪钩子方案：让 LLM 通过外部反馈建立 token 意识）
+        // v2.55 P29 方案 A：若 Agent 传入 context_token_estimate，用它替代 turns 累加值
+        // 解决服务端无法感知客户端真实上下文 token 消耗的设计缺陷
         let archived_tokens: usize = summary.token_count;
+        let estimated_total_tokens: usize = params.context_token_estimate.unwrap_or(archived_tokens);
+        let used_context_estimate = params.context_token_estimate.is_some();
         let ratio = if threshold > 0 {
-            (archived_tokens as f64 / threshold as f64 * 100.0).round() as u64
+            (estimated_total_tokens as f64 / threshold as f64 * 100.0).round() as u64
         } else {
             0
         };
+        let source_label = if used_context_estimate {
+            "会话上下文估算"
+        } else {
+            "归档内容累加"
+        };
         let suggestion = if ratio >= 100 {
             format!(
-                "已归档 {} 轮，累计估算 {} tokens（已达阈值 {}，{}%）。建议立即归档或触发上下文压缩。",
-                summary.token_count, archived_tokens, threshold, ratio
+                "已归档 {} 轮，{} {} tokens（已达阈值 {}，{}%）。建议立即归档或触发上下文压缩。",
+                summary.token_count, source_label, estimated_total_tokens, threshold, ratio
             )
         } else if ratio >= 80 {
             format!(
-                "已归档 {} 轮，累计估算 {} tokens（接近阈值 {}，{}%）。建议准备归档。",
-                summary.token_count, archived_tokens, threshold, ratio
+                "已归档 {} 轮，{} {} tokens（接近阈值 {}，{}%）。建议准备归档。",
+                summary.token_count, source_label, estimated_total_tokens, threshold, ratio
             )
         } else {
             format!(
-                "已归档 {} 轮，累计估算 {} tokens（阈值 {}，当前 {}%）。继续对话。",
-                summary.token_count, archived_tokens, threshold, ratio
+                "已归档 {} 轮，{} {} tokens（阈值 {}，当前 {}%）。继续对话。",
+                summary.token_count, source_label, estimated_total_tokens, threshold, ratio
             )
         };
 
@@ -1195,10 +1221,12 @@ impl MemoryCenterMcp {
             "period": summary.period,
             "token_count": summary.token_count,
             // v2.31 新增：token 反馈与归档建议（伪钩子方案）
-            "estimated_total_tokens": archived_tokens,
+            "estimated_total_tokens": estimated_total_tokens,
             "threshold": threshold,
             "threshold_ratio_percent": ratio,
             "suggestion": suggestion,
+            // v2.55 P29 方案 A：标记 token 来源，让 Agent 知道用的是哪个估算值
+            "token_source": if used_context_estimate { "context_token_estimate" } else { "archived_turns" },
             // v2.31 动手点 2：任务状态快照持久化结果
             "task_state_snapshot_persisted": task_state_written,
         });

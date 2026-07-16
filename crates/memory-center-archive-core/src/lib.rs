@@ -417,12 +417,14 @@ impl ArchiveEngine {
                 ))
             })?;
 
-        // 4. 估算 token（v2.52 阶段 4：有 estimator 时用精确计数，否则 chars/3 兜底）
+        // 4. 估算 token（v2.52 阶段 4：有 estimator 时用精确计数，否则启发式兜底）
+        // v2.54 P17：兜底从 raw_context_content.len() / 3（字节级，中文低估 78%）
+        // 改为 estimate_tokens_heuristic（字符级 + CJK 比例动态公式）
         let estimated_total_tokens = estimated_tokens.unwrap_or_else(|| {
             if let Some(estimator) = &self.token_estimator {
                 estimator(&raw_context_content)
             } else {
-                raw_context_content.len() / 3
+                memory_center_core::model::estimate_tokens_heuristic(&raw_context_content)
             }
         });
 
@@ -580,11 +582,8 @@ impl ArchiveEngine {
         // 3. 构建 Archiver
         let storage = self.create_storage();
         let config = if let Some(threshold) = archive_threshold {
-            ArchiveConfig {
-                token_threshold: threshold,
-                force_truncate_limit: threshold * 3 / 2,
-                wait_for_turn_completion: true,
-            }
+            // v2.54 P19：改用 ArchiveConfig::from_threshold，统一硬上限系数来源
+            ArchiveConfig::from_threshold(threshold)
         } else {
             ArchiveConfig::default()
         };
@@ -738,14 +737,14 @@ impl ArchiveEngine {
         // 3. 构建 Archiver
         let storage = self.create_storage();
         let config = if let Some(threshold) = archive_threshold {
-            ArchiveConfig {
-                token_threshold: threshold,
-                force_truncate_limit: threshold * 3 / 2,
-                wait_for_turn_completion: true,
-            }
+            // v2.54 P19：改用 ArchiveConfig::from_threshold，统一硬上限系数来源
+            ArchiveConfig::from_threshold(threshold)
         } else {
             ArchiveConfig::default()
         };
+        // v2.54 P23：在 config 被 move 前提取阈值用于日志（补全可观测性）
+        let logged_threshold = config.token_threshold;
+        let logged_hard_limit = config.force_truncate_limit;
         let mut archiver = Archiver::new(
             config,
             storage,
@@ -792,6 +791,8 @@ impl ArchiveEngine {
             session = %session_id,
             hook_id = %summary.hook_id,
             tokens = summary.token_count,
+            threshold = logged_threshold,
+            hard_limit = logged_hard_limit,
             has_preset = archive_threshold.is_some(),
             "归档成功"
         );
@@ -813,7 +814,7 @@ impl ArchiveEngine {
 /// 优先级：
 /// 1. preset.archive_threshold（用户显式覆盖，最高优先级）
 /// 2. preset 构建的 CombinedProfile.archive_threshold()
-/// 3. 默认 120000
+/// 3. 默认 FALLBACK_ARCHIVE_THRESHOLD（v2.54 P15：从 120000 统一为 400000）
 pub fn get_archive_threshold(preset: Option<&PresetRequest>) -> usize {
     if let Some(preset_req) = preset {
         if let Some(t) = preset_req.archive_threshold {
@@ -823,7 +824,7 @@ pub fn get_archive_threshold(preset: Option<&PresetRequest>) -> usize {
             return combined.archive_threshold();
         }
     }
-    120000
+    memory_center_core::model::FALLBACK_ARCHIVE_THRESHOLD
 }
 
 /// 从 PresetRequest 构建 CombinedProfile
@@ -935,16 +936,72 @@ pub fn build_session_search(
     Some(Arc::new(router))
 }
 
+/// 从环境变量构造 Token 估算器（v2.54 P16 从 mcp/bootstrap.rs 下沉至此）
+///
+/// 用于注入 `ArchiveEngine::with_token_estimator`，替换 archive-core 的 `chars/3` 简化估算。
+///
+/// ## 环境变量
+///
+/// | 变量 | 说明 | 默认值 |
+/// |------|------|--------|
+/// | `MEMORY_CENTER_TOKENIZER_MODEL` | 模型名（见 `ModelRegistry::find` 支持的型号） | `deepseek-v4-flash` |
+///
+/// ## 默认选择 deepseek-v4-flash 的原因
+///
+/// - DeepSeekApprox tokenizer（cl100k_base + 系数 1.1）对中英文混合场景较准
+/// - DeepSeek 模型在中文场景 token 估算更贴近实际
+/// - 用户可通过环境变量切换为其他模型（如 `gpt-5.2` 用 O200kBase）
+///
+/// ## 降级行为
+///
+/// - 指定模型名不存在 → 回退到 `deepseek-v4-flash`
+/// - tiktoken 初始化失败 → `TokenizerKind::build` 内部降级为 CharTokenizer
+///
+/// ## 返回
+///
+/// `Arc<dyn Fn(&str) -> usize + Send + Sync>`：可直接传入 `with_token_estimator`
+pub fn build_token_estimator_from_env() -> TokenEstimator {
+    use memory_center_models::{build_token_estimator, ModelRegistry, ModelVariant};
+
+    let model_name = std::env::var("MEMORY_CENTER_TOKENIZER_MODEL")
+        .unwrap_or_else(|_| "deepseek-v4-flash".to_string());
+
+    let model = ModelRegistry::find(&model_name).unwrap_or_else(|| {
+        if model_name != "deepseek-v4-flash" {
+            tracing::warn!(
+                specified = %model_name,
+                fallback = "deepseek-v4-flash",
+                "指定的 tokenizer 模型不存在，回退到默认模型"
+            );
+        }
+        ModelVariant::deepseek_v4_flash()
+    });
+
+    tracing::info!(
+        model = %model.name,
+        tokenizer = %model.tokenizer.type_name(),
+        "Token 估算器：已构造（替换 chars/3 简化估算）"
+    );
+
+    let tokenizer = model.build_tokenizer();
+    build_token_estimator(tokenizer)
+}
+
 /// 从环境变量构造完整 ArchiveEngine（便捷函数）
 ///
-/// 自动注入 SummaryGenerator + ScenarioDetector + SessionSearchRouter。
+/// 自动注入 SummaryGenerator + ScenarioDetector + SessionSearchRouter + TokenEstimator。
 /// 未配置 LLM API 时各组件降级。
+///
+/// v2.54 P16：追加 `with_token_estimator` 注入，让 sidecar 通过 `build_engine_from_env`
+/// 也能获得精确的 token 估算（此前仅 MCP/Server 手动注入，sidecar 漏注入导致用 chars/3）。
 pub fn build_engine_from_env(storage_root: PathBuf) -> ArchiveEngine {
     let summary_generator = build_summary_generator();
     let scenario_detector = build_scenario_detector();
     let session_search = build_session_search(&storage_root);
+    let token_estimator = build_token_estimator_from_env();
 
-    let mut engine = ArchiveEngine::new(storage_root);
+    let mut engine = ArchiveEngine::new(storage_root)
+        .with_token_estimator(token_estimator);
     if let Some(gen) = summary_generator {
         engine = engine.with_summary_generator(gen);
     }
@@ -972,8 +1029,83 @@ mod tests {
 
     #[test]
     fn test_get_archive_threshold_default() {
+        // v2.54 P15：兜底值从 120000 统一为 FALLBACK_ARCHIVE_THRESHOLD（400000）
         let threshold = get_archive_threshold(None);
-        assert_eq!(threshold, 120000);
+        assert_eq!(threshold, memory_center_core::model::FALLBACK_ARCHIVE_THRESHOLD);
+    }
+
+    #[test]
+    fn test_p15_fallback_threshold_consistency() {
+        // v2.54 P15：验证三处兜底值一致
+        // 1. get_archive_threshold(None) 应返回 FALLBACK_ARCHIVE_THRESHOLD
+        let from_get = get_archive_threshold(None);
+        let const_val = memory_center_core::model::FALLBACK_ARCHIVE_THRESHOLD;
+        assert_eq!(from_get, const_val, "get_archive_threshold 兜底应等于 FALLBACK_ARCHIVE_THRESHOLD");
+
+        // 2. ArchiveConfig::default() 的 token_threshold 应等于 FALLBACK_ARCHIVE_THRESHOLD
+        let config_default = memory_center_core::model::ArchiveConfig::default();
+        assert_eq!(config_default.token_threshold, const_val, "ArchiveConfig::default token_threshold 应等于 FALLBACK_ARCHIVE_THRESHOLD");
+
+        // 3. force_truncate_limit 应为 threshold × HARD_LIMIT_RATIO（v2.54 P19 统一系数来源）
+        let expected_hard_limit = (const_val as f32 * memory_center_core::model::HARD_LIMIT_RATIO) as usize;
+        assert_eq!(config_default.force_truncate_limit, expected_hard_limit, "force_truncate_limit 应为 threshold × HARD_LIMIT_RATIO");
+
+        // 4. presets 层 DEFAULT_ARCHIVE_THRESHOLD 应与 FALLBACK_ARCHIVE_THRESHOLD 一致
+        let presets_default = memory_center_presets::DEFAULT_ARCHIVE_THRESHOLD;
+        assert_eq!(presets_default, const_val, "presets DEFAULT_ARCHIVE_THRESHOLD 应等于 FALLBACK_ARCHIVE_THRESHOLD");
+    }
+
+    #[test]
+    fn test_p19_hard_limit_ratio_consistency() {
+        // v2.54 P19：验证 ArchiveConfig::from_threshold 与 ArchiveStrategy::hard_limit 使用相同系数
+        use memory_center_models::variant::{ArchiveStrategy, ModelVariant};
+
+        // 测试多种 threshold 值
+        let test_cases = [100_000, 200_000, 400_000, 500_000, 800_000, 1_000_000];
+
+        for threshold in test_cases {
+            // ArchiveConfig::from_threshold 计算的 force_truncate_limit
+            let config = memory_center_core::model::ArchiveConfig::from_threshold(threshold);
+            let config_hard_limit = config.force_truncate_limit;
+
+            // 期望值：threshold × HARD_LIMIT_RATIO
+            let expected = (threshold as f32 * memory_center_core::model::HARD_LIMIT_RATIO) as usize;
+            assert_eq!(
+                config_hard_limit, expected,
+                "ArchiveConfig::from_threshold({}).force_truncate_limit 应为 threshold × HARD_LIMIT_RATIO = {}",
+                threshold, expected
+            );
+
+            // ArchiveStrategy::hard_limit() 应与 ArchiveConfig 使用相同系数
+            for strategy in [
+                ArchiveStrategy::LargeWindow { threshold },
+                ArchiveStrategy::Standard { threshold },
+                ArchiveStrategy::SmallWindow { threshold },
+            ] {
+                let strategy_hard_limit = strategy.hard_limit();
+                assert_eq!(
+                    strategy_hard_limit, expected,
+                    "ArchiveStrategy.hard_limit() (threshold={}) 应为 {} × HARD_LIMIT_RATIO = {}，实际 {}",
+                    threshold, threshold, expected, strategy_hard_limit
+                );
+            }
+        }
+
+        // 验证内置 ModelVariant 的 hard_limit 与 from_threshold 一致
+        for model in [
+            ModelVariant::claude_opus_4_6(), // LargeWindow, threshold=400K
+            ModelVariant::claude_opus_4_8(), // Standard, threshold=80K
+            ModelVariant::local_default(),   // SmallWindow, threshold=4K
+        ] {
+            let threshold = model.archive_strategy.threshold();
+            let config = memory_center_core::model::ArchiveConfig::from_threshold(threshold);
+            assert_eq!(
+                model.archive_strategy.hard_limit(),
+                config.force_truncate_limit,
+                "ModelVariant::{} 的 archive_strategy.hard_limit() 应与 ArchiveConfig::from_threshold({}).force_truncate_limit 一节",
+                model.name, threshold
+            );
+        }
     }
 
     #[test]

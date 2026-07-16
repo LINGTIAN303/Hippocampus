@@ -34,7 +34,8 @@ mcp_memory-center.prompt(session_id)
 ```
 mcp_memory-center.archive(
     session_id,                  // 必填
-    turns_json                   // 必填，最简格式：[{"user_message":{"text":"..."},"llm_message":{"text":"..."}}]
+    turns_json,                  // 必填，最简格式：[{"user_message":{"text":"..."},"llm_message":{"text":"..."}}]
+    context_token_estimate,      // 推荐传入，会话上下文 token 估算值（v2.55 P29 方案 A）
     // id/timestamp/tags/token_count 可省略，服务端自动补全
 )
 ```
@@ -46,6 +47,7 @@ mcp_memory-center.archive(
 - `threshold`：归档阈值（如 120000 = 120K）
 - `threshold_ratio_percent`：当前占比百分比
 - `suggestion`：归档建议（人类可读）
+- `token_source`：token 来源标记（`context_token_estimate` 或 `archived_turns`）
 
 **判断规则**：
 - `threshold_ratio_percent >= 100` → 立即归档或触发上下文压缩
@@ -54,6 +56,25 @@ mcp_memory-center.archive(
 
 > 你（LLM）无法直接感知自身 token 消耗，但通过 archive 返回的 `estimated_total_tokens`
 > 可以建立"token 意识"——这是伪钩子方案的核心：通过外部反馈循环模拟主动感知。
+
+#### 2.3.1 context_token_estimate 参数（v2.55 P29 方案 A）
+
+**设计缺陷**：MCP 协议不传递客户端上下文 token 消耗，服务端只能基于 `turns_json` 文本计算 token（严重失真，如 100K+ 会话只算出 687 tokens）。
+
+**解决方案**：Agent 调 archive 时主动传入 `context_token_estimate` 字段，表示当前会话上下文窗口的 token 消耗估算值。
+
+**估算公式**（Agent 自行估算，粗略即可）：
+```
+context_token_estimate ≈ 累计字符数 × 0.5
+```
+- 包含：系统提示 + 记忆注入 + 用户消息 + LLM 回复 + 工具调用结果
+- CJK 字符 1 字 ≈ 1.5 token，英文 1 词 ≈ 1.3 token，混合取 0.5 折中
+- 或基于模型 tokenizer 精确计算（若 Agent 有能力）
+
+**传入后的效果**：
+- `estimated_total_tokens` / `threshold_ratio_percent` / `suggestion` 均基于此值计算
+- `token_source` 返回 `"context_token_estimate"` 标记来源
+- 未传入时保持原行为（`token_source` 返回 `"archived_turns"`）
 
 #### 2.4 客户端压缩前主动归档
 
