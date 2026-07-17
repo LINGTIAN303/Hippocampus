@@ -1360,30 +1360,43 @@
     </div>
 
     <h3>接入示例（MCP 一键配置，两种模式）</h3>
+
     <div class="code-wrap">
+      <div style="margin-bottom:8px;font-size:13px;color:var(--text-light);"><strong>模式 1：stdio</strong>（本地 IDE — Claude Code / Cursor / Trae / OpenCode）</div>
       <button class="copy-btn" onclick="copyCode(this)">复制</button>
-      <pre><span class="com"># 模式 1：stdio（本地 IDE — Claude Code / Cursor / Trae / OpenCode）</span>
+      <pre><span class="com"># Step 1：克隆并编译 MCP 二进制（需 Rust 1.88+）</span>
+git clone https://github.com/LINGTIAN303/MemoryCenter.git
+cd MemoryCenter
+cargo build --release -p memory-center-mcp
+<span class="com"># 产物：target/release/memory-center-mcp</span>
+
+<span class="com"># Step 2：在客户端 MCP 配置中添加（替换为你的实际路径）</span>
 {
   <span class="key">"mcpServers"</span>: {
     <span class="key">"memory-center"</span>: {
-      <span class="key">"command"</span>: <span class="str">"/path/to/memory-center-mcp"</span>,
+      <span class="key">"command"</span>: <span class="str">"/your/path/to/MemoryCenter/target/release/memory-center-mcp"</span>,
       <span class="key">"env"</span>: {
-        <span class="key">"MEMORY_CENTER_ROOT"</span>: <span class="str">"/path/to/memory/data"</span>
+        <span class="key">"MEMORY_CENTER_ROOT"</span>: <span class="str">"/your/path/to/memory/data"</span>
       }
     }
   }
 }
+<span class="com"># 启动后 Agent 自动发现 22 个 tools，无需额外编码</span></pre>
+    </div>
 
-<span class="com"># 模式 2：Streamable HTTP（远程客户端 — DeepSeek 网页端 + DeepSeek++ 扩展等）</span>
+    <div class="code-wrap">
+      <div style="margin-bottom:8px;font-size:13px;color:var(--text-light);"><strong>模式 2：Streamable HTTP</strong>（远程客户端 — DeepSeek 网页端 + DeepSeek++ 扩展等）</div>
+      <button class="copy-btn" onclick="copyCode(this)">复制</button>
+      <pre><span class="com"># 无需下载二进制，直接配置 URL 即可</span>
 {
   <span class="key">"mcpServers"</span>: {
     <span class="key">"memory-center"</span>: {
-      <span class="key">"url"</span>: <span class="str">"http://162.211.183.236.sslip.io/mcp"</span>,
+      <span class="key">"url"</span>: <span class="str">"https://openworld.dpdns.org/mcp"</span>,
       <span class="key">"transport"</span>: <span class="str">"streamable-http"</span>
     }
   }
 }
-<span class="com"># 启动后 Agent 自动发现 22 个 tools，无需额外编码</span></pre>
+<span class="com"># 注意：需支持 Streamable HTTP 协议的客户端（Trae 当前建议使用 stdio 模式）</span></pre>
     </div>
 
     <div class="demo-card">
